@@ -10,7 +10,7 @@
     in {
       devShells = forAll (pkgs: {
         default = pkgs.mkShell {
-          packages = with pkgs; [ go gopls gotools go-tools tmux ];
+          packages = with pkgs; [ go gopls gotools tmux ];
         };
       });
 
@@ -19,14 +19,16 @@
           pname = "proj";
           version = "0.1.0";
           src = ./.;
-          # vendorHash is set to null until `go mod tidy` produces a go.sum.
-          # After the first successful `nix build`, replace with the hash nix prints.
-          vendorHash = null;
+          vendorHash = "sha256-Bz1u7u1Xk8UjIJqGJK0CGkFnT+baXP6LeskBgMpWJWo=";
           subPackages = [ "cmd/proj" ];
+          postInstall = ''
+            install -Dm0644 -t $out/share/proj shells/proj.zsh shells/proj.bash shells/proj.fish
+          '';
           meta = {
             description = "tmux + Claude Code project session manager";
             mainProgram = "proj";
             platforms = systems;
+            license = nixpkgs.lib.licenses.mit;
           };
         };
         default = proj;
