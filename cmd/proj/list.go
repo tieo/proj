@@ -22,8 +22,9 @@ const (
 )
 
 var listCmd = &cobra.Command{
-	Use:   "list",
-	Short: "list projects with session status",
+	Use:     "list",
+	Aliases: []string{"ls"},
+	Short:   "list projects with session status",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		cfg, err := config.Load()
 		if err != nil {
