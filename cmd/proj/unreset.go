@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"runtime"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -22,10 +23,10 @@ var unresetCmd = &cobra.Command{
 	Use:   "unreset",
 	Short: "auto-resume Claude Code sessions when usage limits expire",
 	Long: `Polls tmux panes for Claude Code's usage-limit banner ("You're out of
-extra usage · resets 3am"). When the reset time passes, sends "continue"
-to the pane so the session picks up where it left off.
+extra usage · resets 3am"). On detection, sends Escape to dismiss the
+/rate-limit-options selector (if present) and types "continue".
 
-Run as a background service (` + "`proj unreset enable`" + `) or in the
+Run as a user service (` + "`proj unreset enable`" + `) or in the
 foreground for debugging (` + "`proj unreset run`" + `).`,
 	RunE: runUnresetStatus,
 }
@@ -57,47 +58,180 @@ func init() {
 		unresetRestartCmd, unresetEnableCmd, unresetDisableCmd, unresetLogsCmd)
 }
 
+// ----- status output -----
+
+type serviceInfo struct {
+	exists        bool
+	loadState     string
+	activeState   string
+	subState      string
+	unitFileState string
+	fragmentPath  string
+	mainPID       int
+	memory        uint64
+	activeEnter   time.Time
+}
+
+func (s serviceInfo) dot() string {
+	switch s.activeState {
+	case "active":
+		return "\033[32m●\033[0m"
+	case "failed":
+		return "\033[31m●\033[0m"
+	case "activating", "reloading":
+		return "\033[33m●\033[0m"
+	default:
+		return "\033[90m○\033[0m"
+	}
+}
+
+func gatherService() serviceInfo {
+	if runtime.GOOS != "linux" {
+		return serviceInfo{}
+	}
+	out, err := exec.Command("systemctl", "--user", "show",
+		"-p", "LoadState",
+		"-p", "ActiveState",
+		"-p", "SubState",
+		"-p", "FragmentPath",
+		"-p", "UnitFileState",
+		"-p", "ActiveEnterTimestamp",
+		"-p", "MainPID",
+		"-p", "MemoryCurrent",
+		"proj-unreset").Output()
+	if err != nil {
+		return serviceInfo{}
+	}
+	s := serviceInfo{}
+	for _, line := range strings.Split(string(out), "\n") {
+		k, v, ok := strings.Cut(line, "=")
+		if !ok {
+			continue
+		}
+		switch k {
+		case "LoadState":
+			s.loadState = v
+		case "ActiveState":
+			s.activeState = v
+		case "SubState":
+			s.subState = v
+		case "FragmentPath":
+			s.fragmentPath = v
+		case "UnitFileState":
+			s.unitFileState = v
+		case "ActiveEnterTimestamp":
+			if v != "" && v != "n/a" {
+				if t, err := time.ParseInLocation("Mon 2006-01-02 15:04:05 MST", v, time.Local); err == nil {
+					s.activeEnter = t
+				}
+			}
+		case "MainPID":
+			s.mainPID, _ = strconv.Atoi(v)
+		case "MemoryCurrent":
+			if n, err := strconv.ParseUint(v, 10, 64); err == nil {
+				s.memory = n
+			}
+		}
+	}
+	s.exists = s.loadState == "loaded"
+	return s
+}
+
+func formatBytes(b uint64) string {
+	switch {
+	case b < 1024:
+		return fmt.Sprintf("%dB", b)
+	case b < 1024*1024:
+		return fmt.Sprintf("%.1fK", float64(b)/1024)
+	case b < 1024*1024*1024:
+		return fmt.Sprintf("%.1fM", float64(b)/(1024*1024))
+	default:
+		return fmt.Sprintf("%.1fG", float64(b)/(1024*1024*1024))
+	}
+}
+
+func formatAgo(d time.Duration) string {
+	d = d.Round(time.Second)
+	switch {
+	case d < time.Minute:
+		return fmt.Sprintf("%ds", int(d.Seconds()))
+	case d < time.Hour:
+		return fmt.Sprintf("%dmin %ds", int(d.Minutes()), int(d.Seconds())%60)
+	case d < 24*time.Hour:
+		return fmt.Sprintf("%dh %dmin", int(d.Hours()), int(d.Minutes())%60)
+	default:
+		return fmt.Sprintf("%dd %dh", int(d.Hours())/24, int(d.Hours())%24)
+	}
+}
+
 func runUnresetStatus(cmd *cobra.Command, args []string) error {
 	cfg := unresetConfig()
 	state := unreset.LoadState(cfg.StatePath)
-	fmt.Printf("state file:        %s\n", cfg.StatePath)
-	fmt.Printf("poll interval:     %s\n", cfg.Poll)
-	fmt.Printf("max wait:          %s\n", cfg.MaxWait)
-	fmt.Printf("tracked sessions:  %d\n", len(state))
+	svc := gatherService()
+
+	fmt.Printf("%s proj-unreset — auto-resume Claude Code sessions after usage-limit cooldown\n", svc.dot())
+
+	if svc.exists {
+		enabledStr := svc.unitFileState
+		if enabledStr == "" {
+			enabledStr = "unmanaged"
+		}
+		fmt.Printf("     Loaded: %s (%s)\n", svc.fragmentPath, enabledStr)
+
+		active := svc.activeState
+		if svc.subState != "" && svc.subState != svc.activeState {
+			active = fmt.Sprintf("%s (%s)", svc.activeState, svc.subState)
+		}
+		since := ""
+		if !svc.activeEnter.IsZero() {
+			since = fmt.Sprintf(" since %s; %s ago",
+				svc.activeEnter.Format("Mon 2006-01-02 15:04:05 MST"),
+				formatAgo(time.Since(svc.activeEnter)))
+		}
+		fmt.Printf("     Active: %s%s\n", active, since)
+		if svc.mainPID > 0 {
+			fmt.Printf("   Main PID: %d (proj)\n", svc.mainPID)
+		}
+		if svc.memory > 0 {
+			fmt.Printf("     Memory: %s\n", formatBytes(svc.memory))
+		}
+	} else if runtime.GOOS == "linux" {
+		fmt.Printf("     Loaded: (not installed — `proj unreset enable` or use the nix module)\n")
+	} else if runtime.GOOS == "darwin" {
+		fmt.Println("     Loaded: (manage via `launchctl print gui/$UID/com.proj.unreset`)")
+	}
+
+	fmt.Printf("    Tracked: %d session(s)\n", len(state))
+	fmt.Printf("     Config: poll=%s  max_wait=%s  jitter=%s  resume=%q\n",
+		cfg.Poll, cfg.MaxWait, cfg.Jitter, cfg.ResumeText)
+	fmt.Printf("      State: %s\n", cfg.StatePath)
+
 	if len(state) > 0 {
 		fmt.Println()
 		now := time.Now()
 		for _, t := range state {
-			seenFor := now.Sub(t.FirstSeen).Truncate(time.Second)
-			fmt.Printf("  %s [pane %s]\n", t.Session, t.Pane)
-			fmt.Printf("    banner:     %s\n", t.Banner)
-			fmt.Printf("    seen for:   %s\n", seenFor)
-			fmt.Printf("    attempts:   %d\n", t.Attempts)
+			fmt.Printf("  %s [pane %s]  seen %s ago · %d attempt(s)\n",
+				t.Session, t.Pane, formatAgo(now.Sub(t.FirstSeen)), t.Attempts)
+			fmt.Printf("    banner: %s\n", t.Banner)
 			if !t.NextAttempt.IsZero() {
-				until := time.Until(t.NextAttempt).Truncate(time.Second)
-				when := t.NextAttempt.Local().Format("Mon 15:04 MST")
-				if until < 0 {
-					fmt.Printf("    next try:   due (next tick)\n")
+				if t.NextAttempt.After(now) {
+					fmt.Printf("    next:   %s (in %s)\n",
+						t.NextAttempt.Format("Mon 15:04:05 MST"),
+						formatAgo(time.Until(t.NextAttempt)))
 				} else {
-					fmt.Printf("    next try:   %s (in %s)\n", when, until)
+					fmt.Printf("    next:   due (next tick)\n")
 				}
 			}
 		}
 	}
-	fmt.Println()
-	fmt.Println("service:")
-	switch runtime.GOOS {
-	case "linux":
-		out, _ := exec.Command("systemctl", "--user", "is-active", "proj-unreset").Output()
-		s := strings.TrimSpace(string(out))
-		if s == "" {
-			s = "(not installed)"
+
+	if svc.exists && runtime.GOOS == "linux" {
+		fmt.Println()
+		out, _ := exec.Command("journalctl", "--user", "-u", "proj-unreset",
+			"-n", "5", "--no-pager", "-o", "short").Output()
+		if len(out) > 0 {
+			fmt.Print(string(out))
 		}
-		fmt.Printf("  %s\n", s)
-	case "darwin":
-		fmt.Println("  use `launchctl print gui/$UID/com.proj.unreset`")
-	default:
-		fmt.Println("  (service management not supported on this OS)")
 	}
 	return nil
 }
