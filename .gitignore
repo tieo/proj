@@ -1,0 +1,8 @@
+/proj
+*.test
+*.out
+coverage.out
+.idea/
+.vscode/
+result
+result-*
