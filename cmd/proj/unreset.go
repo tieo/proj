@@ -151,6 +151,27 @@ func formatBytes(b uint64) string {
 	}
 }
 
+// formatDur prints a Duration without the trailing-zero noise of String()
+// ("1m0s" -> "1m", "5h0m0s" -> "5h"). Used for compact config display.
+func formatDur(d time.Duration) string {
+	h := int(d / time.Hour)
+	d %= time.Hour
+	m := int(d / time.Minute)
+	d %= time.Minute
+	s := int(d / time.Second)
+	var parts []string
+	if h > 0 {
+		parts = append(parts, fmt.Sprintf("%dh", h))
+	}
+	if m > 0 {
+		parts = append(parts, fmt.Sprintf("%dm", m))
+	}
+	if s > 0 || len(parts) == 0 {
+		parts = append(parts, fmt.Sprintf("%ds", s))
+	}
+	return strings.Join(parts, "")
+}
+
 func formatAgo(d time.Duration) string {
 	d = d.Round(time.Second)
 	switch {
@@ -206,7 +227,7 @@ func runUnresetStatus(cmd *cobra.Command, args []string) error {
 	fmt.Printf("   Watching: %d tmux pane(s)\n", len(panes))
 	fmt.Printf("    Tracked: %d session(s)\n", len(state))
 	fmt.Printf("     Config: poll=%s  max_wait=%s  jitter=%s  resume=%q\n",
-		cfg.Poll, cfg.MaxWait, cfg.Jitter, cfg.ResumeText)
+		formatDur(cfg.Poll), formatDur(cfg.MaxWait), formatDur(cfg.Jitter), cfg.ResumeText)
 	fmt.Printf("      State: %s\n", cfg.StatePath)
 
 	if len(state) > 0 {
