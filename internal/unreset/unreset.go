@@ -88,7 +88,7 @@ var bannerPatterns = []*regexp.Regexp{
 	//   ⎿  You're out of extra usage · resets 3am (Europe/Berlin)
 	// Timezone may wrap to the next line.
 	// New patterns are added here only after a real capture proves them out.
-	regexp.MustCompile(`(?i)out of extra usage(?:\s*[·.\-])?\s+resets\s+(\d{1,2}(?::\d{2})?\s*(?:am|pm))(?:\s*\(([A-Za-z_/+\-0-9]+)\))?`),
+	regexp.MustCompile(`(?i)out of extra usage(?:\s*[·.\-])?\s+resets\s+(?:[A-Za-z]+\s+\d{1,2},\s+)?(\d{1,2}(?::\d{2})?\s*(?:am|pm))(?:\s*\(([A-Za-z_/+\-0-9]+)\))?`),
 }
 
 var timeRE = regexp.MustCompile(`^(\d{1,2})(?::(\d{2}))?(am|pm)$`)
