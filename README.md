@@ -107,7 +107,7 @@ resume_flag = "-c"
 [unreset]
 poll_interval = "60s"
 max_wait      = "5h"   # upper bound between retry attempts on the same pane
-jitter        = "30s"  # added to the scheduled retry time
+jitter        = "1s"   # added to the scheduled retry time
 resume_text   = "continue"
 capture_lines = 300
 ```

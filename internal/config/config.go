@@ -42,7 +42,7 @@ func Default() Config {
 		Unreset: UnresetConfig{
 			PollInterval: "60s",
 			MaxWait:      "5h",
-			Jitter:       "30s",
+			Jitter:       "1s",
 			ResumeText:   "continue",
 			CaptureLines: 300,
 		},

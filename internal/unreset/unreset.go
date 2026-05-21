@@ -55,7 +55,7 @@ func DefaultConfig() Config {
 	return Config{
 		Poll:       60 * time.Second,
 		MaxWait:    5 * time.Hour, // ≥ any single Claude usage window
-		Jitter:     30 * time.Second,
+		Jitter:     time.Second,   // reset times are accurate to the minute; 1s grace is enough
 		DismissGap: 300 * time.Millisecond,
 		ResumeText: "continue",
 		Capture:    300,
