@@ -16,6 +16,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/tieo/proj/internal/config"
+	"github.com/tieo/proj/internal/tmux"
 	"github.com/tieo/proj/internal/unreset"
 )
 
@@ -201,27 +202,32 @@ func runUnresetStatus(cmd *cobra.Command, args []string) error {
 		fmt.Println("     Loaded: (manage via `launchctl print gui/$UID/com.proj.unreset`)")
 	}
 
+	panes := tmux.ListPanes()
+	fmt.Printf("   Watching: %d tmux pane(s)\n", len(panes))
 	fmt.Printf("    Tracked: %d session(s)\n", len(state))
 	fmt.Printf("     Config: poll=%s  max_wait=%s  jitter=%s  resume=%q\n",
 		cfg.Poll, cfg.MaxWait, cfg.Jitter, cfg.ResumeText)
 	fmt.Printf("      State: %s\n", cfg.StatePath)
 
 	if len(state) > 0 {
-		fmt.Println()
 		now := time.Now()
+		fmt.Println()
+		fmt.Println("  Sessions:")
 		for _, t := range state {
-			fmt.Printf("  %s [pane %s]  seen %s ago · %d attempt(s)\n",
-				t.Session, t.Pane, formatAgo(now.Sub(t.FirstSeen)), t.Attempts)
-			fmt.Printf("    banner: %s\n", t.Banner)
-			if !t.NextAttempt.IsZero() {
-				if t.NextAttempt.After(now) {
-					fmt.Printf("    next:   %s (in %s)\n",
-						t.NextAttempt.Format("Mon 15:04:05 MST"),
-						formatAgo(time.Until(t.NextAttempt)))
-				} else {
-					fmt.Printf("    next:   due (next tick)\n")
-				}
+			deferred := !t.NextAttempt.IsZero() && t.NextAttempt.After(now)
+			marker := "\033[32m●\033[0m"
+			status := "due next tick"
+			if deferred {
+				marker = "\033[33m●\033[0m"
+				status = fmt.Sprintf("deferred until %s (in %s)",
+					t.NextAttempt.Format("Mon 15:04:05 MST"),
+					formatAgo(time.Until(t.NextAttempt)))
 			}
+			fmt.Printf("    %s %s [pane %s]\n", marker, t.Session, t.Pane)
+			fmt.Printf("        banner:   %s\n", t.Banner)
+			fmt.Printf("        seen for: %s · %d attempt(s)\n",
+				formatAgo(now.Sub(t.FirstSeen)), t.Attempts)
+			fmt.Printf("        next:     %s\n", status)
 		}
 	}
 
