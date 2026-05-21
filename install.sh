@@ -86,9 +86,13 @@ if (( INSTALL_SERVICE )); then
             mkdir -p "$UNIT_DIR"
             install -m 0644 "$HERE/service/systemd/proj-unreset.service" \
                 "$UNIT_DIR/proj-unreset.service"
+            
+            echo "→ reloading and restarting systemd service"
             systemctl --user daemon-reload
-            systemctl --user enable --now proj-unreset.service
-            echo "  enabled proj-unreset.service — tail with: journalctl --user -u proj-unreset -f"
+            systemctl --user enable proj-unreset.service
+            systemctl --user restart proj-unreset.service
+            
+            echo "  enabled and restarted proj-unreset.service — tail with: journalctl --user -u proj-unreset -f"
             ;;
         Darwin)
             AGENT_DIR="$HOME/Library/LaunchAgents"

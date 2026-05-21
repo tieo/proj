@@ -101,14 +101,22 @@ func OrphanSessions(baseDir string) []tmux.Session {
 }
 
 // HasHistory reports whether Claude Code has a prior transcript for `dir`.
-// Claude encodes the project path by replacing '/' with '-' and stores
-// session jsonl files under ~/.claude/projects/<encoded>/.
+// Claude encodes the project path by replacing every non-alphanumeric rune
+// with '-' (so '/', '.', '_', ' ', '+' all become '-', and adjacent specials
+// like '/.' produce '--'). Stored under ~/.claude/projects/<encoded>/.
 func HasHistory(dir string) bool {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return false
 	}
-	encoded := strings.ReplaceAll(dir, "/", "-")
+	encoded := strings.Map(func(r rune) rune {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9':
+			return r
+		default:
+			return '-'
+		}
+	}, dir)
 	histDir := filepath.Join(home, ".claude", "projects", encoded)
 	entries, err := os.ReadDir(histDir)
 	if err != nil {
