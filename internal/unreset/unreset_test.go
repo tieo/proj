@@ -181,9 +181,47 @@ func TestDecide_FirstAttemptImmediate(t *testing.T) {
 	}
 }
 
-func TestDecide_BannerPlusSelector(t *testing.T) {
-	if got := Decide(realBannerInline+"\n"+realSelector, Tracked{}, time.Now()); got != ActDismiss {
-		t.Errorf("got %v, want ActDismiss", got)
+func TestDecide_BannerPlusSelectorIsResume(t *testing.T) {
+	// Selector handling is independent of Decide; banner-present is the
+	// only thing that matters for the Resume/Wait classification.
+	if got := Decide(realBannerInline+"\n"+realSelector, Tracked{}, time.Now()); got != ActResume {
+		t.Errorf("got %v, want ActResume (selector dismissal happens in Tick, outside Decide)", got)
+	}
+}
+
+// Real capture from a resume-old-session prompt — the daemon should
+// recognize this as a dismissable picker even with no usage-limit banner.
+const realResumePicker = `  This session is 2d 21h old and 126.3k tokens.
+
+  Resuming the full session will consume a substantial portion of your usage limits. We recommend resuming from a summary.
+
+  ❯ 1. Resume from summary (recommended)
+    2. Resume full session as-is
+    3. Don't ask me again
+
+  Enter to confirm · Esc to cancel`
+
+func TestHasSelector_ResumePicker(t *testing.T) {
+	if !HasSelector(realResumePicker) {
+		t.Error("resume-from-summary picker must be recognized as a dismissable selector")
+	}
+}
+
+func TestHasSelector_QuotedPickerInScrollbackRejected(t *testing.T) {
+	// Picker text verbatim near the top, then plenty of newer chat content
+	// pushes it well past the recent-window threshold.
+	padding := strings.Repeat("more chat output\n", recentWindow/16)
+	content := realSelector + "\n\n" + padding
+	if HasSelector(content) {
+		t.Error("picker quoted in deep scrollback must not be flagged as live")
+	}
+}
+
+func TestHasSelector_PhraseWithoutOptionLineRejected(t *testing.T) {
+	// Just the phrase mentioned in prose — no "❯ 1." option line.
+	s := "Earlier I saw the prompt that says 'Stop and wait for limit to reset' and dismissed it."
+	if HasSelector(s) {
+		t.Error("phrase-only mention must not be flagged without the option-line structure")
 	}
 }
 

@@ -100,9 +100,16 @@ var bannerPatterns = []*regexp.Regexp{
 
 var timeRE = regexp.MustCompile(`^(\d{1,2})(?::(\d{2}))?(am|pm)$`)
 
-// Selector shown by Claude's /rate-limit-options or mid-call when a tool
-// hits the limit. Dismissed by sending Escape.
-var selectorRE = regexp.MustCompile(`(?i)(?:What do you want to do\?|Stop and wait for limit to reset)`)
+// Known Claude TUI picker phrases. Recognised pickers we'll dismiss with
+// Escape:
+//   - "What do you want to do?" / "Stop and wait …" — /rate-limit-options
+//   - "Resume from summary" / "Resume the full session" — old-session resume
+var selectorRE = regexp.MustCompile(`(?i)(?:What do you want to do\?|Stop and wait for limit to reset|Resume from summary|Resume the full session)`)
+
+// A "❯ <digit>." line — the highlighted option marker. Distinctive: the
+// regular input prompt is "❯ " with no number after, so this only matches
+// inside an actual picker overlay (or its verbatim quote).
+var pickerOptionRE = regexp.MustCompile(`(?m)^\s*❯\s+\d+\.\s`)
 
 // Detect returns the parsed banner if `content` shows a blocked Claude
 // session. Returns nil if no banner, the session is still proceeding via
@@ -165,8 +172,70 @@ func hasToolPrefix(content string, matchStart int) bool {
 	return false
 }
 
+// HasSelector reports whether a real Claude picker overlay is visible.
+// Requires (1) a recognised picker phrase, (2) appearing in the recent
+// portion of the pane capture (i.e. visible right now, not buried in
+// scrollback), and (3) accompanied by a "❯ <digit>." option line. All
+// three together filter out chat quotations of picker text.
 func HasSelector(content string) bool {
-	return selectorRE.MatchString(content)
+	matches := selectorRE.FindAllStringIndex(content, -1)
+	if len(matches) == 0 {
+		return false
+	}
+	// Use the most recent occurrence.
+	last := matches[len(matches)-1]
+	if last[0] < len(content)-recentWindow {
+		return false
+	}
+	// And there must be a ❯ <digit>. option line within ~500 chars.
+	near := last[1] + 500
+	if near > len(content) {
+		near = len(content)
+	}
+	// Scan from start-of-line preceding the phrase too (option list may
+	// appear just before the phrase header in some layouts).
+	scanStart := last[0] - 200
+	if scanStart < 0 {
+		scanStart = 0
+	}
+	return pickerOptionRE.MatchString(content[scanStart:near])
+}
+
+// PaneState summarises what the daemon currently sees for one pane.
+type PaneState struct {
+	Pane     tmux.Pane
+	Banner   *Banner // non-nil if a usage-limit banner is visible
+	Selector bool    // a dismissable interactive picker is visible
+}
+
+// Label returns a short human-readable status word for the pane.
+func (s PaneState) Label() string {
+	switch {
+	case s.Banner != nil && s.Selector:
+		return "banner + selector"
+	case s.Banner != nil:
+		return "banner"
+	case s.Selector:
+		return "selector"
+	default:
+		return "idle"
+	}
+}
+
+// ScanPanes captures every pane and classifies each. Used by status output.
+func ScanPanes(captureLines int) []PaneState {
+	panes := tmux.ListPanes()
+	now := time.Now()
+	out := make([]PaneState, 0, len(panes))
+	for _, p := range panes {
+		content := tmux.CapturePane(p.ID, captureLines)
+		out = append(out, PaneState{
+			Pane:     p,
+			Banner:   Detect(content, now),
+			Selector: HasSelector(content),
+		})
+	}
+	return out
 }
 
 // parseReset interprets banner date/time strings. Returns:
@@ -257,15 +326,15 @@ func SaveState(path string, state State) error {
 	return os.Rename(tmp, path)
 }
 
-// Action describes what the daemon decided to do for one pane this tick.
-// Pure function — Decide has no side effects so it's directly testable.
+// Action describes the per-banner decision in one tick. Selector
+// dismissal is handled separately in Tick — it's a side-channel concern,
+// independent of banner state.
 type Action int
 
 const (
-	ActNone    Action = iota // no banner present
-	ActResume                // banner visible, no selector → send "continue"
-	ActDismiss               // banner + selector visible → send Escape then "continue"
-	ActWait                  // banner visible but scheduled retry is in the future
+	ActNone   Action = iota // no banner present
+	ActResume               // banner visible, retry due → send "continue"
+	ActWait                 // banner visible but scheduled retry is in the future
 )
 
 func Decide(content string, prev Tracked, now time.Time) Action {
@@ -274,9 +343,6 @@ func Decide(content string, prev Tracked, now time.Time) Action {
 	}
 	if !prev.NextAttempt.IsZero() && now.Before(prev.NextAttempt) {
 		return ActWait
-	}
-	if HasSelector(content) {
-		return ActDismiss
 	}
 	return ActResume
 }
@@ -319,6 +385,21 @@ func Tick(cfg Config, state State, now time.Time) {
 
 	for _, p := range panes {
 		content := tmux.CapturePane(p.ID, cfg.Capture)
+
+		// 1) Dismiss any known Claude interactive picker. Independent of
+		//    banner state — a stuck prompt is itself something to resolve.
+		//    Esc is idempotent; if already gone next tick, nothing happens.
+		if HasSelector(content) {
+			slog.Info("dismiss selector", "session", p.Session, "pane", p.ID)
+			if err := tmux.SendKey(p.ID, "Escape"); err != nil {
+				slog.Error("send Escape failed", "session", p.Session, "err", err)
+			} else {
+				time.Sleep(cfg.DismissGap)
+				content = tmux.CapturePane(p.ID, cfg.Capture) // re-read post-dismiss
+			}
+		}
+
+		// 2) Handle banner (now visible if it was hidden behind the picker).
 		b := Detect(content, now)
 		if b == nil {
 			if t, ok := state[p.ID]; ok {
@@ -338,20 +419,6 @@ func Tick(cfg Config, state State, now time.Time) {
 			prev.Banner = b.Text
 			prev.Reset = b.Reset
 			state[p.ID] = prev
-		case ActDismiss:
-			slog.Info("dismiss + resume",
-				"session", p.Session, "pane", p.ID,
-				"attempt", prev.Attempts+1, "banner", b.Text)
-			if err := tmux.SendKey(p.ID, "Escape"); err != nil {
-				slog.Error("send Escape failed", "session", p.Session, "err", err)
-				continue
-			}
-			time.Sleep(cfg.DismissGap)
-			if err := tmux.SendKeys(p.ID, cfg.ResumeText); err != nil {
-				slog.Error("send-keys failed", "session", p.Session, "err", err)
-				continue
-			}
-			state[p.ID] = recordAction(prev, p, b, now, cfg)
 		case ActResume:
 			slog.Info("resume",
 				"session", p.Session, "pane", p.ID,

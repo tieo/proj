@@ -16,7 +16,6 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/tieo/proj/internal/config"
-	"github.com/tieo/proj/internal/tmux"
 	"github.com/tieo/proj/internal/unreset"
 )
 
@@ -223,17 +222,34 @@ func runUnresetStatus(cmd *cobra.Command, args []string) error {
 		fmt.Println("     Loaded: (manage via `launchctl print gui/$UID/com.proj.unreset`)")
 	}
 
-	panes := tmux.ListPanes()
-	fmt.Printf("   Watching: %d tmux pane(s)\n", len(panes))
-	fmt.Printf("    Tracked: %d session(s)\n", len(state))
+	scan := unreset.ScanPanes(cfg.Capture)
 	fmt.Printf("     Config: poll=%s  max_wait=%s  jitter=%s  resume=%q\n",
 		formatDur(cfg.Poll), formatDur(cfg.MaxWait), formatDur(cfg.Jitter), cfg.ResumeText)
 	fmt.Printf("      State: %s\n", cfg.StatePath)
 
+	fmt.Println()
+	fmt.Printf("  Watching %d session(s):\n", len(scan))
+	for _, s := range scan {
+		marker, color := "○", "\033[90m"
+		switch s.Label() {
+		case "banner", "banner + selector":
+			marker, color = "●", "\033[31m"
+		case "selector":
+			marker, color = "●", "\033[33m"
+		}
+		fmt.Printf("    %s%s\033[0m %-22s %s\n", color, marker, s.Pane.Session, s.Label())
+	}
+
+	deferredCount := 0
+	now := time.Now()
+	for _, t := range state {
+		if !t.NextAttempt.IsZero() && t.NextAttempt.After(now) {
+			deferredCount++
+		}
+	}
 	if len(state) > 0 {
-		now := time.Now()
 		fmt.Println()
-		fmt.Println("  Sessions:")
+		fmt.Printf("  Tracked: %d (deferred: %d)\n", len(state), deferredCount)
 		for _, t := range state {
 			deferred := !t.NextAttempt.IsZero() && t.NextAttempt.After(now)
 			marker := "\033[32m●\033[0m"
