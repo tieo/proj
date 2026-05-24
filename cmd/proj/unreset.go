@@ -230,7 +230,7 @@ func runUnresetStatus(cmd *cobra.Command, args []string) error {
 	fmt.Println()
 	fmt.Printf("  Watching %d session(s):\n", len(scan))
 	for _, s := range scan {
-		marker, color, label := "○", "\033[90m", "—"
+		marker, color, label := "○", "\033[90m", "ok"
 		switch s.Label() {
 		case "banner", "banner + selector":
 			marker, color, label = "●", "\033[31m", s.Label()
