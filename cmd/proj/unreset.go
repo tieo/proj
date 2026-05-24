@@ -227,44 +227,44 @@ func runUnresetStatus(cmd *cobra.Command, args []string) error {
 		formatDur(cfg.Poll), formatDur(cfg.MaxWait), formatDur(cfg.Jitter), cfg.ResumeText)
 	fmt.Printf("      State: %s\n", cfg.StatePath)
 
-	now := time.Now()
 	fmt.Println()
 	fmt.Printf("  Watching %d session(s):\n", len(scan))
 	for _, s := range scan {
-		marker, color, action := "○", "\033[90m", "—"
-		switch {
-		case s.Banner != nil && s.Selector:
-			marker, color, action = "●", "\033[31m", "dismiss + resume"
-		case s.Banner != nil:
-			if t, ok := state[s.Pane.ID]; ok && t.NextAttempt.After(now) {
-				marker, color = "●", "\033[33m"
-				action = fmt.Sprintf("deferred %s", formatAgo(time.Until(t.NextAttempt)))
-			} else {
-				marker, color, action = "●", "\033[31m", "resume next tick"
-			}
-		case s.Selector:
-			marker, color, action = "●", "\033[33m", "dismiss prompt"
+		marker, color, label := "○", "\033[90m", "—"
+		switch s.Label() {
+		case "banner", "banner + selector":
+			marker, color, label = "●", "\033[31m", s.Label()
+		case "selector":
+			marker, color, label = "●", "\033[33m", s.Label()
 		}
-		fmt.Printf("    %s%s\033[0m %-22s %s\n", color, marker, s.Pane.Session, action)
+		fmt.Printf("    %s%s\033[0m %-22s %s\n", color, marker, s.Pane.Session, label)
 	}
 
+	now := time.Now()
+	deferredCount := 0
+	for _, t := range state {
+		if !t.NextAttempt.IsZero() && t.NextAttempt.After(now) {
+			deferredCount++
+		}
+	}
 	if len(state) > 0 {
 		fmt.Println()
-		fmt.Println("  Tracked sessions (history):")
+		fmt.Printf("  Tracked: %d (deferred: %d)\n", len(state), deferredCount)
 		for _, t := range state {
-			fmt.Printf("    %s [pane %s]\n", t.Session, t.Pane)
+			deferred := !t.NextAttempt.IsZero() && t.NextAttempt.After(now)
+			marker := "\033[32m●\033[0m"
+			status := "due next tick"
+			if deferred {
+				marker = "\033[33m●\033[0m"
+				status = fmt.Sprintf("deferred until %s (in %s)",
+					t.NextAttempt.Format("Mon 15:04:05 MST"),
+					formatAgo(time.Until(t.NextAttempt)))
+			}
+			fmt.Printf("    %s %s [pane %s]\n", marker, t.Session, t.Pane)
 			fmt.Printf("        banner:   %s\n", t.Banner)
 			fmt.Printf("        seen for: %s · %d attempt(s)\n",
 				formatAgo(now.Sub(t.FirstSeen)), t.Attempts)
-			if !t.NextAttempt.IsZero() {
-				if t.NextAttempt.After(now) {
-					fmt.Printf("        next:     %s (in %s)\n",
-						t.NextAttempt.Format("Mon 15:04:05 MST"),
-						formatAgo(time.Until(t.NextAttempt)))
-				} else {
-					fmt.Printf("        next:     due (next tick)\n")
-				}
-			}
+			fmt.Printf("        next:     %s\n", status)
 		}
 	}
 
