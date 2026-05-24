@@ -46,6 +46,30 @@ if (( UNINSTALL )); then
     exit 0
 fi
 
+# Guard: refuse to install if proj is already managed by something else
+# (typically home-manager on NixOS). Otherwise we'd clobber its files and
+# break the next `nixos-rebuild switch`.
+existing=$(command -v proj 2>/dev/null || true)
+if [[ -n "$existing" ]]; then
+    resolved=$(readlink -f "$existing")
+    case "$resolved" in
+        /nix/store/*)
+            echo "proj is already installed via nix at: $resolved"
+            echo "use that instead — this installer is for non-nix systems."
+            echo "to uninstall the nix one, remove it from your home-manager config."
+            exit 0
+            ;;
+    esac
+fi
+
+# Also guard the service-unit file: home-manager symlinks it into the
+# nix store. We refuse to overwrite that symlink.
+unit_path="$HOME/.config/systemd/user/proj-unreset.service"
+if [[ -L "$unit_path" && "$(readlink "$unit_path")" == /nix/store/* ]]; then
+    echo "$unit_path is managed by nix (home-manager); refusing to overwrite."
+    exit 0
+fi
+
 if ! command -v go >/dev/null; then
     echo "error: 'go' not found in PATH" >&2
     echo "  on NixOS: nix-shell -p go --run './install.sh' (or 'nix develop')" >&2
