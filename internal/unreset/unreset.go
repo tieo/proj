@@ -113,17 +113,23 @@ var selectorRE = regexp.MustCompile(`(?i)(?:What do you want to do\?|Stop and wa
 // inside an actual picker overlay (or its verbatim quote).
 var pickerOptionRE = regexp.MustCompile(`(?m)^\s*❯\s+\d+\.\s`)
 
+// sp matches any mix of regular spaces and the non-breaking spaces (U+00A0)
+// that Claude Code's TUI uses for padding between its ⎿/❯ markers and text.
+// Go's \s covers only ASCII whitespace, so NBSP must be included explicitly.
+const sp = `[\s\x{00a0}]`
+
 // apiErrorRE matches Claude Code's API error output line.
 // The ⎿ prefix is Claude Code's tool-output continuation marker; it only
 // appears in rendered TUI output, not in Claude's text or user-typed input.
 // This distinguishes a real API failure from prose or code mentioning one.
-var apiErrorRE = regexp.MustCompile(`⎿\s+API Error:\s+(\d{3})\s+(\{[^\n]+\})`)
+var apiErrorRE = regexp.MustCompile(`⎿` + sp + `+API Error:` + sp + `*(\d{3})` + sp + `+(\{[^\n]+\})`)
 
 // inputPromptRE matches the Claude Code input prompt: ❯ alone on a line.
 // A picker option has a digit+period after the space (e.g. "❯  1. Stop"),
 // so it cannot match. The check is anchored to start-of-line ((?m)^),
 // which also rejects indented picker entries that lead with whitespace.
-var inputPromptRE = regexp.MustCompile(`(?m)^❯\s*$`)
+// Uses sp to cover non-breaking spaces Claude Code uses for trailing padding.
+var inputPromptRE = regexp.MustCompile(`(?m)^❯` + sp + `*$`)
 
 // APIError holds the data extracted from a Claude Code API error line.
 type APIError struct {
@@ -150,24 +156,21 @@ type ErrorState map[string]ErrorTracked
 // DetectAPIError returns a non-nil *APIError if `content` shows a Claude Code
 // session that is stuck at the input prompt after a permanent API error.
 //
-// Two structural guards make this robust:
+// Two structural guards make this robust without needing a recency window:
 //  1. The ⎿ prefix on the error line distinguishes TUI-rendered tool output
 //     from Claude's text, user input, or code blocks that mention API errors.
 //  2. The input-prompt regex (❯ alone on a line) confirms Claude returned
 //     control to the user; it rejects panes with active tool calls or pickers.
+//
+// No byte-offset threshold is applied because the wide box-drawing characters
+// used by Claude Code's TUI inflate content size unpredictably, and the two
+// structural guards alone are strong enough to prevent false positives.
 func DetectAPIError(content string) *APIError {
-	threshold := len(content) - recentWindow
-	if threshold < 0 {
-		threshold = 0
-	}
 	matches := apiErrorRE.FindAllStringSubmatchIndex(content, -1)
 	if len(matches) == 0 {
 		return nil
 	}
 	m := matches[len(matches)-1] // most recent occurrence
-	if m[0] < threshold {
-		return nil
-	}
 	// Require the input prompt to be visible — the session must be idle, not
 	// actively running tools (which would suppress the lone ❯ line).
 	if !inputPromptRE.MatchString(content) {
