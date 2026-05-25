@@ -538,6 +538,14 @@ func Tick(cfg Config, state State, errorState ErrorState, now time.Time) {
 				prev.LastSeen = now
 				errorState[p.ID] = prev
 			default:
+				if prev.Acted {
+					// /compact was sent but the error is still visible — the
+					// compact itself may have failed (e.g. broken image in
+					// history). Warn every poll so the user knows to intervene.
+					slog.Warn("compact sent but error persists — manual intervention needed",
+						"session", p.Session, "pane", p.ID,
+						"stuck_for", now.Sub(prev.FirstSeen).Round(time.Second))
+				}
 				prev.LastSeen = now
 				errorState[p.ID] = prev
 			}
