@@ -427,7 +427,10 @@ func Tick(cfg Config, state State, now time.Time) {
 				slog.Error("send-keys failed", "session", p.Session, "err", err)
 				continue
 			}
-			state[p.ID] = recordAction(prev, p, b, now, cfg)
+			t := recordAction(prev, p, b, now, cfg)
+			state[p.ID] = t
+			slog.Info("deferred", "session", p.Session,
+				"next", t.NextAttempt.Format("Mon 15:04 MST"))
 		}
 	}
 }
@@ -461,6 +464,11 @@ func Run(ctx context.Context, cfg Config) error {
 	}
 	ticker := time.NewTicker(cfg.Poll)
 	defer ticker.Stop()
+	heartbeatEvery := int(30 * time.Minute / cfg.Poll)
+	if heartbeatEvery < 1 {
+		heartbeatEvery = 1
+	}
+	tick := 0
 	for {
 		func() {
 			defer func() {
@@ -473,6 +481,10 @@ func Run(ctx context.Context, cfg Config) error {
 				slog.Error("save state failed", "err", err)
 			}
 		}()
+		tick++
+		if tick%heartbeatEvery == 0 {
+			slog.Info("heartbeat", "tick", tick, "tracked", len(state))
+		}
 		select {
 		case <-ctx.Done():
 			return nil
