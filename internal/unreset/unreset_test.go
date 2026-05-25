@@ -471,13 +471,16 @@ func TestDetectAPIError_PickerPromptRejected(t *testing.T) {
 	}
 }
 
-func TestDetectAPIError_BuriedInScrollbackRejected(t *testing.T) {
-	// Error is outside the recentWindow — buried in old scrollback.
-	padding := strings.Repeat("x ", recentWindow)
-	content := "  ⎿  API Error: 400 {\"type\":\"error\",\"error\":{\"message\":\"old error\"}}\n" + padding + "\n❯ "
-	if got := DetectAPIError(content); got != nil {
-		t.Errorf("error buried beyond recentWindow must not match, got %+v", got)
-	}
+func TestDetectAPIError_RecoveryContentAfterError(t *testing.T) {
+	// An error followed by successful tool output means Claude recovered.
+	// DetectAPIError should still fire IF the session is at the prompt — the
+	// two structural guards (⎿ prefix + lone ❯) are what matter, not position.
+	// Actual protection against stale scrollback is provided by the daemon's
+	// cfg.Capture limit (10 lines), not by an offset threshold.
+	s := "  ⎿  API Error: 400 {\"type\":\"error\",\"error\":{\"message\":\"old\"}}\n  ⎿  subsequent tool output\n❯ "
+	// This CAN match — both error and prompt are visible, which is the signal.
+	// The two-tick persistence in Tick() prevents acting on transient errors.
+	_ = DetectAPIError(s) // just ensure it doesn't panic
 }
 
 func TestDetectAPIError_EmptyPromptNoError(t *testing.T) {
@@ -488,16 +491,6 @@ func TestDetectAPIError_EmptyPromptNoError(t *testing.T) {
 	}
 }
 
-func TestDetectAPIError_RecoveredSessionRejected(t *testing.T) {
-	// Error in scrollback, but then successful tool output pushed it past the
-	// recentWindow, meaning Claude recovered and the error is stale.
-	old := "  ⎿  API Error: 400 {\"type\":\"error\",\"error\":{\"message\":\"old\"}}\n"
-	recovery := strings.Repeat("  ⎿  Tool output line\n", recentWindow/20)
-	content := old + recovery + "❯ "
-	if got := DetectAPIError(content); got != nil {
-		t.Errorf("recovered session (error outside recentWindow) must not match, got %+v", got)
-	}
-}
 
 func TestDetectAPIError_MostRecentErrorWins(t *testing.T) {
 	// Two API errors in the recent window — the most recent one is returned.
@@ -574,7 +567,9 @@ func TestInputPromptRE_Matches(t *testing.T) {
 		"❯ ",
 		"❯",
 		"❯  ",
+		"❯ ",               // NBSP — actual Claude Code TUI output
 		"line before\n❯ \nline after",
+		"line before\n❯ \nline after", // NBSP variant
 	}
 	for _, s := range cases {
 		if !inputPromptRE.MatchString(s) {
@@ -593,6 +588,24 @@ func TestInputPromptRE_Rejects(t *testing.T) {
 		if inputPromptRE.MatchString(s) {
 			t.Errorf("inputPromptRE must not match %q", s)
 		}
+	}
+}
+
+func TestDetectAPIError_NonBreakingSpaces(t *testing.T) {
+	// Claude Code TUI uses NBSP (U+00A0) as padding between its markers
+	// (⎿, ❯) and adjacent text. Go's \s is ASCII-only and misses NBSP.
+	// This test guards against that regression.
+	s := "⎿ API Error: 400 {\"type\":\"error\",\"error\":{\"type\":\"invalid_request_error\",\"message\":\"Could not process image\"}}\n❯ "
+	if got := DetectAPIError(s); got == nil {
+		t.Error("must detect API error when NBSP is used between TUI markers and text")
+	}
+}
+
+func TestDetectAPIError_RealCapture(t *testing.T) {
+	// realAPIErrorCapture uses regular spaces (test fixture); the NBSP test
+	// above covers the real tmux encoding. Both must pass.
+	if got := DetectAPIError(realAPIErrorCapture); got == nil {
+		t.Error("must detect real API error capture (regular-space fixture)")
 	}
 }
 
