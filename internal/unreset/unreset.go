@@ -63,7 +63,7 @@ func DefaultConfig() Config {
 		Jitter:     time.Second,   // reset times are accurate to the minute; 1s grace is enough
 		DismissGap: 300 * time.Millisecond,
 		ResumeText: "continue",
-		Capture:    0,
+		Capture:    10,
 		StatePath:  defaultStatePath(),
 	}
 }
