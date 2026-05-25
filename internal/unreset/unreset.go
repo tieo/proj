@@ -559,11 +559,20 @@ func Tick(cfg Config, state State, errorState ErrorState, now time.Time) {
 					} else {
 						clearOK = true
 						slog.Info("cleared", "session", p.Session, "pane", p.ID)
-						// Give Claude Code a moment to process /clear and redraw.
-						time.Sleep(time.Second)
+						// Wait for Claude Code to finish processing /clear and
+						// redraw to the idle prompt. Then send the recovery message
+						// in literal mode (no key-name expansion) followed by a
+						// separate Enter — this guarantees Enter only arrives after
+						// all the message text has landed in the input buffer.
+						time.Sleep(2 * time.Second)
 						msg := clearRecoveryMessage(apiErr, memPath)
-						if err := tmux.SendKeys(p.ID, msg); err != nil {
+						if err := tmux.SendLiteral(p.ID, msg); err != nil {
 							slog.Error("send recovery message failed", "session", p.Session, "err", err)
+						} else {
+							time.Sleep(100 * time.Millisecond)
+							if err := tmux.SendKey(p.ID, "Enter"); err != nil {
+								slog.Error("send Enter failed", "session", p.Session, "err", err)
+							}
 						}
 					}
 				}
