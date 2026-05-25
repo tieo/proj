@@ -88,6 +88,14 @@ func SendKeys(target, cmd string) error {
 	return err
 }
 
+// SendLiteral sends `text` to `target` in literal mode (no Enter, no key
+// name expansion). Use for long messages where a trailing Enter must arrive
+// only after the target has had time to process all buffered input.
+func SendLiteral(target, text string) error {
+	_, err := shellout.RunErr("tmux", "send-keys", "-t", target, "-l", text)
+	return err
+}
+
 // SendKey sends a single named tmux key (e.g. "Escape", "Up") with no Enter.
 func SendKey(target, key string) error {
 	_, err := shellout.RunErr("tmux", "send-keys", "-t", target, key)
