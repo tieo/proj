@@ -47,24 +47,26 @@ type Tracked struct {
 type State map[string]Tracked
 
 type Config struct {
-	Poll       time.Duration
-	MaxWait    time.Duration // upper bound on how long we'll wait between retries
-	Jitter     time.Duration // added to the scheduled retry time
-	DismissGap time.Duration // pause between Escape and "continue"
-	ResumeText string
-	Capture    int
-	StatePath  string
+	Poll        time.Duration
+	MaxWait     time.Duration // upper bound on how long we'll wait between retries
+	Jitter      time.Duration // added to the scheduled retry time
+	DismissGap  time.Duration // pause between Escape and "continue"
+	ResumeText  string
+	CompactText string // slash command to compact a stuck session
+	Capture     int
+	StatePath   string
 }
 
 func DefaultConfig() Config {
 	return Config{
-		Poll:       60 * time.Second,
-		MaxWait:    5 * time.Hour, // ≥ any single Claude usage window
-		Jitter:     time.Second,   // reset times are accurate to the minute; 1s grace is enough
-		DismissGap: 300 * time.Millisecond,
-		ResumeText: "continue",
-		Capture:    10,
-		StatePath:  defaultStatePath(),
+		Poll:        60 * time.Second,
+		MaxWait:     5 * time.Hour, // ≥ any single Claude usage window
+		Jitter:      time.Second,   // reset times are accurate to the minute; 1s grace is enough
+		DismissGap:  300 * time.Millisecond,
+		ResumeText:  "continue",
+		CompactText: "/compact",
+		Capture:     10,
+		StatePath:   defaultStatePath(),
 	}
 }
 
@@ -110,6 +112,95 @@ var selectorRE = regexp.MustCompile(`(?i)(?:What do you want to do\?|Stop and wa
 // regular input prompt is "❯ " with no number after, so this only matches
 // inside an actual picker overlay (or its verbatim quote).
 var pickerOptionRE = regexp.MustCompile(`(?m)^\s*❯\s+\d+\.\s`)
+
+// apiErrorRE matches Claude Code's API error output line.
+// The ⎿ prefix is Claude Code's tool-output continuation marker; it only
+// appears in rendered TUI output, not in Claude's text or user-typed input.
+// This distinguishes a real API failure from prose or code mentioning one.
+var apiErrorRE = regexp.MustCompile(`⎿\s+API Error:\s+(\d{3})\s+(\{[^\n]+\})`)
+
+// inputPromptRE matches the Claude Code input prompt: ❯ alone on a line.
+// A picker option has a digit+period after the space (e.g. "❯  1. Stop"),
+// so it cannot match. The check is anchored to start-of-line ((?m)^),
+// which also rejects indented picker entries that lead with whitespace.
+var inputPromptRE = regexp.MustCompile(`(?m)^❯\s*$`)
+
+// APIError holds the data extracted from a Claude Code API error line.
+type APIError struct {
+	StatusCode int
+	Message    string // "Could not process image"
+	RequestID  string // "req_011Cb..."
+	Text       string // raw line, truncated to 200 bytes
+}
+
+// ErrorTracked holds the in-memory tracking state for a pane stuck after an
+// API error. Not persisted — re-detection takes at most two poll cycles.
+type ErrorTracked struct {
+	Session   string
+	Pane      string
+	Text      string
+	FirstSeen time.Time
+	LastSeen  time.Time
+	Acted     bool // true after /compact has been sent
+}
+
+// ErrorState maps pane IDs to their current error tracking entry.
+type ErrorState map[string]ErrorTracked
+
+// DetectAPIError returns a non-nil *APIError if `content` shows a Claude Code
+// session that is stuck at the input prompt after a permanent API error.
+//
+// Two structural guards make this robust:
+//  1. The ⎿ prefix on the error line distinguishes TUI-rendered tool output
+//     from Claude's text, user input, or code blocks that mention API errors.
+//  2. The input-prompt regex (❯ alone on a line) confirms Claude returned
+//     control to the user; it rejects panes with active tool calls or pickers.
+func DetectAPIError(content string) *APIError {
+	threshold := len(content) - recentWindow
+	if threshold < 0 {
+		threshold = 0
+	}
+	matches := apiErrorRE.FindAllStringSubmatchIndex(content, -1)
+	if len(matches) == 0 {
+		return nil
+	}
+	m := matches[len(matches)-1] // most recent occurrence
+	if m[0] < threshold {
+		return nil
+	}
+	// Require the input prompt to be visible — the session must be idle, not
+	// actively running tools (which would suppress the lone ❯ line).
+	if !inputPromptRE.MatchString(content) {
+		return nil
+	}
+	statusCode, _ := strconv.Atoi(content[m[2]:m[3]])
+	jsonStr := content[m[4]:m[5]]
+	var payload struct {
+		Error     struct{ Message string `json:"message"` } `json:"error"`
+		RequestID string                                    `json:"request_id"`
+	}
+	_ = json.Unmarshal([]byte(jsonStr), &payload)
+	text := strings.TrimSpace(content[m[0]:m[1]])
+	if len(text) > 200 {
+		text = text[:200]
+	}
+	return &APIError{
+		StatusCode: statusCode,
+		Message:    payload.Error.Message,
+		RequestID:  payload.RequestID,
+		Text:       text,
+	}
+}
+
+// DecideCompact reports whether the daemon should send /compact now.
+// It requires the error to have been continuously visible for at least minAge
+// (one full poll cycle) to filter transient errors Claude Code auto-recovers from.
+func DecideCompact(apiErr *APIError, prev ErrorTracked, now time.Time, minAge time.Duration) bool {
+	if apiErr == nil || prev.FirstSeen.IsZero() || prev.Acted {
+		return false
+	}
+	return now.Sub(prev.FirstSeen) >= minAge
+}
 
 // Detect returns the parsed banner if `content` shows a blocked Claude
 // session. Returns nil if no banner, the session is still proceeding via
@@ -204,13 +295,16 @@ func HasSelector(content string) bool {
 // PaneState summarises what the daemon currently sees for one pane.
 type PaneState struct {
 	Pane     tmux.Pane
-	Banner   *Banner // non-nil if a usage-limit banner is visible
-	Selector bool    // a dismissable interactive picker is visible
+	Banner   *Banner   // non-nil if a usage-limit banner is visible
+	Selector bool      // a dismissable interactive picker is visible
+	APIError *APIError // non-nil if stuck after a permanent API error
 }
 
 // Label returns a short human-readable status word for the pane.
 func (s PaneState) Label() string {
 	switch {
+	case s.APIError != nil:
+		return "error"
 	case s.Banner != nil && s.Selector:
 		return "banner + selector"
 	case s.Banner != nil:
@@ -233,6 +327,7 @@ func ScanPanes(captureLines int) []PaneState {
 			Pane:     p,
 			Banner:   Detect(content, now),
 			Selector: HasSelector(content),
+			APIError: DetectAPIError(content),
 		})
 	}
 	return out
@@ -370,7 +465,7 @@ func nextAttemptAfter(b *Banner, now time.Time, cfg Config) time.Time {
 	return next
 }
 
-func Tick(cfg Config, state State, now time.Time) {
+func Tick(cfg Config, state State, errorState ErrorState, now time.Time) {
 	panes := tmux.ListPanes()
 	live := make(map[string]string, len(panes))
 	for _, p := range panes {
@@ -380,6 +475,12 @@ func Tick(cfg Config, state State, now time.Time) {
 		if _, ok := live[id]; !ok {
 			slog.Info("drop tracked", "session", t.Session, "reason", "pane gone")
 			delete(state, id)
+		}
+	}
+	for id, t := range errorState {
+		if _, ok := live[id]; !ok {
+			slog.Info("drop error tracked", "session", t.Session, "reason", "pane gone")
+			delete(errorState, id)
 		}
 	}
 
@@ -399,7 +500,54 @@ func Tick(cfg Config, state State, now time.Time) {
 			}
 		}
 
-		// 2) Handle banner (now visible if it was hidden behind the picker).
+		// 2) Handle a session stuck after a permanent API error.
+		//    Two-tick confirmation (detect → wait one poll → act) filters out
+		//    transient errors Claude Code auto-recovers from.
+		apiErr := DetectAPIError(content)
+		if apiErr != nil {
+			prev := errorState[p.ID]
+			switch {
+			case prev.FirstSeen.IsZero():
+				// First sighting — record, wait for next tick to confirm.
+				errorState[p.ID] = ErrorTracked{
+					Session: p.Session, Pane: p.ID, Text: apiErr.Text,
+					FirstSeen: now, LastSeen: now,
+				}
+				slog.Info("api error detected",
+					"session", p.Session, "pane", p.ID,
+					"status", apiErr.StatusCode, "msg", apiErr.Message)
+			case DecideCompact(apiErr, prev, now, cfg.Poll):
+				// Error persisted for a full poll cycle → send /compact.
+				slog.Info("compact",
+					"session", p.Session, "pane", p.ID,
+					"error", apiErr.Message,
+					"stuck_for", now.Sub(prev.FirstSeen).Round(time.Second))
+				if err := tmux.SendKey(p.ID, "Escape"); err != nil {
+					slog.Error("send Escape failed", "session", p.Session, "err", err)
+				} else {
+					time.Sleep(cfg.DismissGap)
+					if err := tmux.SendKeys(p.ID, cfg.CompactText); err != nil {
+						slog.Error("send compact failed", "session", p.Session, "err", err)
+					} else {
+						prev.Acted = true
+					}
+				}
+				prev.LastSeen = now
+				errorState[p.ID] = prev
+			default:
+				prev.LastSeen = now
+				errorState[p.ID] = prev
+			}
+			continue // skip banner check while error is present
+		}
+		if prev, ok := errorState[p.ID]; ok {
+			if prev.Acted {
+				slog.Info("compact succeeded", "session", p.Session, "pane", p.ID)
+			}
+			delete(errorState, p.ID)
+		}
+
+		// 3) Handle usage-limit banner (now visible if it was hidden behind the picker).
 		b := Detect(content, now)
 		if b == nil {
 			if t, ok := state[p.ID]; ok {
@@ -473,6 +621,7 @@ func Run(ctx context.Context, cfg Config) error {
 	if heartbeatEvery < 1 {
 		heartbeatEvery = 1
 	}
+	errorState := make(ErrorState)
 	tick := 0
 	for {
 		func() {
@@ -481,7 +630,7 @@ func Run(ctx context.Context, cfg Config) error {
 					slog.Error("tick panicked", "panic", r)
 				}
 			}()
-			Tick(cfg, state, time.Now())
+			Tick(cfg, state, errorState, time.Now())
 			if err := SaveState(cfg.StatePath, state); err != nil {
 				slog.Error("save state failed", "err", err)
 			}

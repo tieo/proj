@@ -400,6 +400,202 @@ func TestHasToolPrefix(t *testing.T) {
 	}
 }
 
+// ---------- DetectAPIError ----------
+
+// Real tmux capture from a Claude Code session that hit a 400 "Could not
+// process image" error (the PNG at /tmp/screen_now.png was 22 bytes / corrupt).
+// The ❯ at the end shows Claude returned control to the input prompt.
+const realAPIErrorCapture = `  ⎿  Read ../../../../../../tmp/screen_now.png (22 bytes)
+  ⎿  API Error: 400 {"type":"error","error":{"type":"invalid_request_error","message":"Could not process image"},"request_id":"req_011CbPrGcwvFBwN2wXSA8gfu"}
+
+✻ Cogitated for 3h 2m 39s · 3 shells still running
+
+  3 tasks (1 done, 1 in progress, 1 open)
+  ◼ Test _handle_icloud_password_prompt fix on live VM
+
+──── nix-airtag-tracker ────
+❯ `
+
+func TestDetectAPIError_Real(t *testing.T) {
+	got := DetectAPIError(realAPIErrorCapture)
+	if got == nil {
+		t.Fatal("expected non-nil for real API error capture")
+	}
+	if got.StatusCode != 400 {
+		t.Errorf("StatusCode = %d, want 400", got.StatusCode)
+	}
+	if got.Message != "Could not process image" {
+		t.Errorf("Message = %q, want %q", got.Message, "Could not process image")
+	}
+	if got.RequestID != "req_011CbPrGcwvFBwN2wXSA8gfu" {
+		t.Errorf("RequestID = %q", got.RequestID)
+	}
+}
+
+func TestDetectAPIError_DifferentStatus(t *testing.T) {
+	// 500-range errors should also be detected; it's the structural markers
+	// (⎿ prefix + input prompt) that matter, not the specific HTTP code.
+	s := "  ⎿  API Error: 500 {\"type\":\"error\",\"error\":{\"type\":\"api_error\",\"message\":\"Internal server error\"}}\n❯ "
+	got := DetectAPIError(s)
+	if got == nil {
+		t.Fatal("expected detection for 500 error")
+	}
+	if got.StatusCode != 500 {
+		t.Errorf("StatusCode = %d, want 500", got.StatusCode)
+	}
+}
+
+// --- false-positive rejection ---
+
+func TestDetectAPIError_NoPrefixRejected(t *testing.T) {
+	// Claude talking about an API error in prose — no ⎿ prefix.
+	s := "I received an API Error: 400 {\"type\":\"error\",\"error\":{\"message\":\"Could not process image\"}}\n❯ "
+	if got := DetectAPIError(s); got != nil {
+		t.Errorf("prose mention without ⎿ must not match, got %+v", got)
+	}
+}
+
+func TestDetectAPIError_NoInputPromptRejected(t *testing.T) {
+	// Error line present but session is still running (no lone ❯ line).
+	s := "  ⎿  API Error: 400 {\"type\":\"error\",\"error\":{\"message\":\"Could not process image\"}}\n✻ Thinking..."
+	if got := DetectAPIError(s); got != nil {
+		t.Errorf("error without input prompt must not match, got %+v", got)
+	}
+}
+
+func TestDetectAPIError_PickerPromptRejected(t *testing.T) {
+	// ❯ followed by a digit+period is a picker option, not the input prompt.
+	s := "  ⎿  API Error: 400 {\"type\":\"error\",\"error\":{\"message\":\"Could not process image\"}}\n  ❯ 1. Stop and wait\n  ❯ 2. Retry"
+	if got := DetectAPIError(s); got != nil {
+		t.Errorf("picker ❯ line must not satisfy input-prompt check, got %+v", got)
+	}
+}
+
+func TestDetectAPIError_BuriedInScrollbackRejected(t *testing.T) {
+	// Error is outside the recentWindow — buried in old scrollback.
+	padding := strings.Repeat("x ", recentWindow)
+	content := "  ⎿  API Error: 400 {\"type\":\"error\",\"error\":{\"message\":\"old error\"}}\n" + padding + "\n❯ "
+	if got := DetectAPIError(content); got != nil {
+		t.Errorf("error buried beyond recentWindow must not match, got %+v", got)
+	}
+}
+
+func TestDetectAPIError_EmptyPromptNoError(t *testing.T) {
+	// Normal idle session — input prompt is visible but no error.
+	s := "$ ls\nfile.txt\n❯ "
+	if got := DetectAPIError(s); got != nil {
+		t.Errorf("idle session at prompt must not match, got %+v", got)
+	}
+}
+
+func TestDetectAPIError_RecoveredSessionRejected(t *testing.T) {
+	// Error in scrollback, but then successful tool output pushed it past the
+	// recentWindow, meaning Claude recovered and the error is stale.
+	old := "  ⎿  API Error: 400 {\"type\":\"error\",\"error\":{\"message\":\"old\"}}\n"
+	recovery := strings.Repeat("  ⎿  Tool output line\n", recentWindow/20)
+	content := old + recovery + "❯ "
+	if got := DetectAPIError(content); got != nil {
+		t.Errorf("recovered session (error outside recentWindow) must not match, got %+v", got)
+	}
+}
+
+func TestDetectAPIError_MostRecentErrorWins(t *testing.T) {
+	// Two API errors in the recent window — the most recent one is returned.
+	first := "  ⎿  API Error: 400 {\"type\":\"error\",\"error\":{\"message\":\"first\"}}\n"
+	second := "  ⎿  API Error: 422 {\"type\":\"error\",\"error\":{\"message\":\"second\"}}\n"
+	s := first + second + "❯ "
+	got := DetectAPIError(s)
+	if got == nil {
+		t.Fatal("expected detection with two errors")
+	}
+	if got.StatusCode != 422 {
+		t.Errorf("StatusCode = %d, want 422 (most recent)", got.StatusCode)
+	}
+}
+
+func TestDetectAPIError_BannerAndErrorCoexist(t *testing.T) {
+	// Both a usage-limit banner and an API error are visible.
+	// DetectAPIError must still find the error; callers can decide priority.
+	content := realBannerInline + "\n" + realAPIErrorCapture
+	if got := DetectAPIError(content); got == nil {
+		t.Error("expected detection even when banner is also present")
+	}
+}
+
+// ---------- DecideCompact ----------
+
+func TestDecideCompact_FirstSeen_NoAct(t *testing.T) {
+	apiErr := &APIError{StatusCode: 400}
+	prev := ErrorTracked{} // zero FirstSeen
+	if DecideCompact(apiErr, prev, time.Now(), time.Minute) {
+		t.Error("must not compact on first sighting (no persistence confirmation)")
+	}
+}
+
+func TestDecideCompact_TooSoon_NoAct(t *testing.T) {
+	now := time.Now()
+	apiErr := &APIError{StatusCode: 400}
+	prev := ErrorTracked{FirstSeen: now.Add(-30 * time.Second)} // only 30s ago
+	if DecideCompact(apiErr, prev, now, time.Minute) {
+		t.Error("must not compact if error seen for less than minAge")
+	}
+}
+
+func TestDecideCompact_MinAgeMet_Act(t *testing.T) {
+	now := time.Now()
+	apiErr := &APIError{StatusCode: 400}
+	prev := ErrorTracked{FirstSeen: now.Add(-2 * time.Minute)} // 2min ago
+	if !DecideCompact(apiErr, prev, now, time.Minute) {
+		t.Error("must compact once error has persisted for minAge")
+	}
+}
+
+func TestDecideCompact_AlreadyActed_NoAct(t *testing.T) {
+	now := time.Now()
+	apiErr := &APIError{StatusCode: 400}
+	prev := ErrorTracked{FirstSeen: now.Add(-5 * time.Minute), Acted: true}
+	if DecideCompact(apiErr, prev, now, time.Minute) {
+		t.Error("must not compact again if /compact already sent")
+	}
+}
+
+func TestDecideCompact_NilError_NoAct(t *testing.T) {
+	now := time.Now()
+	prev := ErrorTracked{FirstSeen: now.Add(-5 * time.Minute)}
+	if DecideCompact(nil, prev, now, time.Minute) {
+		t.Error("nil APIError must never trigger compact")
+	}
+}
+
+// ---------- inputPromptRE sanity ----------
+
+func TestInputPromptRE_Matches(t *testing.T) {
+	cases := []string{
+		"❯ ",
+		"❯",
+		"❯  ",
+		"line before\n❯ \nline after",
+	}
+	for _, s := range cases {
+		if !inputPromptRE.MatchString(s) {
+			t.Errorf("inputPromptRE should match %q", s)
+		}
+	}
+}
+
+func TestInputPromptRE_Rejects(t *testing.T) {
+	cases := []string{
+		"  ❯ 1. Stop and wait",   // indented picker option
+		"❯ 1. option",            // picker option at line start
+		"❯ something typed here", // user input in progress
+	}
+	for _, s := range cases {
+		if inputPromptRE.MatchString(s) {
+			t.Errorf("inputPromptRE must not match %q", s)
+		}
+	}
+}
+
 // ---------- state persistence ----------
 
 func TestSaveLoadState_Roundtrip(t *testing.T) {
