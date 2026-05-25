@@ -62,6 +62,11 @@ func ListSessions() []Session {
 	return sessions
 }
 
+// PaneCurrentPath returns the working directory of `target`.
+func PaneCurrentPath(target string) string {
+	return strings.TrimSpace(shellout.Run("tmux", "display-message", "-p", "-t", target, "#{pane_current_path}"))
+}
+
 // CapturePane returns the visible content of `target`. If lines > 0, that many
 // lines of scrollback are included; 0 means the current visible screen only.
 func CapturePane(target string, lines int) string {
