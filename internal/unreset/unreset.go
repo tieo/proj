@@ -63,7 +63,7 @@ func DefaultConfig() Config {
 		Jitter:     time.Second,   // reset times are accurate to the minute; 1s grace is enough
 		DismissGap: 300 * time.Millisecond,
 		ResumeText: "continue",
-		Capture:    300,
+		Capture:    0,
 		StatePath:  defaultStatePath(),
 	}
 }
@@ -423,6 +423,11 @@ func Tick(cfg Config, state State, now time.Time) {
 			slog.Info("resume",
 				"session", p.Session, "pane", p.ID,
 				"attempt", prev.Attempts+1, "banner", b.Text)
+			if err := tmux.SendKey(p.ID, "Escape"); err != nil {
+				slog.Error("send Escape failed", "session", p.Session, "err", err)
+				continue
+			}
+			time.Sleep(cfg.DismissGap)
 			if err := tmux.SendKeys(p.ID, cfg.ResumeText); err != nil {
 				slog.Error("send-keys failed", "session", p.Session, "err", err)
 				continue

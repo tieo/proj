@@ -62,9 +62,14 @@ func ListSessions() []Session {
 	return sessions
 }
 
-// CapturePane returns the visible content of `target` plus `lines` of scrollback.
+// CapturePane returns the visible content of `target`. If lines > 0, that many
+// lines of scrollback are included; 0 means the current visible screen only.
 func CapturePane(target string, lines int) string {
-	return shellout.Run("tmux", "capture-pane", "-p", "-t", target, "-S", fmt.Sprintf("-%d", lines))
+	args := []string{"capture-pane", "-p", "-t", target}
+	if lines > 0 {
+		args = append(args, "-S", fmt.Sprintf("-%d", lines))
+	}
+	return shellout.Run("tmux", args...)
 }
 
 // NewSession creates a detached session in `dir` and returns the new pane id.
