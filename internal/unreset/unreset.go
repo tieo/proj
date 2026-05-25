@@ -53,6 +53,7 @@ type Config struct {
 	DismissGap  time.Duration // pause between Escape and "continue"
 	ResumeText  string
 	CompactText string // slash command to compact a stuck session
+	ClearText   string // slash command to clear when compact itself fails
 	Capture     int
 	StatePath   string
 }
@@ -65,6 +66,7 @@ func DefaultConfig() Config {
 		DismissGap:  300 * time.Millisecond,
 		ResumeText:  "continue",
 		CompactText: "/compact",
+		ClearText:   "/clear",
 		Capture:     10,
 		StatePath:   defaultStatePath(),
 	}
@@ -399,6 +401,28 @@ func parseReset(dateStr, timeStr, tzStr string, now time.Time) (time.Time, bool,
 	return target, false, nil
 }
 
+// claudeMemoryPath derives the Claude Code project memory directory for a
+// given working directory, following Claude Code's path-encoding convention:
+// replace every "/" with "-" (the leading "/" becomes a leading "-").
+func claudeMemoryPath(workDir string) string {
+	home, _ := os.UserHomeDir()
+	encoded := strings.ReplaceAll(workDir, "/", "-")
+	return filepath.Join(home, ".claude", "projects", encoded, "memory")
+}
+
+// clearRecoveryMessage returns the message sent to Claude after /clear so it
+// can understand why the conversation was wiped and resume from its memory.
+func clearRecoveryMessage(apiErr *APIError, memPath string) string {
+	return fmt.Sprintf(
+		"proj-unreset cleared this conversation automatically. "+
+			"The session was stuck: a tool tried to read a corrupt file and got "+
+			"API Error %d (%s). /compact also failed for the same reason — "+
+			"the file was embedded in the conversation history. "+
+			"Your project memory is at %s — read those files to understand "+
+			"the current task state and resume from where you left off.",
+		apiErr.StatusCode, apiErr.Message, memPath)
+}
+
 func LoadState(path string) State {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -518,12 +542,31 @@ func Tick(cfg Config, state State, errorState ErrorState, now time.Time) {
 			switch {
 			case compactFailed && !prev.Acted:
 				// /compact was already tried (possibly by a prior daemon run) and
-				// failed — the broken content is embedded in history. Mark acted
-				// immediately so we don't keep retrying across restarts. The only
-				// recovery is /clear or restarting Claude Code in the session.
-				slog.Warn("compact already failed — manual intervention needed (try /clear)",
+				// failed — the broken content is embedded in history. Fall back to
+				// /clear, then send Claude an explanation so it can resume from memory.
+				workDir := tmux.PaneCurrentPath(p.ID)
+				memPath := claudeMemoryPath(workDir)
+				slog.Info("compact failed, clearing conversation",
 					"session", p.Session, "pane", p.ID,
-					"error", apiErr.Message)
+					"error", apiErr.Message, "mem_path", memPath)
+				clearOK := false
+				if err := tmux.SendKey(p.ID, "Escape"); err != nil {
+					slog.Error("send Escape failed", "session", p.Session, "err", err)
+				} else {
+					time.Sleep(cfg.DismissGap)
+					if err := tmux.SendKeys(p.ID, cfg.ClearText); err != nil {
+						slog.Error("send /clear failed", "session", p.Session, "err", err)
+					} else {
+						clearOK = true
+						slog.Info("cleared", "session", p.Session, "pane", p.ID)
+						// Give Claude Code a moment to process /clear and redraw.
+						time.Sleep(time.Second)
+						msg := clearRecoveryMessage(apiErr, memPath)
+						if err := tmux.SendKeys(p.ID, msg); err != nil {
+							slog.Error("send recovery message failed", "session", p.Session, "err", err)
+						}
+					}
+				}
 				if prev.FirstSeen.IsZero() {
 					prev.FirstSeen = now
 				}
@@ -531,7 +574,7 @@ func Tick(cfg Config, state State, errorState ErrorState, now time.Time) {
 				prev.Pane = p.ID
 				prev.Text = apiErr.Text
 				prev.LastSeen = now
-				prev.Acted = true
+				prev.Acted = clearOK
 				errorState[p.ID] = prev
 			case prev.FirstSeen.IsZero():
 				// First sighting — record, wait for next tick to confirm.
