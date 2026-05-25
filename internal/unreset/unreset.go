@@ -124,6 +124,11 @@ const sp = `[\s\x{00a0}]`
 // This distinguishes a real API failure from prose or code mentioning one.
 var apiErrorRE = regexp.MustCompile(`⎿` + sp + `+API Error:` + sp + `*(\d{3})` + sp + `+(\{[^\n]+\})`)
 
+// compactFailedRE detects a failed /compact attempt: Claude Code renders the
+// compaction error with this prefix. If visible, retrying /compact is futile
+// (the broken content is in history and will keep failing until /clear or restart).
+var compactFailedRE = regexp.MustCompile(`⎿` + sp + `+Error: Error during compaction:`)
+
 // inputPromptRE matches the Claude Code input prompt: ❯ alone on a line.
 // A picker option has a digit+period after the space (e.g. "❯  1. Stop"),
 // so it cannot match. The check is anchored to start-of-line ((?m)^),
@@ -508,8 +513,26 @@ func Tick(cfg Config, state State, errorState ErrorState, now time.Time) {
 		//    transient errors Claude Code auto-recovers from.
 		apiErr := DetectAPIError(content)
 		if apiErr != nil {
+			compactFailed := compactFailedRE.MatchString(content)
 			prev := errorState[p.ID]
 			switch {
+			case compactFailed && !prev.Acted:
+				// /compact was already tried (possibly by a prior daemon run) and
+				// failed — the broken content is embedded in history. Mark acted
+				// immediately so we don't keep retrying across restarts. The only
+				// recovery is /clear or restarting Claude Code in the session.
+				slog.Warn("compact already failed — manual intervention needed (try /clear)",
+					"session", p.Session, "pane", p.ID,
+					"error", apiErr.Message)
+				if prev.FirstSeen.IsZero() {
+					prev.FirstSeen = now
+				}
+				prev.Session = p.Session
+				prev.Pane = p.ID
+				prev.Text = apiErr.Text
+				prev.LastSeen = now
+				prev.Acted = true
+				errorState[p.ID] = prev
 			case prev.FirstSeen.IsZero():
 				// First sighting — record, wait for next tick to confirm.
 				errorState[p.ID] = ErrorTracked{
