@@ -9,6 +9,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -446,27 +447,139 @@ func recentSessionFile(workDir string) string {
 	return best
 }
 
+// extractSessionContext reads the last 30 JSONL records from sessionFile and
+// returns a compact human-readable summary of the meaningful entries:
+// Claude's text responses, plain user messages, and slash command results.
+// Queue operations, attachments, file snapshots, and meta entries are dropped.
+func extractSessionContext(sessionFile string) string {
+	if sessionFile == "" {
+		return ""
+	}
+	f, err := os.Open(sessionFile)
+	if err != nil {
+		return ""
+	}
+	defer f.Close()
+
+	// Read the tail — 100 KB is enough to cover 30 records with room to spare.
+	const readBytes = 100 * 1024
+	size, _ := f.Seek(0, io.SeekEnd)
+	start := size - readBytes
+	if start < 0 {
+		start = 0
+	}
+	if _, err := f.Seek(start, io.SeekStart); err != nil {
+		return ""
+	}
+	buf := make([]byte, readBytes)
+	n, _ := f.Read(buf)
+	lines := strings.Split(string(buf[:n]), "\n")
+	// First line may be partial (seeked mid-file); drop it.
+	if start > 0 && len(lines) > 1 {
+		lines = lines[1:]
+	}
+	// Keep only the last 30.
+	if len(lines) > 30 {
+		lines = lines[len(lines)-30:]
+	}
+
+	var out strings.Builder
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		var obj map[string]interface{}
+		if json.Unmarshal([]byte(line), &obj) != nil {
+			continue
+		}
+		t, _ := obj["type"].(string)
+		if isMeta, _ := obj["isMeta"].(bool); isMeta {
+			continue
+		}
+		switch t {
+		case "assistant":
+			msg, _ := obj["message"].(map[string]interface{})
+			if msg == nil {
+				continue
+			}
+			for _, c := range toSlice(msg["content"]) {
+				cm, _ := c.(map[string]interface{})
+				if cm == nil || cm["type"] != "text" {
+					continue
+				}
+				text := truncate(cm["text"], 600)
+				if text != "" {
+					fmt.Fprintf(&out, "[Claude] %s\n", text)
+				}
+			}
+		case "user":
+			msg, _ := obj["message"].(map[string]interface{})
+			if msg == nil {
+				continue
+			}
+			switch c := msg["content"].(type) {
+			case string:
+				if text := truncate(c, 800); text != "" && !strings.HasPrefix(text, "<") {
+					fmt.Fprintf(&out, "[User] %s\n", text)
+				}
+			case []interface{}:
+				for _, item := range c {
+					cm, _ := item.(map[string]interface{})
+					if cm == nil || cm["type"] != "text" {
+						continue
+					}
+					text := truncate(cm["text"], 800)
+					if text != "" && !strings.HasPrefix(text, "<") {
+						fmt.Fprintf(&out, "[User] %s\n", text)
+					}
+				}
+			}
+		case "system":
+			if sub, _ := obj["subtype"].(string); sub == "local_command" {
+				text := truncate(obj["content"], 300)
+				if text != "" {
+					fmt.Fprintf(&out, "[Cmd] %s\n", text)
+				}
+			}
+		}
+	}
+	return strings.TrimSpace(out.String())
+}
+
+func toSlice(v interface{}) []interface{} {
+	s, _ := v.([]interface{})
+	return s
+}
+
+func truncate(v interface{}, max int) string {
+	s, _ := v.(string)
+	if len(s) > max {
+		return s[:max] + "…"
+	}
+	return s
+}
+
 // compactResumeMessage is sent after a successful /compact so Claude continues
 // without waiting for user input.
 const compactResumeMessage = "The conversation was just compacted automatically to recover from a stuck state. Continue the current task immediately without asking the user anything — just resume."
 
 // clearRecoveryMessage returns the message sent to Claude after /clear so it
 // can understand why the conversation was wiped and resume from session history.
-func clearRecoveryMessage(apiErr *APIError, sessionFile string) string {
-	historyHint := ""
-	if sessionFile != "" {
-		historyHint = fmt.Sprintf(
-			"Your previous session transcript is at %s — run `tail -c 40000 %s` to read recent context and understand what you were doing. ",
-			sessionFile, sessionFile)
+// context is the pre-extracted recent session content (may be empty).
+func clearRecoveryMessage(apiErr *APIError, context string) string {
+	contextSection := ""
+	if context != "" {
+		contextSection = "\n\nRecent session context:\n" + context + "\n\n"
 	}
 	return fmt.Sprintf(
 		"The conversation was just cleared automatically. "+
 			"The session was stuck on API Error %d (%s) — a corrupt file was "+
-			"embedded in history so /compact also failed. "+
+			"embedded in history so /compact also failed."+
 			"%s"+
-			"Then immediately continue working without asking the user anything. "+
+			"Immediately continue working without asking the user anything. "+
 			"Do not summarize, do not ask what to work on — just resume.",
-		apiErr.StatusCode, apiErr.Message, historyHint)
+		apiErr.StatusCode, apiErr.Message, contextSection)
 }
 
 func LoadState(path string) State {
@@ -591,10 +704,10 @@ func Tick(cfg Config, state State, errorState ErrorState, now time.Time) {
 				// the broken content is embedded in history. Fall back to
 				// /clear, then send Claude an explanation so it can resume from memory.
 				workDir := tmux.PaneCurrentPath(p.ID)
-				// Capture the session file BEFORE /clear — /clear causes Claude
-				// Code to start a new session file, so the pre-clear file is the
-				// right one to point Claude at for history recovery.
+				// Extract context BEFORE /clear — /clear causes Claude Code to
+				// start a new session file, so the pre-clear file has the history.
 				sessFile := recentSessionFile(workDir)
+				sessContext := extractSessionContext(sessFile)
 				slog.Info("compact failed, clearing conversation",
 					"session", p.Session, "pane", p.ID,
 					"error", apiErr.Message, "session_file", sessFile)
@@ -614,7 +727,7 @@ func Tick(cfg Config, state State, errorState ErrorState, now time.Time) {
 						// separate Enter — this guarantees Enter only arrives after
 						// all the message text has landed in the input buffer.
 						time.Sleep(2 * time.Second)
-						msg := clearRecoveryMessage(apiErr, sessFile)
+						msg := clearRecoveryMessage(apiErr, sessContext)
 						if err := tmux.SendLiteral(p.ID, msg); err != nil {
 							slog.Error("send recovery message failed", "session", p.Session, "err", err)
 						} else {
