@@ -574,10 +574,14 @@ func clearRecoveryMessage(apiErr *APIError, context string) string {
 	}
 	return fmt.Sprintf(
 		"The conversation was just cleared automatically. "+
-			"The session was stuck on API Error %d (%s) — a corrupt file was "+
-			"embedded in history so /compact also failed."+
+			"The session was stuck on API Error %d (%s) — a file passed to the API "+
+			"was corrupt or in an unsupported format, which also caused /compact to fail. "+
+			"Before resuming: save a memory about how to avoid this error — "+
+			"specifically, always verify screenshot/image files are valid (check size > 10 KB "+
+			"and run `file <path>` to confirm format) before passing them to the Read tool. "+
+			"Never read a file that was just written by a tool without checking it first."+
 			"%s"+
-			"Immediately continue working without asking the user anything. "+
+			"Then immediately continue working without asking the user anything. "+
 			"Do not summarize, do not ask what to work on — just resume.",
 		apiErr.StatusCode, apiErr.Message, contextSection)
 }
