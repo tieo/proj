@@ -422,8 +422,10 @@ func clearRecoveryMessage(apiErr *APIError, memPath string) string {
 		"The conversation was just cleared automatically. "+
 			"The session was stuck on API Error %d (%s) — a corrupt file was "+
 			"embedded in history so /compact also failed. "+
-			"Read your memory files at %s to recover task state, "+
-			"then immediately continue working without asking the user anything. "+
+			"Recover task state: read memory files at %s, then cross-check with "+
+			"recent git log and git diff to verify the memory is current — "+
+			"git history is ground truth, memory files can be stale. "+
+			"Then immediately continue working without asking the user anything. "+
 			"Do not summarize, do not ask what to work on — just resume.",
 		apiErr.StatusCode, apiErr.Message, memPath)
 }
