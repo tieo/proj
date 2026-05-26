@@ -402,13 +402,48 @@ func parseReset(dateStr, timeStr, tzStr string, now time.Time) (time.Time, bool,
 	return target, false, nil
 }
 
+// claudeProjectDir derives the Claude Code project directory for a given
+// working directory, following Claude Code's path-encoding convention.
+func claudeProjectDir(workDir string) string {
+	home, _ := os.UserHomeDir()
+	encoded := strings.ReplaceAll(workDir, "/", "-")
+	return filepath.Join(home, ".claude", "projects", encoded)
+}
+
 // claudeMemoryPath derives the Claude Code project memory directory for a
 // given working directory, following Claude Code's path-encoding convention:
 // replace every "/" with "-" (the leading "/" becomes a leading "-").
 func claudeMemoryPath(workDir string) string {
-	home, _ := os.UserHomeDir()
-	encoded := strings.ReplaceAll(workDir, "/", "-")
-	return filepath.Join(home, ".claude", "projects", encoded, "memory")
+	return filepath.Join(claudeProjectDir(workDir), "memory")
+}
+
+// recentSessionFile returns the path of the most recently modified .jsonl
+// session file in the Claude Code project directory for workDir. Returns ""
+// if none is found. Call this before sending /clear — /clear causes Claude
+// Code to start a new session file, so the pre-clear file is the most recent
+// one at the time of the call.
+func recentSessionFile(workDir string) string {
+	dir := claudeProjectDir(workDir)
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return ""
+	}
+	var best string
+	var bestTime time.Time
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".jsonl") {
+			continue
+		}
+		info, err := e.Info()
+		if err != nil {
+			continue
+		}
+		if info.ModTime().After(bestTime) {
+			bestTime = info.ModTime()
+			best = filepath.Join(dir, e.Name())
+		}
+	}
+	return best
 }
 
 // compactResumeMessage is sent after a successful /compact so Claude continues
@@ -416,18 +451,22 @@ func claudeMemoryPath(workDir string) string {
 const compactResumeMessage = "The conversation was just compacted automatically to recover from a stuck state. Continue the current task immediately without asking the user anything — just resume."
 
 // clearRecoveryMessage returns the message sent to Claude after /clear so it
-// can understand why the conversation was wiped and resume from its memory.
-func clearRecoveryMessage(apiErr *APIError, memPath string) string {
+// can understand why the conversation was wiped and resume from session history.
+func clearRecoveryMessage(apiErr *APIError, sessionFile string) string {
+	historyHint := ""
+	if sessionFile != "" {
+		historyHint = fmt.Sprintf(
+			"Your previous session transcript is at %s — run `tail -c 40000 %s` to read recent context and understand what you were doing. ",
+			sessionFile, sessionFile)
+	}
 	return fmt.Sprintf(
 		"The conversation was just cleared automatically. "+
 			"The session was stuck on API Error %d (%s) — a corrupt file was "+
 			"embedded in history so /compact also failed. "+
-			"Recover task state: read memory files at %s, then cross-check with "+
-			"recent git log and git diff to verify the memory is current — "+
-			"git history is ground truth, memory files can be stale. "+
+			"%s"+
 			"Then immediately continue working without asking the user anything. "+
 			"Do not summarize, do not ask what to work on — just resume.",
-		apiErr.StatusCode, apiErr.Message, memPath)
+		apiErr.StatusCode, apiErr.Message, historyHint)
 }
 
 func LoadState(path string) State {
@@ -552,10 +591,13 @@ func Tick(cfg Config, state State, errorState ErrorState, now time.Time) {
 				// the broken content is embedded in history. Fall back to
 				// /clear, then send Claude an explanation so it can resume from memory.
 				workDir := tmux.PaneCurrentPath(p.ID)
-				memPath := claudeMemoryPath(workDir)
+				// Capture the session file BEFORE /clear — /clear causes Claude
+				// Code to start a new session file, so the pre-clear file is the
+				// right one to point Claude at for history recovery.
+				sessFile := recentSessionFile(workDir)
 				slog.Info("compact failed, clearing conversation",
 					"session", p.Session, "pane", p.ID,
-					"error", apiErr.Message, "mem_path", memPath)
+					"error", apiErr.Message, "session_file", sessFile)
 				clearOK := false
 				if err := tmux.SendKey(p.ID, "Escape"); err != nil {
 					slog.Error("send Escape failed", "session", p.Session, "err", err)
@@ -572,7 +614,7 @@ func Tick(cfg Config, state State, errorState ErrorState, now time.Time) {
 						// separate Enter — this guarantees Enter only arrives after
 						// all the message text has landed in the input buffer.
 						time.Sleep(2 * time.Second)
-						msg := clearRecoveryMessage(apiErr, memPath)
+						msg := clearRecoveryMessage(apiErr, sessFile)
 						if err := tmux.SendLiteral(p.ID, msg); err != nil {
 							slog.Error("send recovery message failed", "session", p.Session, "err", err)
 						} else {
