@@ -148,8 +148,8 @@ type APIError struct {
 	Text       string // raw line, truncated to 200 bytes
 }
 
-// ErrorTracked holds the in-memory tracking state for a pane stuck after an
-// API error. Not persisted — re-detection takes at most two poll cycles.
+// ErrorTracked holds the tracking state for a pane stuck after an API error.
+// Persisted to disk so daemon restarts don't lose the "compact was sent" flag.
 type ErrorTracked struct {
 	Session   string
 	Pane      string
@@ -596,6 +596,42 @@ func clearRecoveryMessage(apiErr *APIError, context string) string {
 		apiErr.StatusCode, apiErr.Message, imageAdvice, contextSection)
 }
 
+func errorStatePath(statePath string) string {
+	ext := filepath.Ext(statePath)
+	return statePath[:len(statePath)-len(ext)] + "-errors" + ext
+}
+
+func LoadErrorState(path string) ErrorState {
+	data, err := os.ReadFile(errorStatePath(path))
+	if err != nil {
+		return make(ErrorState)
+	}
+	var s ErrorState
+	if err := json.Unmarshal(data, &s); err != nil {
+		return make(ErrorState)
+	}
+	if s == nil {
+		s = make(ErrorState)
+	}
+	return s
+}
+
+func SaveErrorState(path string, state ErrorState) error {
+	p := errorStatePath(path)
+	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+		return err
+	}
+	data, err := json.MarshalIndent(state, "", "  ")
+	if err != nil {
+		return err
+	}
+	tmp := p + ".tmp"
+	if err := os.WriteFile(tmp, data, 0o644); err != nil {
+		return err
+	}
+	return os.Rename(tmp, p)
+}
+
 func LoadState(path string) State {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -891,7 +927,10 @@ func Run(ctx context.Context, cfg Config) error {
 	if heartbeatEvery < 1 {
 		heartbeatEvery = 1
 	}
-	errorState := make(ErrorState)
+	errorState := LoadErrorState(cfg.StatePath)
+	if len(errorState) > 0 {
+		slog.Info("loaded error state", "tracked", len(errorState))
+	}
 	tick := 0
 	for {
 		func() {
@@ -903,6 +942,9 @@ func Run(ctx context.Context, cfg Config) error {
 			Tick(cfg, state, errorState, time.Now())
 			if err := SaveState(cfg.StatePath, state); err != nil {
 				slog.Error("save state failed", "err", err)
+			}
+			if err := SaveErrorState(cfg.StatePath, errorState); err != nil {
+				slog.Error("save error state failed", "err", err)
 			}
 		}()
 		tick++
