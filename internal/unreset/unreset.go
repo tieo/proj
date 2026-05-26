@@ -416,11 +416,11 @@ func claudeMemoryPath(workDir string) string {
 func clearRecoveryMessage(apiErr *APIError, memPath string) string {
 	return fmt.Sprintf(
 		"proj-unreset cleared this conversation automatically. "+
-			"The session was stuck: a tool tried to read a corrupt file and got "+
-			"API Error %d (%s). /compact also failed for the same reason — "+
-			"the file was embedded in the conversation history. "+
-			"Your project memory is at %s — read those files to understand "+
-			"the current task state and resume from where you left off.",
+			"The session was stuck on API Error %d (%s) — a corrupt file was "+
+			"embedded in history so /compact also failed. "+
+			"Read your memory files at %s to recover task state, "+
+			"then immediately continue working without asking the user anything. "+
+			"Do not summarize, do not ask what to work on — just resume.",
 		apiErr.StatusCode, apiErr.Message, memPath)
 }
 
