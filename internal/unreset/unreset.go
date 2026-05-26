@@ -564,6 +564,13 @@ func truncate(v interface{}, max int) string {
 // without waiting for user input.
 const compactResumeMessage = "The conversation was just compacted automatically to recover from a stuck state. Continue the current task immediately without asking the user anything — just resume."
 
+// isImageError reports whether an API error message is about an image being
+// corrupt, unreadable, or in an unsupported format.
+func isImageError(msg string) bool {
+	msg = strings.ToLower(msg)
+	return strings.Contains(msg, "image") || strings.Contains(msg, "could not process")
+}
+
 // clearRecoveryMessage returns the message sent to Claude after /clear so it
 // can understand why the conversation was wiped and resume from session history.
 // context is the pre-extracted recent session content (may be empty).
@@ -572,18 +579,21 @@ func clearRecoveryMessage(apiErr *APIError, context string) string {
 	if context != "" {
 		contextSection = "\n\nRecent session context:\n" + context + "\n\n"
 	}
+	imageAdvice := ""
+	if isImageError(apiErr.Message) {
+		imageAdvice = "Before resuming: save a memory about how to avoid this error — " +
+			"always verify screenshot/image files are valid (check size > 10 KB " +
+			"and run `file <path>` to confirm format) before passing them to the Read tool. " +
+			"Never read a file that was just written by a tool without checking it first. "
+	}
 	return fmt.Sprintf(
 		"The conversation was just cleared automatically. "+
-			"The session was stuck on API Error %d (%s) — a file passed to the API "+
-			"was corrupt or in an unsupported format, which also caused /compact to fail. "+
-			"Before resuming: save a memory about how to avoid this error — "+
-			"specifically, always verify screenshot/image files are valid (check size > 10 KB "+
-			"and run `file <path>` to confirm format) before passing them to the Read tool. "+
-			"Never read a file that was just written by a tool without checking it first."+
+			"The session was stuck on API Error %d (%s) — this also caused /compact to fail. "+
+			"%s"+
 			"%s"+
 			"Then immediately continue working without asking the user anything. "+
 			"Do not summarize, do not ask what to work on — just resume.",
-		apiErr.StatusCode, apiErr.Message, contextSection)
+		apiErr.StatusCode, apiErr.Message, imageAdvice, contextSection)
 }
 
 func LoadState(path string) State {
