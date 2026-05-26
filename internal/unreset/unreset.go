@@ -541,9 +541,9 @@ func Tick(cfg Config, state State, errorState ErrorState, now time.Time) {
 			compactFailed := compactFailedRE.MatchString(content)
 			prev := errorState[p.ID]
 			switch {
-			case compactFailed && !prev.Acted:
-				// /compact was already tried (possibly by a prior daemon run) and
-				// failed — the broken content is embedded in history. Fall back to
+			case compactFailed:
+				// /compact failed (either this run or a prior daemon run) —
+				// the broken content is embedded in history. Fall back to
 				// /clear, then send Claude an explanation so it can resume from memory.
 				workDir := tmux.PaneCurrentPath(p.ID)
 				memPath := claudeMemoryPath(workDir)
