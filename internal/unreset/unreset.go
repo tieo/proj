@@ -411,11 +411,15 @@ func claudeMemoryPath(workDir string) string {
 	return filepath.Join(home, ".claude", "projects", encoded, "memory")
 }
 
+// compactResumeMessage is sent after a successful /compact so Claude continues
+// without waiting for user input.
+const compactResumeMessage = "The conversation was just compacted automatically to recover from a stuck state. Continue the current task immediately without asking the user anything — just resume."
+
 // clearRecoveryMessage returns the message sent to Claude after /clear so it
 // can understand why the conversation was wiped and resume from its memory.
 func clearRecoveryMessage(apiErr *APIError, memPath string) string {
 	return fmt.Sprintf(
-		"proj-unreset cleared this conversation automatically. "+
+		"The conversation was just cleared automatically. "+
 			"The session was stuck on API Error %d (%s) — a corrupt file was "+
 			"embedded in history so /compact also failed. "+
 			"Read your memory files at %s to recover task state, "+
@@ -630,6 +634,14 @@ func Tick(cfg Config, state State, errorState ErrorState, now time.Time) {
 		if prev, ok := errorState[p.ID]; ok {
 			if prev.Acted {
 				slog.Info("compact succeeded", "session", p.Session, "pane", p.ID)
+				if err := tmux.SendLiteral(p.ID, compactResumeMessage); err != nil {
+					slog.Error("send compact resume failed", "session", p.Session, "err", err)
+				} else {
+					time.Sleep(100 * time.Millisecond)
+					if err := tmux.SendKey(p.ID, "Enter"); err != nil {
+						slog.Error("send Enter failed", "session", p.Session, "err", err)
+					}
+				}
 			}
 			delete(errorState, p.ID)
 		}
