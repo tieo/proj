@@ -131,12 +131,13 @@ var apiErrorRE = regexp.MustCompile(`⎿` + sp + `+API Error:` + sp + `*(\d{3})`
 // (the broken content is in history and will keep failing until /clear or restart).
 var compactFailedRE = regexp.MustCompile(`⎿` + sp + `+Error: Error during compaction:`)
 
-// inputPromptRE matches the Claude Code input prompt: ❯ alone on a line.
-// A picker option has a digit+period after the space (e.g. "❯  1. Stop"),
-// so it cannot match. The check is anchored to start-of-line ((?m)^),
-// which also rejects indented picker entries that lead with whitespace.
-// Uses sp to cover non-breaking spaces Claude Code uses for trailing padding.
-var inputPromptRE = regexp.MustCompile(`(?m)^❯` + sp + `*$`)
+// inputPromptRE matches the Claude Code input prompt: ❯ at the start of a
+// line (after a newline or at the beginning of the string). In Claude Code's
+// TUI, picker option lines (e.g. "❯ 1. Stop and wait") always have leading
+// spaces, so they cannot start at column 0 and ^❯ never matches them. Text
+// in the input buffer ("❯ commit this") is intentionally matched — a session
+// with unsent text AND a recent API error is still idle and should be recovered.
+var inputPromptRE = regexp.MustCompile(`(?m)^❯`)
 
 // APIError holds the data extracted from a Claude Code API error line.
 type APIError struct {

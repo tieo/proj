@@ -567,9 +567,11 @@ func TestInputPromptRE_Matches(t *testing.T) {
 		"❯ ",
 		"❯",
 		"❯  ",
-		"❯ ",               // NBSP — actual Claude Code TUI output
+		"❯ ",                          // NBSP — actual Claude Code TUI output
 		"line before\n❯ \nline after",
 		"line before\n❯ \nline after", // NBSP variant
+		"❯ commit this",               // text in input buffer — session still idle
+		"❯ some pending text",
 	}
 	for _, s := range cases {
 		if !inputPromptRE.MatchString(s) {
@@ -580,9 +582,7 @@ func TestInputPromptRE_Matches(t *testing.T) {
 
 func TestInputPromptRE_Rejects(t *testing.T) {
 	cases := []string{
-		"  ❯ 1. Stop and wait",   // indented picker option
-		"❯ 1. option",            // picker option at line start
-		"❯ something typed here", // user input in progress
+		"  ❯ 1. Stop and wait", // indented picker option (TUI always indents these)
 	}
 	for _, s := range cases {
 		if inputPromptRE.MatchString(s) {
