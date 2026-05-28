@@ -38,7 +38,7 @@ func runClose(cmd *cobra.Command, args []string) error {
 	managed := unreset.LoadManagedState(cfg.StatePath)
 	ms := managed[name]
 	ms.Name = name
-	ms.Closed = true
+	ms.ExitedCleanly = true
 	managed[name] = ms
 	if err := unreset.SaveManagedState(cfg.StatePath, managed); err != nil {
 		return fmt.Errorf("save managed state: %w", err)

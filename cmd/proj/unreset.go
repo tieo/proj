@@ -445,7 +445,7 @@ func runUnresetMarkClosed(cmd *cobra.Command, args []string) error {
 	managed := unreset.LoadManagedState(cfg.StatePath)
 	ms := managed[name]
 	ms.Name = name
-	ms.Closed = true
+	ms.ExitedCleanly = true
 	managed[name] = ms
 	return unreset.SaveManagedState(cfg.StatePath, managed)
 }

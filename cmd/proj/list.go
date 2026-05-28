@@ -200,7 +200,7 @@ func buildIndicator(alive, pinned bool, label string) string {
 }
 
 func buildNote(label string, ms unreset.ManagedSession, alive, globalKeepAlive bool) string {
-	if !alive && (ms.Pinned || ms.KeepAlive || globalKeepAlive) && !ms.Closed {
+	if !alive && (ms.Pinned || ms.KeepAlive || globalKeepAlive) && !ms.ExitedCleanly {
 		return "restarting"
 	}
 	switch label {

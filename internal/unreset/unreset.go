@@ -48,15 +48,15 @@ type Tracked struct {
 type State map[string]Tracked
 
 type Config struct {
-	Poll        time.Duration
-	MaxWait     time.Duration // upper bound on how long we'll wait between retries
-	Jitter      time.Duration // added to the scheduled retry time
-	DismissGap  time.Duration // pause between Escape and "continue"
-	ResumeText  string
-	CompactText string // slash command to compact a stuck session
-	ClearText   string // slash command to clear when compact itself fails
-	Capture     int
-	StatePath   string
+	Poll             time.Duration
+	MaxWait          time.Duration // upper bound on how long we'll wait between retries
+	Jitter           time.Duration // added to the scheduled retry time
+	DismissGap       time.Duration // pause between Escape and "continue"
+	ResumeText       string
+	CompactText      string // slash command to compact a stuck session
+	ClearText        string // slash command to clear when compact itself fails
+	Capture          int
+	StatePath        string
 	KeepAlive        bool // recreate vanished sessions that weren't cleanly closed
 	ClaudeCommand    string
 	ClaudeResumeFlag string
@@ -195,8 +195,10 @@ func DetectAPIError(content string) *APIError {
 	statusCode, _ := strconv.Atoi(content[m[2]:m[3]])
 	jsonStr := content[m[4]:m[5]]
 	var payload struct {
-		Error     struct{ Message string `json:"message"` } `json:"error"`
-		RequestID string                                    `json:"request_id"`
+		Error struct {
+			Message string `json:"message"`
+		} `json:"error"`
+		RequestID string `json:"request_id"`
 	}
 	_ = json.Unmarshal([]byte(jsonStr), &payload)
 	text := strings.TrimSpace(content[m[0]:m[1]])
@@ -722,16 +724,18 @@ func SaveErrorState(path string, state ErrorState) error {
 // clean close signal — including across a system restart, which is the whole
 // point of keep-alive: the sessions you had running come back.
 //
-// A clean close is signalled either by `proj close` or by the shell exit trap
-// in proj.zsh / proj.bash / proj.fish, both of which call
-// `proj unreset mark-closed <name>` before the session is destroyed.
+// ExitedCleanly records whether the session got a clean goodbye signal — set
+// by `proj close` or by the shell exit trap in proj.zsh / proj.bash /
+// proj.fish, both of which call `proj unreset mark-closed <name>` before the
+// session is destroyed. It distinguishes a deliberate exit from a crash or a
+// reboot (which leave it false), so keep-alive can skip the former.
 type ManagedSession struct {
-	Name      string    `json:"name"`
-	Dir       string    `json:"dir"`        // working directory, captured while alive
-	Pinned    bool      `json:"pinned"`     // always recreate, survives system restart
-	KeepAlive bool      `json:"keep_alive"` // recreate if not cleanly closed
-	Closed    bool      `json:"closed"`     // set by proj close / shell trap
-	SeenAt    time.Time `json:"seen_at"`    // last time daemon observed session alive
+	Name          string    `json:"name"`
+	Dir           string    `json:"dir"`            // working directory, captured while alive
+	Pinned        bool      `json:"pinned"`         // always recreate, survives system restart
+	KeepAlive     bool      `json:"keep_alive"`     // recreate if not cleanly closed
+	ExitedCleanly bool      `json:"exited_cleanly"` // got a clean goodbye (proj close / shell trap)
+	SeenAt        time.Time `json:"seen_at"`        // last time daemon observed session alive
 }
 
 // ManagedState is the persisted map of all sessions proj unreset knows about.
@@ -864,8 +868,8 @@ func Tick(cfg Config, state State, errorState ErrorState, managed ManagedState, 
 			prev.Dir = s.Path
 		}
 		prev.SeenAt = now
-		// If the session is alive again after being marked closed, clear the flag.
-		prev.Closed = false
+		// If the session is alive again after a clean exit, clear the flag.
+		prev.ExitedCleanly = false
 		managed[s.Name] = prev
 	}
 
@@ -874,15 +878,15 @@ func Tick(cfg Config, state State, errorState ErrorState, managed ManagedState, 
 		if _, alive := liveSessionMap[name]; alive {
 			continue
 		}
-		if ms.Closed {
+		if ms.ExitedCleanly {
 			if ms.Pinned {
-				// Pinned sessions are always recreated — a shell exiting cleanly
-				// (which sets Closed via the exit trap) is not an intentional close.
+				// Pinned sessions are always recreated — a clean exit (which sets
+				// ExitedCleanly via the trap) is not honored as a stop signal.
 				// Clear the flag and fall through to recreate below.
-				ms.Closed = false
+				ms.ExitedCleanly = false
 				managed[name] = ms
 			} else {
-				// Keep-alive or plain tracked: intentionally closed, stop tracking.
+				// Keep-alive or plain tracked: exited cleanly, stop tracking.
 				delete(managed, name)
 				continue
 			}
