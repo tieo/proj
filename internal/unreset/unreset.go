@@ -718,10 +718,9 @@ func SaveErrorState(path string, state ErrorState) error {
 // restart — because the daemon persists their state to disk.
 //
 // Keep-alive sessions (governed by the global KeepAlive config flag, or the
-// per-session KeepAlive field) are recreated if they vanish without a clean
-// close signal. Unlike pinned sessions they are NOT recreated after a system
-// restart because the daemon only acts on sessions it has observed in the
-// current uptime (first-tick exclusion).
+// per-session KeepAlive field) are recreated whenever they vanish without a
+// clean close signal — including across a system restart, which is the whole
+// point of keep-alive: the sessions you had running come back.
 //
 // A clean close is signalled either by `proj close` or by the shell exit trap
 // in proj.zsh / proj.bash / proj.fish, both of which call
@@ -848,7 +847,7 @@ func nextAttemptAfter(b *Banner, now time.Time, cfg Config) time.Time {
 	return next
 }
 
-func Tick(cfg Config, state State, errorState ErrorState, managed ManagedState, firstTick bool, now time.Time) {
+func Tick(cfg Config, state State, errorState ErrorState, managed ManagedState, now time.Time) {
 	// --- Session management: keep-alive and pinned recreation ---
 	liveSessions := tmux.ListSessions()
 	liveSessionMap := make(map[string]tmux.Session, len(liveSessions))
@@ -891,7 +890,7 @@ func Tick(cfg Config, state State, errorState ErrorState, managed ManagedState, 
 		if ms.Pinned {
 			slog.Info("recreate pinned session", "session", name, "dir", ms.Dir)
 			launchSession(cfg, name, ms.Dir)
-		} else if (ms.KeepAlive || cfg.KeepAlive) && !firstTick {
+		} else if ms.KeepAlive || cfg.KeepAlive {
 			slog.Info("recreate keep-alive session", "session", name, "dir", ms.Dir)
 			launchSession(cfg, name, ms.Dir)
 		}
@@ -1123,7 +1122,6 @@ func Run(ctx context.Context, cfg Config) error {
 		slog.Info("loaded error state", "tracked", len(errorState))
 	}
 	tick := 0
-	firstTick := true
 	for {
 		func() {
 			defer func() {
@@ -1134,7 +1132,7 @@ func Run(ctx context.Context, cfg Config) error {
 			// Reload managed state each tick so CLI changes (pin/unpin/mark-closed)
 			// are picked up without requiring a daemon restart.
 			managed := LoadManagedState(cfg.StatePath)
-			Tick(cfg, state, errorState, managed, firstTick, time.Now())
+			Tick(cfg, state, errorState, managed, time.Now())
 			if err := SaveState(cfg.StatePath, state); err != nil {
 				slog.Error("save state failed", "err", err)
 			}
@@ -1145,7 +1143,6 @@ func Run(ctx context.Context, cfg Config) error {
 				slog.Error("save managed state failed", "err", err)
 			}
 		}()
-		firstTick = false
 		tick++
 		if tick%heartbeatEvery == 0 {
 			slog.Info("heartbeat", "tick", tick, "tracked", len(state))
