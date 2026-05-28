@@ -27,6 +27,7 @@ var headless bool
 
 func init() {
 	rootCmd.PersistentFlags().BoolVar(&headless, "headless", false, "don't attach to the tmux session after opening")
+	rootCmd.PersistentFlags().BoolVar(&listAll, "all", false, "show all projects regardless of age")
 }
 
 func main() {

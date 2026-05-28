@@ -141,6 +141,10 @@ var compactFailedRE = regexp.MustCompile(`⎿` + sp + `+Error: Error during comp
 // with unsent text AND a recent API error is still idle and should be recovered.
 var inputPromptRE = regexp.MustCompile(`(?m)^❯`)
 
+// modelRE matches the Claude model ID as rendered in the Claude Code TUI status
+// bar (e.g. "claude-sonnet-4-6", "claude-opus-4-7", "claude-haiku-4-5-20251001").
+var modelRE = regexp.MustCompile(`claude-(?:opus|sonnet|haiku)-[\d][\d.-]*`)
+
 // APIError holds the data extracted from a Claude Code API error line.
 type APIError struct {
 	StatusCode int
@@ -311,6 +315,7 @@ type PaneState struct {
 	Banner   *Banner   // non-nil if a usage-limit banner is visible
 	Selector bool      // a dismissable interactive picker is visible
 	APIError *APIError // non-nil if stuck after a permanent API error
+	Model    string    // Claude model ID extracted from TUI status bar, empty if not visible
 }
 
 // Label returns a short human-readable status word for the pane.
@@ -341,6 +346,7 @@ func ScanPanes(captureLines int) []PaneState {
 			Banner:   Detect(content, now),
 			Selector: HasSelector(content),
 			APIError: DetectAPIError(content),
+			Model:    modelRE.FindString(content),
 		})
 	}
 	return out
@@ -405,10 +411,16 @@ func parseReset(dateStr, timeStr, tzStr string, now time.Time) (time.Time, bool,
 }
 
 // claudeProjectDir derives the Claude Code project directory for a given
-// working directory, following Claude Code's path-encoding convention.
+// working directory. Claude Code encodes the path by replacing every
+// non-alphanumeric rune with '-' (so '/', '.', '_', ' ' all become '-').
 func claudeProjectDir(workDir string) string {
 	home, _ := os.UserHomeDir()
-	encoded := strings.ReplaceAll(workDir, "/", "-")
+	encoded := strings.Map(func(r rune) rune {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') {
+			return r
+		}
+		return '-'
+	}, workDir)
 	return filepath.Join(home, ".claude", "projects", encoded)
 }
 
@@ -417,6 +429,36 @@ func claudeProjectDir(workDir string) string {
 // replace every "/" with "-" (the leading "/" becomes a leading "-").
 func claudeMemoryPath(workDir string) string {
 	return filepath.Join(claudeProjectDir(workDir), "memory")
+}
+
+// ModelFromDir reads the model name from the most recent JSONL session for
+// the given working directory. Returns "" if the project has no session files.
+func ModelFromDir(workDir string) string {
+	f := recentSessionFile(workDir)
+	if f == "" {
+		return ""
+	}
+	data, err := os.ReadFile(f)
+	if err != nil {
+		return ""
+	}
+	// Scan lines in reverse to find the most recent message with a "model" field.
+	lines := strings.Split(strings.TrimRight(string(data), "\n"), "\n")
+	for i := len(lines) - 1; i >= 0; i-- {
+		line := lines[i]
+		if !strings.Contains(line, `"model"`) {
+			continue
+		}
+		var entry struct {
+			Message struct {
+				Model string `json:"model"`
+			} `json:"message"`
+		}
+		if err := json.Unmarshal([]byte(line), &entry); err == nil && entry.Message.Model != "" {
+			return entry.Message.Model
+		}
+	}
+	return ""
 }
 
 // recentSessionFile returns the path of the most recently modified .jsonl
@@ -782,7 +824,10 @@ func Tick(cfg Config, state State, errorState ErrorState, managed ManagedState, 
 	for _, s := range liveSessions {
 		prev := managed[s.Name]
 		prev.Name = s.Name
-		prev.Dir = s.Path
+		// Only record Dir if not already set — preserves dirs set via `proj unreset pin --dir`.
+		if prev.Dir == "" {
+			prev.Dir = s.Path
+		}
 		prev.SeenAt = now
 		// If the session is alive again after being marked closed, clear the flag.
 		prev.Closed = false
@@ -795,9 +840,17 @@ func Tick(cfg Config, state State, errorState ErrorState, managed ManagedState, 
 			continue
 		}
 		if ms.Closed {
-			// Intentionally closed — clean up the tracking entry.
-			delete(managed, name)
-			continue
+			if ms.Pinned {
+				// Pinned sessions are always recreated — a shell exiting cleanly
+				// (which sets Closed via the exit trap) is not an intentional close.
+				// Clear the flag and fall through to recreate below.
+				ms.Closed = false
+				managed[name] = ms
+			} else {
+				// Keep-alive or plain tracked: intentionally closed, stop tracking.
+				delete(managed, name)
+				continue
+			}
 		}
 		if ms.Pinned {
 			slog.Info("recreate pinned session", "session", name, "dir", ms.Dir)
@@ -1037,10 +1090,6 @@ func Run(ctx context.Context, cfg Config) error {
 	if len(errorState) > 0 {
 		slog.Info("loaded error state", "tracked", len(errorState))
 	}
-	managed := LoadManagedState(cfg.StatePath)
-	if len(managed) > 0 {
-		slog.Info("loaded managed state", "sessions", len(managed))
-	}
 	tick := 0
 	firstTick := true
 	for {
@@ -1050,6 +1099,9 @@ func Run(ctx context.Context, cfg Config) error {
 					slog.Error("tick panicked", "panic", r)
 				}
 			}()
+			// Reload managed state each tick so CLI changes (pin/unpin/mark-closed)
+			// are picked up without requiring a daemon restart.
+			managed := LoadManagedState(cfg.StatePath)
 			Tick(cfg, state, errorState, managed, firstTick, time.Now())
 			if err := SaveState(cfg.StatePath, state); err != nil {
 				slog.Error("save state failed", "err", err)

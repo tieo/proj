@@ -11,60 +11,227 @@ import (
 
 	"github.com/tieo/proj/internal/config"
 	"github.com/tieo/proj/internal/projects"
+	"github.com/tieo/proj/internal/unreset"
 )
 
 const (
 	ansiGreen  = "\033[32m"
+	ansiRed    = "\033[31m"
 	ansiYellow = "\033[33m"
 	ansiGray   = "\033[90m"
 	ansiDim    = "\033[2m"
 	ansiReset  = "\033[0m"
 )
 
+type listRow struct {
+	// indicator is the left-hand status symbol, always 2 terminal columns wide:
+	//   📌  (pinned + alive)
+	//   ●·  (alive — colored dot + space)
+	//   ○·  (dead — grey circle + space)
+	indicator string
+	name      string
+	lang      string // project lang, or abbreviated path for orphans
+	model     string // empty when not detected
+	ts        int64
+	note      string // plain-text description of a non-normal state
+	noteColor string // ANSI color for the note, empty = dim
+}
+
+var listAll bool
+
 var listCmd = &cobra.Command{
 	Use:     "list",
 	Aliases: []string{"ls"},
 	Short:   "list projects with session status",
-	RunE: func(cmd *cobra.Command, args []string) error {
-		cfg, err := config.Load()
-		if err != nil {
-			return err
+	RunE:    runList,
+}
+
+func runList(cmd *cobra.Command, args []string) error {
+	cfg, err := config.Load()
+	if err != nil {
+		return err
+	}
+
+	unrCfg := unresetConfig()
+	managed := unreset.LoadManagedState(unrCfg.StatePath)
+
+	// Scan panes for label (banner/error/selector state) per session.
+	// Model is read from JSONL session files instead — more reliable.
+	scan := unreset.ScanPanes(unrCfg.Capture)
+	labelBySession := make(map[string]string, len(scan))
+	for _, s := range scan {
+		n := s.Pane.Session
+		label := s.Label()
+		existing := labelBySession[n]
+		if existing == "" || (label != "idle" && existing == "idle") {
+			labelBySession[n] = label
 		}
-		all := projects.All(cfg.BaseDir)
-		sort.SliceStable(all, func(i, j int) bool {
-			ai, aj := all[i].SessionTS, all[j].SessionTS
-			if (ai > 0) != (aj > 0) {
-				return ai > 0 // active first
-			}
-			if ai != aj {
-				return ai > aj
-			}
-			return all[i].DirMTime > all[j].DirMTime
+	}
+
+	all := projects.All(cfg.BaseDir)
+	sort.SliceStable(all, func(i, j int) bool {
+		mi := managed[projects.SessionName(all[i].Name)]
+		mj := managed[projects.SessionName(all[j].Name)]
+		if mi.Pinned != mj.Pinned {
+			return mi.Pinned
+		}
+		ai, aj := all[i].SessionTS, all[j].SessionTS
+		if (ai > 0) != (aj > 0) {
+			return ai > 0
+		}
+		if ai != aj {
+			return ai > aj
+		}
+		return all[i].DirMTime > all[j].DirMTime
+	})
+
+	var rows []listRow
+	now := time.Now().Unix()
+
+	maxAge := cfg.List.MaxAgeDays
+	if listAll {
+		maxAge = 0
+	}
+	cutoff := int64(0)
+	if maxAge > 0 {
+		cutoff = now - int64(maxAge)*86400
+	}
+	hidden := 0
+
+	for _, p := range all {
+		sessName := projects.SessionName(p.Name)
+		ms := managed[sessName]
+		label := labelBySession[sessName]
+		alive := p.SessionTS > 0
+
+		// Hide inactive projects older than the cutoff (active and pinned always shown).
+		if cutoff > 0 && !alive && !ms.Pinned && p.DirMTime < cutoff {
+			hidden++
+			continue
+		}
+
+		rows = append(rows, listRow{
+			indicator: buildIndicator(alive, ms.Pinned, label),
+			name:      p.Name,
+			lang:      p.Lang,
+			model:     unreset.ModelFromDir(p.Dir),
+			ts:        sessionTS(p, alive),
+			note:      buildNote(label, ms, alive, unrCfg.KeepAlive),
+			noteColor: noteColor(label, alive),
 		})
-		now := time.Now().Unix()
-		for _, p := range all {
-			color, dot, ts := ansiGray, "○", p.DirMTime
-			if p.SessionTS > 0 {
-				color, dot, ts = ansiGreen, "●", p.SessionTS
-			}
-			fmt.Printf("  %s%s%s %-22s %-15s %s%s%s\n",
-				color, dot, ansiReset,
-				p.Name, p.Lang,
-				ansiDim, projects.Reltime(ts, now), ansiReset)
+	}
+
+	home := os.Getenv("HOME")
+	for _, s := range projects.OrphanSessions(cfg.BaseDir) {
+		ms := managed[s.Name]
+		label := labelBySession[s.Name]
+		path := strings.Replace(s.Path, home, "~", 1)
+		rows = append(rows, listRow{
+			indicator: buildIndicator(true, ms.Pinned, label),
+			name:      s.Name,
+			lang:      path,
+			model:     "", // orphan: no known project dir for JSONL lookup
+			ts:        s.Activity,
+			note:      buildNote(label, ms, true, unrCfg.KeepAlive),
+			noteColor: noteColor(label, true),
+		})
+	}
+
+	// Adaptive column widths: max content width + 2, with minimums.
+	nameW, langW, modelW := 8, 5, 0
+	for _, r := range rows {
+		if len(r.name) > nameW {
+			nameW = len(r.name)
 		}
-		home := os.Getenv("HOME")
-		for _, s := range projects.OrphanSessions(cfg.BaseDir) {
-			path := s.Path
-			if home != "" {
-				path = strings.Replace(path, home, "~", 1)
-			}
-			fmt.Printf("  %s●%s %-22s %-15s %s%s%s\n",
-				ansiYellow, ansiReset,
-				s.Name, path,
-				ansiDim, projects.Reltime(s.Activity, now), ansiReset)
+		if len(r.lang) > langW {
+			langW = len(r.lang)
 		}
-		return nil
-	},
+		if len(r.model) > modelW {
+			modelW = len(r.model)
+		}
+	}
+	nameW += 2
+	langW += 2
+	if modelW > 0 {
+		modelW += 2
+	}
+
+	for _, r := range rows {
+		line := fmt.Sprintf("  %s %-*s %-*s", r.indicator, nameW, r.name, langW, r.lang)
+		if modelW > 0 {
+			line += fmt.Sprintf("%-*s", modelW, r.model)
+		}
+		line += fmt.Sprintf("%s%s%s", ansiDim, projects.Reltime(r.ts, now), ansiReset)
+		if r.note != "" {
+			nc := r.noteColor
+			if nc == "" {
+				nc = ansiDim
+			}
+			line += "  " + nc + r.note + ansiReset
+		}
+		fmt.Println(line)
+	}
+	if hidden > 0 {
+		fmt.Printf("%s  + %d older projects hidden (--all to show)%s\n", ansiDim, hidden, ansiReset)
+	}
+	return nil
+}
+
+// buildIndicator returns a 2-terminal-column-wide status symbol.
+//
+//	📌   pinned + alive (emoji, 2 cols)
+//	● ·  alive — colored dot + space (1+1 cols)
+//	○ ·  dead  — grey circle + space (1+1 cols)
+func buildIndicator(alive, pinned bool, label string) string {
+	if alive && pinned {
+		return "📌"
+	}
+	if !alive {
+		return ansiGray + "○" + ansiReset + " "
+	}
+	switch label {
+	case "error", "banner", "banner + selector":
+		return ansiRed + "●" + ansiReset + " "
+	case "selector":
+		return ansiYellow + "●" + ansiReset + " "
+	default:
+		return ansiGreen + "●" + ansiReset + " "
+	}
+}
+
+func buildNote(label string, ms unreset.ManagedSession, alive, globalKeepAlive bool) string {
+	if !alive && (ms.Pinned || ms.KeepAlive || globalKeepAlive) && !ms.Closed {
+		return "restarting"
+	}
+	switch label {
+	case "banner", "banner + selector":
+		return "out of tokens"
+	case "error":
+		return "API error"
+	case "selector":
+		return "waiting for input"
+	}
+	return ""
+}
+
+func noteColor(label string, alive bool) string {
+	if !alive {
+		return ansiDim
+	}
+	switch label {
+	case "error", "banner", "banner + selector":
+		return ansiRed
+	case "selector":
+		return ansiYellow
+	}
+	return ansiDim
+}
+
+func sessionTS(p projects.Project, alive bool) int64 {
+	if alive {
+		return p.SessionTS
+	}
+	return p.DirMTime
 }
 
 func init() {

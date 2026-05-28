@@ -52,6 +52,8 @@ var (
 	}
 )
 
+var unresetPinDir string
+
 var unresetPinCmd = &cobra.Command{
 	Use:   "pin [session]",
 	Short: "mark a session as pinned (always recreated by the daemon)",
@@ -86,6 +88,7 @@ func init() {
 	unresetCmd.AddCommand(unresetRunCmd, unresetStartCmd, unresetStopCmd,
 		unresetRestartCmd, unresetEnableCmd, unresetDisableCmd, unresetLogsCmd,
 		unresetPinCmd, unresetUnpinCmd, unresetKeepAliveCmd, unresetMarkClosedCmd)
+	unresetPinCmd.Flags().StringVar(&unresetPinDir, "dir", "", "working directory for session recreation (default: last known dir)")
 }
 
 // ----- status output -----
@@ -218,7 +221,6 @@ func formatAgo(d time.Duration) string {
 func runUnresetStatus(cmd *cobra.Command, args []string) error {
 	cfg := unresetConfig()
 	state := unreset.LoadState(cfg.StatePath)
-	managed := unreset.LoadManagedState(cfg.StatePath)
 	svc := gatherService()
 
 	fmt.Printf("%s proj-unreset — auto-resume Claude Code sessions after usage-limit cooldown\n", svc.dot())
@@ -253,65 +255,11 @@ func runUnresetStatus(cmd *cobra.Command, args []string) error {
 		fmt.Println("     Loaded: (manage via `launchctl print gui/$UID/com.proj.unreset`)")
 	}
 
-	scan := unreset.ScanPanes(cfg.Capture)
 	fmt.Printf("     Config: poll=%s  max_wait=%s  jitter=%s  resume=%q\n",
 		formatDur(cfg.Poll), formatDur(cfg.MaxWait), formatDur(cfg.Jitter), cfg.ResumeText)
 	fmt.Printf("      State: %s\n", cfg.StatePath)
-
 	fmt.Println()
-	fmt.Printf("  Watching %d session(s):\n", len(scan))
-	for _, s := range scan {
-		marker, color, label := "○", "\033[90m", "ok"
-		switch s.Label() {
-		case "banner", "banner + selector":
-			marker, color, label = "●", "\033[31m", s.Label()
-		case "selector":
-			marker, color, label = "●", "\033[33m", s.Label()
-		}
-		fmt.Printf("    %s%s\033[0m %-22s %s\n", color, marker, s.Pane.Session, label)
-	}
-
-	// Show managed sessions (pinned / keep-alive).
-	if len(managed) > 0 {
-		kaStr := "off"
-		if cfg.KeepAlive {
-			kaStr = "on"
-		}
-		fmt.Println()
-		fmt.Printf("  Managed sessions: %d (keep-alive: %s)\n", len(managed), kaStr)
-		// Build a set of live session names for status lookup.
-		liveNames := make(map[string]bool, len(scan))
-		for _, s := range scan {
-			liveNames[s.Pane.Session] = true
-		}
-		for _, ms := range managed {
-			alive := liveNames[ms.Name]
-			var dot, color string
-			switch {
-			case alive && ms.Pinned:
-				dot, color = "●", "\033[32m" // green — alive and pinned
-			case alive && (ms.KeepAlive || cfg.KeepAlive):
-				dot, color = "●", "\033[33m" // yellow — alive and keep-alive
-			case !alive && (ms.Pinned || ms.KeepAlive || cfg.KeepAlive) && !ms.Closed:
-				dot, color = "●", "\033[31m" // red — dead, will be recreated
-			default:
-				dot, color = "○", "\033[90m" // grey — just tracked
-			}
-			kind := "tracked"
-			switch {
-			case ms.Pinned:
-				kind = "pinned"
-			case ms.KeepAlive || cfg.KeepAlive:
-				kind = "keep-alive"
-			}
-			aliveStr := "dead"
-			if alive {
-				aliveStr = "alive"
-			}
-			fmt.Printf("    %s%s\033[0m %-24s %-10s %-5s %s\n",
-				color, dot, ms.Name, kind, aliveStr, ms.Dir)
-		}
-	}
+	_ = runList(nil, nil)
 
 	now := time.Now()
 	deferredCount := 0
@@ -433,6 +381,9 @@ func runUnresetPin(cmd *cobra.Command, args []string) error {
 	ms := managed[name]
 	ms.Name = name
 	ms.Pinned = true
+	if unresetPinDir != "" {
+		ms.Dir = unresetPinDir
+	}
 	managed[name] = ms
 	if err := unreset.SaveManagedState(cfg.StatePath, managed); err != nil {
 		return err

@@ -16,6 +16,7 @@ type Config struct {
 	DefaultLang string        `toml:"default_lang"`
 	Claude      ClaudeConfig  `toml:"claude"`
 	Unreset     UnresetConfig `toml:"unreset"`
+	List        ListConfig    `toml:"list"`
 }
 
 type ClaudeConfig struct {
@@ -30,6 +31,10 @@ type UnresetConfig struct {
 	ResumeText   string `toml:"resume_text"`
 	CaptureLines int    `toml:"capture_lines"`
 	KeepAlive    bool   `toml:"keep_alive"`
+}
+
+type ListConfig struct {
+	MaxAgeDays int `toml:"max_age_days"` // hide inactive projects older than this; 0 = show all
 }
 
 func Default() Config {
@@ -47,6 +52,9 @@ func Default() Config {
 			Jitter:       "1s",
 			ResumeText:   "continue",
 			CaptureLines: 300,
+		},
+		List: ListConfig{
+			MaxAgeDays: 14,
 		},
 	}
 }
