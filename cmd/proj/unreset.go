@@ -320,6 +320,8 @@ func unresetConfig() unreset.Config {
 		out.Capture = user.Unreset.CaptureLines
 	}
 	out.KeepAlive = user.Unreset.KeepAlive
+	out.ClaudeCommand = user.Claude.Command
+	out.ClaudeResumeFlag = user.Claude.ResumeFlag
 	return out
 }
 
