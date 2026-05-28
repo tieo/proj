@@ -57,6 +57,7 @@ type Config struct {
 	ClearText   string // slash command to clear when compact itself fails
 	Capture     int
 	StatePath   string
+	KeepAlive   bool // recreate vanished sessions that weren't cleanly closed
 }
 
 func DefaultConfig() Config {
@@ -632,6 +633,69 @@ func SaveErrorState(path string, state ErrorState) error {
 	return os.Rename(tmp, p)
 }
 
+// ManagedSession tracks a session unreset knows about.
+// Sessions are automatically tracked as soon as the daemon observes them.
+//
+// Pinned sessions are always recreated by the daemon, even after a system
+// restart — because the daemon persists their state to disk.
+//
+// Keep-alive sessions (governed by the global KeepAlive config flag, or the
+// per-session KeepAlive field) are recreated if they vanish without a clean
+// close signal. Unlike pinned sessions they are NOT recreated after a system
+// restart because the daemon only acts on sessions it has observed in the
+// current uptime (first-tick exclusion).
+//
+// A clean close is signalled either by `proj close` or by the shell exit trap
+// in proj.zsh / proj.bash / proj.fish, both of which call
+// `proj unreset mark-closed <name>` before the session is destroyed.
+type ManagedSession struct {
+	Name      string    `json:"name"`
+	Dir       string    `json:"dir"`        // working directory, captured while alive
+	Pinned    bool      `json:"pinned"`     // always recreate, survives system restart
+	KeepAlive bool      `json:"keep_alive"` // recreate if not cleanly closed
+	Closed    bool      `json:"closed"`     // set by proj close / shell trap
+	SeenAt    time.Time `json:"seen_at"`    // last time daemon observed session alive
+}
+
+// ManagedState is the persisted map of all sessions proj unreset knows about.
+type ManagedState map[string]ManagedSession // session name → entry
+
+func managedStatePath(statePath string) string {
+	ext := filepath.Ext(statePath)
+	return statePath[:len(statePath)-len(ext)] + "-sessions" + ext
+}
+
+func LoadManagedState(path string) ManagedState {
+	data, err := os.ReadFile(managedStatePath(path))
+	if err != nil {
+		return make(ManagedState)
+	}
+	var s ManagedState
+	if err := json.Unmarshal(data, &s); err != nil {
+		return make(ManagedState)
+	}
+	if s == nil {
+		s = make(ManagedState)
+	}
+	return s
+}
+
+func SaveManagedState(path string, state ManagedState) error {
+	p := managedStatePath(path)
+	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+		return err
+	}
+	data, err := json.MarshalIndent(state, "", "  ")
+	if err != nil {
+		return err
+	}
+	tmp := p + ".tmp"
+	if err := os.WriteFile(tmp, data, 0o644); err != nil {
+		return err
+	}
+	return os.Rename(tmp, p)
+}
+
 func LoadState(path string) State {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -706,7 +770,49 @@ func nextAttemptAfter(b *Banner, now time.Time, cfg Config) time.Time {
 	return next
 }
 
-func Tick(cfg Config, state State, errorState ErrorState, now time.Time) {
+func Tick(cfg Config, state State, errorState ErrorState, managed ManagedState, firstTick bool, now time.Time) {
+	// --- Session management: keep-alive and pinned recreation ---
+	liveSessions := tmux.ListSessions()
+	liveSessionMap := make(map[string]tmux.Session, len(liveSessions))
+	for _, s := range liveSessions {
+		liveSessionMap[s.Name] = s
+	}
+
+	// Upsert every live session into managed state.
+	for _, s := range liveSessions {
+		prev := managed[s.Name]
+		prev.Name = s.Name
+		prev.Dir = s.Path
+		prev.SeenAt = now
+		// If the session is alive again after being marked closed, clear the flag.
+		prev.Closed = false
+		managed[s.Name] = prev
+	}
+
+	// For sessions we know about that are no longer live:
+	for name, ms := range managed {
+		if _, alive := liveSessionMap[name]; alive {
+			continue
+		}
+		if ms.Closed {
+			// Intentionally closed — clean up the tracking entry.
+			delete(managed, name)
+			continue
+		}
+		if ms.Pinned {
+			slog.Info("recreate pinned session", "session", name, "dir", ms.Dir)
+			if _, err := tmux.NewSession(name, ms.Dir); err != nil {
+				slog.Error("recreate pinned session failed", "session", name, "err", err)
+			}
+		} else if (ms.KeepAlive || cfg.KeepAlive) && !firstTick {
+			slog.Info("recreate keep-alive session", "session", name, "dir", ms.Dir)
+			if _, err := tmux.NewSession(name, ms.Dir); err != nil {
+				slog.Error("recreate keep-alive session failed", "session", name, "err", err)
+			}
+		}
+	}
+
+	// --- Existing pane-level banner/error loop ---
 	panes := tmux.ListPanes()
 	live := make(map[string]string, len(panes))
 	for _, p := range panes {
@@ -931,7 +1037,12 @@ func Run(ctx context.Context, cfg Config) error {
 	if len(errorState) > 0 {
 		slog.Info("loaded error state", "tracked", len(errorState))
 	}
+	managed := LoadManagedState(cfg.StatePath)
+	if len(managed) > 0 {
+		slog.Info("loaded managed state", "sessions", len(managed))
+	}
 	tick := 0
+	firstTick := true
 	for {
 		func() {
 			defer func() {
@@ -939,14 +1050,18 @@ func Run(ctx context.Context, cfg Config) error {
 					slog.Error("tick panicked", "panic", r)
 				}
 			}()
-			Tick(cfg, state, errorState, time.Now())
+			Tick(cfg, state, errorState, managed, firstTick, time.Now())
 			if err := SaveState(cfg.StatePath, state); err != nil {
 				slog.Error("save state failed", "err", err)
 			}
 			if err := SaveErrorState(cfg.StatePath, errorState); err != nil {
 				slog.Error("save error state failed", "err", err)
 			}
+			if err := SaveManagedState(cfg.StatePath, managed); err != nil {
+				slog.Error("save managed state failed", "err", err)
+			}
 		}()
+		firstTick = false
 		tick++
 		if tick%heartbeatEvery == 0 {
 			slog.Info("heartbeat", "tick", tick, "tracked", len(state))
