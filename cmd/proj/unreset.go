@@ -52,10 +52,40 @@ var (
 	}
 )
 
+var unresetPinCmd = &cobra.Command{
+	Use:   "pin [session]",
+	Short: "mark a session as pinned (always recreated by the daemon)",
+	Args:  cobra.MaximumNArgs(1),
+	RunE:  runUnresetPin,
+}
+
+var unresetUnpinCmd = &cobra.Command{
+	Use:   "unpin [session]",
+	Short: "remove the pinned flag from a session",
+	Args:  cobra.MaximumNArgs(1),
+	RunE:  runUnresetUnpin,
+}
+
+var unresetKeepAliveCmd = &cobra.Command{
+	Use:   "keep-alive [on|off]",
+	Short: "show or set the global keep-alive flag",
+	Args:  cobra.MaximumNArgs(1),
+	RunE:  runUnresetKeepAlive,
+}
+
+var unresetMarkClosedCmd = &cobra.Command{
+	Use:    "mark-closed <session>",
+	Short:  "mark a session as intentionally closed (called by shell exit trap)",
+	Args:   cobra.ExactArgs(1),
+	RunE:   runUnresetMarkClosed,
+	Hidden: true,
+}
+
 func init() {
 	rootCmd.AddCommand(unresetCmd)
 	unresetCmd.AddCommand(unresetRunCmd, unresetStartCmd, unresetStopCmd,
-		unresetRestartCmd, unresetEnableCmd, unresetDisableCmd, unresetLogsCmd)
+		unresetRestartCmd, unresetEnableCmd, unresetDisableCmd, unresetLogsCmd,
+		unresetPinCmd, unresetUnpinCmd, unresetKeepAliveCmd, unresetMarkClosedCmd)
 }
 
 // ----- status output -----
@@ -188,6 +218,7 @@ func formatAgo(d time.Duration) string {
 func runUnresetStatus(cmd *cobra.Command, args []string) error {
 	cfg := unresetConfig()
 	state := unreset.LoadState(cfg.StatePath)
+	managed := unreset.LoadManagedState(cfg.StatePath)
 	svc := gatherService()
 
 	fmt.Printf("%s proj-unreset — auto-resume Claude Code sessions after usage-limit cooldown\n", svc.dot())
@@ -238,6 +269,48 @@ func runUnresetStatus(cmd *cobra.Command, args []string) error {
 			marker, color, label = "●", "\033[33m", s.Label()
 		}
 		fmt.Printf("    %s%s\033[0m %-22s %s\n", color, marker, s.Pane.Session, label)
+	}
+
+	// Show managed sessions (pinned / keep-alive).
+	if len(managed) > 0 {
+		kaStr := "off"
+		if cfg.KeepAlive {
+			kaStr = "on"
+		}
+		fmt.Println()
+		fmt.Printf("  Managed sessions: %d (keep-alive: %s)\n", len(managed), kaStr)
+		// Build a set of live session names for status lookup.
+		liveNames := make(map[string]bool, len(scan))
+		for _, s := range scan {
+			liveNames[s.Pane.Session] = true
+		}
+		for _, ms := range managed {
+			alive := liveNames[ms.Name]
+			var dot, color string
+			switch {
+			case alive && ms.Pinned:
+				dot, color = "●", "\033[32m" // green — alive and pinned
+			case alive && (ms.KeepAlive || cfg.KeepAlive):
+				dot, color = "●", "\033[33m" // yellow — alive and keep-alive
+			case !alive && (ms.Pinned || ms.KeepAlive || cfg.KeepAlive) && !ms.Closed:
+				dot, color = "●", "\033[31m" // red — dead, will be recreated
+			default:
+				dot, color = "○", "\033[90m" // grey — just tracked
+			}
+			kind := "tracked"
+			switch {
+			case ms.Pinned:
+				kind = "pinned"
+			case ms.KeepAlive || cfg.KeepAlive:
+				kind = "keep-alive"
+			}
+			aliveStr := "dead"
+			if alive {
+				aliveStr = "alive"
+			}
+			fmt.Printf("    %s%s\033[0m %-24s %-10s %-5s %s\n",
+				color, dot, ms.Name, kind, aliveStr, ms.Dir)
+		}
 	}
 
 	now := time.Now()
@@ -298,6 +371,7 @@ func unresetConfig() unreset.Config {
 	if user.Unreset.CaptureLines > 0 {
 		out.Capture = user.Unreset.CaptureLines
 	}
+	out.KeepAlive = user.Unreset.KeepAlive
 	return out
 }
 
@@ -321,4 +395,104 @@ func runForeground(bin string, args ...string) error {
 	c := exec.Command(bin, args...)
 	c.Stdin, c.Stdout, c.Stderr = os.Stdin, os.Stdout, os.Stderr
 	return c.Run()
+}
+
+// currentSessionName returns the tmux session name from the environment.
+// Returns "" when not inside tmux.
+func currentSessionName() string {
+	if os.Getenv("TMUX") == "" {
+		return ""
+	}
+	out, err := exec.Command("tmux", "display-message", "-p", "#S").Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
+}
+
+// resolveSessionArg returns the named session, or the current tmux session if
+// no name was given. Returns an error if neither is available.
+func resolveSessionArg(args []string) (string, error) {
+	if len(args) > 0 && args[0] != "" {
+		return args[0], nil
+	}
+	name := currentSessionName()
+	if name == "" {
+		return "", fmt.Errorf("no session name given and not inside a tmux session")
+	}
+	return name, nil
+}
+
+func runUnresetPin(cmd *cobra.Command, args []string) error {
+	name, err := resolveSessionArg(args)
+	if err != nil {
+		return err
+	}
+	cfg := unresetConfig()
+	managed := unreset.LoadManagedState(cfg.StatePath)
+	ms := managed[name]
+	ms.Name = name
+	ms.Pinned = true
+	managed[name] = ms
+	if err := unreset.SaveManagedState(cfg.StatePath, managed); err != nil {
+		return err
+	}
+	fmt.Printf("pinned %s\n", name)
+	return nil
+}
+
+func runUnresetUnpin(cmd *cobra.Command, args []string) error {
+	name, err := resolveSessionArg(args)
+	if err != nil {
+		return err
+	}
+	cfg := unresetConfig()
+	managed := unreset.LoadManagedState(cfg.StatePath)
+	ms := managed[name]
+	ms.Pinned = false
+	managed[name] = ms
+	if err := unreset.SaveManagedState(cfg.StatePath, managed); err != nil {
+		return err
+	}
+	fmt.Printf("unpinned %s\n", name)
+	return nil
+}
+
+func runUnresetKeepAlive(cmd *cobra.Command, args []string) error {
+	userCfg, err := config.Load()
+	if err != nil {
+		return err
+	}
+	if len(args) == 0 {
+		if userCfg.Unreset.KeepAlive {
+			fmt.Println("keep-alive: on")
+		} else {
+			fmt.Println("keep-alive: off")
+		}
+		return nil
+	}
+	switch args[0] {
+	case "on":
+		userCfg.Unreset.KeepAlive = true
+	case "off":
+		userCfg.Unreset.KeepAlive = false
+	default:
+		return fmt.Errorf("expected on or off, got %q", args[0])
+	}
+	if err := config.Write(userCfg); err != nil {
+		return err
+	}
+	fmt.Printf("keep-alive: %s\n", args[0])
+	return nil
+}
+
+func runUnresetMarkClosed(cmd *cobra.Command, args []string) error {
+	name := args[0]
+	cfg := unresetConfig()
+	managed := unreset.LoadManagedState(cfg.StatePath)
+	ms := managed[name]
+	ms.Name = name
+	ms.Closed = true
+	managed[name] = ms
+	return unreset.SaveManagedState(cfg.StatePath, managed)
 }
