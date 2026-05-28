@@ -179,11 +179,11 @@ func runList(cmd *cobra.Command, args []string) error {
 
 // buildIndicator returns a 2-terminal-column-wide status symbol.
 //
-//	📌   pinned + alive (emoji, 2 cols)
+//	📌   pinned (alive or dead, emoji, 2 cols)
 //	● ·  alive — colored dot + space (1+1 cols)
 //	○ ·  dead  — grey circle + space (1+1 cols)
 func buildIndicator(alive, pinned bool, label string) string {
-	if alive && pinned {
+	if pinned {
 		return "📌"
 	}
 	if !alive {
