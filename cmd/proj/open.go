@@ -20,7 +20,7 @@ func runOpen(cmd *cobra.Command, args []string) error {
 	}
 	switch len(args) {
 	case 0:
-		return cmd.Help()
+		return runList(cmd, args)
 	case 1:
 		return openExisting(cfg, args[0])
 	case 2:
