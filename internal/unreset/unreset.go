@@ -57,7 +57,9 @@ type Config struct {
 	ClearText   string // slash command to clear when compact itself fails
 	Capture     int
 	StatePath   string
-	KeepAlive   bool // recreate vanished sessions that weren't cleanly closed
+	KeepAlive        bool // recreate vanished sessions that weren't cleanly closed
+	ClaudeCommand    string
+	ClaudeResumeFlag string
 }
 
 func DefaultConfig() Config {
@@ -408,6 +410,40 @@ func parseReset(dateStr, timeStr, tzStr string, now time.Time) (time.Time, bool,
 		target = target.AddDate(0, 0, 1)
 	}
 	return target, false, nil
+}
+
+// launchSession creates a tmux session for name at dir and sends the Claude
+// launch command, appending the resume flag when there is prior history.
+func launchSession(cfg Config, name, dir string) {
+	pane, err := tmux.NewSession(name, dir)
+	if err != nil {
+		slog.Error("recreate session failed", "session", name, "err", err)
+		return
+	}
+	if cfg.ClaudeCommand == "" {
+		return
+	}
+	cmdLine := strings.NewReplacer("{name}", name, "{dir}", dir).Replace(cfg.ClaudeCommand)
+	if cfg.ClaudeResumeFlag != "" && hasHistory(dir) {
+		cmdLine += " " + cfg.ClaudeResumeFlag
+	}
+	if err := tmux.SendKeys(pane, cmdLine); err != nil {
+		slog.Error("send claude command failed", "session", name, "err", err)
+	}
+}
+
+// hasHistory reports whether Claude Code has a prior session transcript for dir.
+func hasHistory(dir string) bool {
+	entries, err := os.ReadDir(claudeProjectDir(dir))
+	if err != nil {
+		return false
+	}
+	for _, e := range entries {
+		if !e.IsDir() && strings.HasSuffix(e.Name(), ".jsonl") {
+			return true
+		}
+	}
+	return false
 }
 
 // claudeProjectDir derives the Claude Code project directory for a given
@@ -854,14 +890,10 @@ func Tick(cfg Config, state State, errorState ErrorState, managed ManagedState, 
 		}
 		if ms.Pinned {
 			slog.Info("recreate pinned session", "session", name, "dir", ms.Dir)
-			if _, err := tmux.NewSession(name, ms.Dir); err != nil {
-				slog.Error("recreate pinned session failed", "session", name, "err", err)
-			}
+			launchSession(cfg, name, ms.Dir)
 		} else if (ms.KeepAlive || cfg.KeepAlive) && !firstTick {
 			slog.Info("recreate keep-alive session", "session", name, "dir", ms.Dir)
-			if _, err := tmux.NewSession(name, ms.Dir); err != nil {
-				slog.Error("recreate keep-alive session failed", "session", name, "err", err)
-			}
+			launchSession(cfg, name, ms.Dir)
 		}
 	}
 
