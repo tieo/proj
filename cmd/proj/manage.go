@@ -20,7 +20,17 @@ var killCmd = &cobra.Command{
 	Short: "kill a project's tmux session",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		return tmux.KillSession(projects.SessionName(args[0]))
+		cfg, err := config.Load()
+		if err != nil {
+			return err
+		}
+		// Fall back to the raw arg so orphan sessions (no project dir) can
+		// still be killed by their literal tmux name.
+		target := args[0]
+		if dir := projects.Find(cfg.BaseDir, args[0]); dir != "" {
+			target = projects.SessionNameForDir(dir)
+		}
+		return tmux.KillSession(target)
 	},
 }
 
@@ -42,7 +52,7 @@ var rmCmd = &cobra.Command{
 		if a := strings.ToLower(strings.TrimSpace(ans)); a != "y" && a != "yes" {
 			return fmt.Errorf("aborted")
 		}
-		_ = tmux.KillSession(projects.SessionName(args[0]))
+		_ = tmux.KillSession(projects.SessionNameForDir(dir))
 		return os.RemoveAll(dir)
 	},
 }
@@ -96,7 +106,7 @@ var renameCmd = &cobra.Command{
 		if err := os.Rename(old, newDir); err != nil {
 			return err
 		}
-		_ = tmux.RenameSession(projects.SessionName(args[0]), projects.SessionName(args[1]))
+		_ = tmux.RenameSession(projects.SessionNameForDir(old), projects.SessionNameForDir(newDir))
 		fmt.Printf("renamed %s → %s\n", old, newDir)
 		return nil
 	},

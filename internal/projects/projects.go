@@ -21,10 +21,20 @@ type Project struct {
 	DirMTime  int64
 }
 
-// SessionName turns a project name into a valid tmux session name (tmux
-// rejects '.' and ':' in session targets when used with the '=' prefix).
-func SessionName(name string) string {
-	return strings.NewReplacer(".", "_", ":", "_").Replace(name)
+// SessionName builds a tmux-safe session name from a project's lang directory
+// and base name. The lang prefix disambiguates same-named projects living in
+// different lang dirs (e.g. nix/.dotfiles.nix vs Nix/.dotfiles.nix) — without
+// it they collapse to a single tmux session and clobber each other's state.
+// tmux rejects '.' and ':' in session targets, and we fold '/' so the
+// lang/name join stays a single token.
+func SessionName(lang, name string) string {
+	return strings.NewReplacer("/", "-", ".", "_", ":", "_").Replace(lang + "/" + name)
+}
+
+// SessionNameForDir derives the session name from a full project directory of
+// the form <baseDir>/<lang>/<name>.
+func SessionNameForDir(dir string) string {
+	return SessionName(filepath.Base(filepath.Dir(dir)), filepath.Base(dir))
 }
 
 // Find returns the first project directory under baseDir/*/name, or "".
