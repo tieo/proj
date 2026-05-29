@@ -492,7 +492,10 @@ func ModelFromDir(workDir string) string {
 				Model string `json:"model"`
 			} `json:"message"`
 		}
-		if err := json.Unmarshal([]byte(line), &entry); err == nil && entry.Message.Model != "" {
+		// Skip angle-bracketed sentinels like "<synthetic>" that Claude Code
+		// writes for harness-generated messages — they're not real model ids
+		// and would shadow the actual model from the last assistant turn.
+		if err := json.Unmarshal([]byte(line), &entry); err == nil && entry.Message.Model != "" && !strings.HasPrefix(entry.Message.Model, "<") {
 			return entry.Message.Model
 		}
 	}
