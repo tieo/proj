@@ -37,24 +37,26 @@ func SessionNameForDir(dir string) string {
 	return SessionName(filepath.Base(filepath.Dir(dir)), filepath.Base(dir))
 }
 
-// Find returns the first project directory under baseDir/*/name, or "".
-// Iterates language directories in alphabetical order for deterministic results.
-func Find(baseDir, name string) string {
+// FindAll returns every project directory matching baseDir/*/name, one per
+// lang dir that contains it, sorted by lang name. A name can legitimately
+// exist under multiple langs, so callers must decide how to disambiguate.
+func FindAll(baseDir, name string) []string {
 	entries, err := os.ReadDir(baseDir)
 	if err != nil {
-		return ""
+		return nil
 	}
 	sort.Slice(entries, func(i, j int) bool { return entries[i].Name() < entries[j].Name() })
+	var out []string
 	for _, e := range entries {
 		if !e.IsDir() {
 			continue
 		}
 		candidate := filepath.Join(baseDir, e.Name(), name)
 		if info, err := os.Stat(candidate); err == nil && info.IsDir() {
-			return candidate
+			out = append(out, candidate)
 		}
 	}
-	return ""
+	return out
 }
 
 // All returns every project at baseDir/<lang>/<name>, with session status filled in.

@@ -30,9 +30,9 @@ func runOpen(cmd *cobra.Command, args []string) error {
 }
 
 func openExisting(cfg config.Config, name string) error {
-	dir := projects.Find(cfg.BaseDir, name)
-	if dir == "" {
-		return fmt.Errorf("project %q not found under %s — use: proj <lang> <name>", name, cfg.BaseDir)
+	dir, err := resolveProjectDir(cfg.BaseDir, name)
+	if err != nil {
+		return err
 	}
 	return openInTmux(cfg, name, dir)
 }
