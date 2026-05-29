@@ -100,7 +100,7 @@ func runList(cmd *cobra.Command, args []string) error {
 
 	for _, p := range all {
 		sessName := projects.SessionName(p.Name)
-		ms := managed[sessName]
+		ms, tracked := managed[sessName]
 		label := labelBySession[sessName]
 		alive := p.SessionTS > 0
 
@@ -116,14 +116,14 @@ func runList(cmd *cobra.Command, args []string) error {
 			lang:      p.Lang,
 			model:     unreset.ModelFromDir(p.Dir),
 			ts:        sessionTS(p, alive),
-			note:      buildNote(label, ms, alive, unrCfg.KeepAlive),
+			note:      buildNote(label, ms, tracked, alive, unrCfg.KeepAlive),
 			noteColor: noteColor(label, alive),
 		})
 	}
 
 	home := os.Getenv("HOME")
 	for _, s := range projects.OrphanSessions(cfg.BaseDir) {
-		ms := managed[s.Name]
+		ms, tracked := managed[s.Name]
 		label := labelBySession[s.Name]
 		path := strings.Replace(s.Path, home, "~", 1)
 		rows = append(rows, listRow{
@@ -132,7 +132,7 @@ func runList(cmd *cobra.Command, args []string) error {
 			lang:      path,
 			model:     "", // orphan: no known project dir for JSONL lookup
 			ts:        s.Activity,
-			note:      buildNote(label, ms, true, unrCfg.KeepAlive),
+			note:      buildNote(label, ms, tracked, true, unrCfg.KeepAlive),
 			noteColor: noteColor(label, true),
 		})
 	}
@@ -199,8 +199,10 @@ func buildIndicator(alive, pinned bool, label string) string {
 	}
 }
 
-func buildNote(label string, ms unreset.ManagedSession, alive, globalKeepAlive bool) string {
-	if !alive && (ms.Pinned || ms.KeepAlive || globalKeepAlive) && !ms.ExitedCleanly {
+func buildNote(label string, ms unreset.ManagedSession, tracked, alive, globalKeepAlive bool) string {
+	// Only the daemon's tracked sessions get recreated. globalKeepAlive on its
+	// own must not paint every dead project as "restarting".
+	if !alive && tracked && (ms.Pinned || ms.KeepAlive || globalKeepAlive) && !ms.ExitedCleanly {
 		return "restarting"
 	}
 	switch label {
