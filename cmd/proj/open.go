@@ -46,7 +46,7 @@ func openOrCreate(cfg config.Config, lang, name string) error {
 }
 
 func openInTmux(cfg config.Config, name, dir string) error {
-	session := projects.SessionName(name)
+	session := projects.SessionNameForDir(dir)
 	if !tmux.HasSession(session) {
 		pane, err := tmux.NewSession(session, dir)
 		if err != nil {

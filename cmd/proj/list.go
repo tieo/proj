@@ -70,8 +70,8 @@ func runList(cmd *cobra.Command, args []string) error {
 
 	all := projects.All(cfg.BaseDir)
 	sort.SliceStable(all, func(i, j int) bool {
-		mi := managed[projects.SessionName(all[i].Name)]
-		mj := managed[projects.SessionName(all[j].Name)]
+		mi := managed[projects.SessionName(all[i].Lang, all[i].Name)]
+		mj := managed[projects.SessionName(all[j].Lang, all[j].Name)]
 		if mi.Pinned != mj.Pinned {
 			return mi.Pinned
 		}
@@ -99,7 +99,7 @@ func runList(cmd *cobra.Command, args []string) error {
 	hidden := 0
 
 	for _, p := range all {
-		sessName := projects.SessionName(p.Name)
+		sessName := projects.SessionName(p.Lang, p.Name)
 		ms, tracked := managed[sessName]
 		label := labelBySession[sessName]
 		alive := p.SessionTS > 0
