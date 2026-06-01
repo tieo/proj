@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"runtime"
+	"sort"
 	"strconv"
 	"strings"
 	"syscall"
@@ -17,6 +18,7 @@ import (
 
 	"github.com/tieo/proj/internal/config"
 	"github.com/tieo/proj/internal/daemon"
+	"github.com/tieo/proj/internal/tmux"
 )
 
 var daemonCmd = &cobra.Command{
@@ -203,6 +205,54 @@ func formatAgo(d time.Duration) string {
 	}
 }
 
+// renderManaged prints the sessions the daemon is responsible for keeping
+// around: the pinned and keep-alive entries from its managed state, each with a
+// live/dead marker. The full project list lives in `proj` / `proj list`; the
+// daemon status deliberately shows only what the daemon itself acts on.
+func renderManaged(cfg daemon.Config) {
+	managed := daemon.LoadManagedState(cfg.StatePath)
+	live := make(map[string]bool)
+	for _, s := range tmux.ListSessions() {
+		live[s.Name] = true
+	}
+
+	type row struct {
+		name, dir, role string
+		alive           bool
+	}
+	var rows []row
+	pinned, kept := 0, 0
+	for _, ms := range managed {
+		switch {
+		case ms.Pinned:
+			pinned++
+			rows = append(rows, row{ms.Name, ms.Dir, "pinned", live[ms.Name]})
+		case ms.KeepAlive:
+			kept++
+			rows = append(rows, row{ms.Name, ms.Dir, "keep-alive", live[ms.Name]})
+		}
+	}
+	sort.Slice(rows, func(i, j int) bool { return rows[i].name < rows[j].name })
+
+	fmt.Println()
+	if len(rows) == 0 && !cfg.KeepAlive {
+		fmt.Println("    Managed: none (pin a project with `proj pin <name>`)")
+		return
+	}
+	note := ""
+	if cfg.KeepAlive {
+		note = "; global keep-alive on"
+	}
+	fmt.Printf("    Managed: %d pinned, %d keep-alive%s\n", pinned, kept, note)
+	for _, r := range rows {
+		dot, suffix := "\033[32m●\033[0m", ""
+		if !r.alive {
+			dot, suffix = "\033[90m○\033[0m", "  \033[90m(will recreate)\033[0m"
+		}
+		fmt.Printf("      %s %-10s %s  \033[90m%s\033[0m%s\n", dot, r.role, r.name, r.dir, suffix)
+	}
+}
+
 func runDaemonStatus(cmd *cobra.Command, args []string) error {
 	cfg := daemonConfig()
 	state := daemon.LoadState(cfg.StatePath)
@@ -243,8 +293,7 @@ func runDaemonStatus(cmd *cobra.Command, args []string) error {
 	fmt.Printf("     Config: poll=%s  max_wait=%s  jitter=%s  resume=%q\n",
 		formatDur(cfg.Poll), formatDur(cfg.MaxWait), formatDur(cfg.Jitter), cfg.ResumeText)
 	fmt.Printf("      State: %s\n", cfg.StatePath)
-	fmt.Println()
-	_ = runList(nil, nil)
+	renderManaged(cfg)
 
 	now := time.Now()
 	deferredCount := 0
