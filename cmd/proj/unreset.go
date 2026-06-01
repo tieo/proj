@@ -223,7 +223,7 @@ func runUnresetStatus(cmd *cobra.Command, args []string) error {
 	state := unreset.LoadState(cfg.StatePath)
 	svc := gatherService()
 
-	fmt.Printf("%s proj-unreset — auto-resume Claude Code sessions after usage-limit cooldown\n", svc.dot())
+	fmt.Printf("%s proj-unreset; auto-resume Claude Code sessions after usage-limit cooldown\n", svc.dot())
 
 	if svc.exists {
 		enabledStr := svc.unitFileState
@@ -250,7 +250,7 @@ func runUnresetStatus(cmd *cobra.Command, args []string) error {
 			fmt.Printf("     Memory: %s\n", formatBytes(svc.memory))
 		}
 	} else if runtime.GOOS == "linux" {
-		fmt.Printf("     Loaded: (not installed — `proj unreset enable` or use the nix module)\n")
+		fmt.Printf("     Loaded: (not installed; `proj unreset enable` or use the nix module)\n")
 	} else if runtime.GOOS == "darwin" {
 		fmt.Println("     Loaded: (manage via `launchctl print gui/$UID/com.proj.unreset`)")
 	}

@@ -1,4 +1,4 @@
-# proj — zsh shim. Source from .zshrc:
+# proj; zsh shim. Source from .zshrc:
 #   source /path/to/proj/shells/proj.zsh
 #
 # The shim only exists so `proj cd <name>` can change the current shell's
@@ -28,7 +28,7 @@ if [[ -n "$TMUX" ]]; then
     _proj_on_shell_exit() {
         local _proj_sess
         # Resolve the *exiting* pane's session via $TMUX_PANE, not the active
-        # client's session — `display-message -p '#S'` with no target returns
+        # client's session; `display-message -p '#S'` with no target returns
         # the latter and would mark-closed the wrong session.
         _proj_sess=$(tmux display-message -p -t "$TMUX_PANE" '#S' 2>/dev/null) || return
         command proj unreset mark-closed "$_proj_sess" 2>/dev/null || true

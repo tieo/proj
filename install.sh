@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# proj — install script. Builds the binary, installs the shell shim, and
+# proj; install script. Builds the binary, installs the shell shim, and
 # wires up the unreset service unit for the current OS.
 #
 # Usage:
@@ -92,7 +92,7 @@ if [[ -n "$existing" ]]; then
     target="$BIN_DIR/proj"
     if is_nix_path "$resolved"; then
         echo "proj is already installed via nix at: $resolved"
-        echo "use that instead — this installer is for non-nix systems."
+        echo "use that instead; this installer is for non-nix systems."
         echo "to uninstall the nix one, remove it from your home-manager config."
         exit 0
     elif [[ "$resolved" != "$(readlink -f "$target" 2>/dev/null || echo "$target")" ]]; then
@@ -139,7 +139,7 @@ if [[ -n "$SHIM" && -n "$RC" ]]; then
     # counts as "already wired" and we don't append a duplicate.
     if grep -qF "$shim_base" "$RC" 2>/dev/null; then
         if ! grep -qF "$SHIM" "$RC" 2>/dev/null; then
-            echo "⚠ $RC already sources a $shim_base from a different path — leave the"
+            echo "⚠ $RC already sources a $shim_base from a different path; leave the"
             echo "  existing line alone, or update it to:  source $SHIM"
         fi
     elif [[ -e "$RC" && ! -w "$RC" ]]; then
@@ -148,7 +148,7 @@ if [[ -n "$SHIM" && -n "$RC" ]]; then
         echo "      source $SHIM"
     else
         echo "→ adding shim source line to $RC"
-        { echo; echo "# proj — shell shim (for 'proj cd')"; echo "source $SHIM"; } >> "$RC"
+        { echo; echo "# proj; shell shim (for 'proj cd')"; echo "source $SHIM"; } >> "$RC"
     fi
 fi
 
@@ -164,7 +164,7 @@ if (( INSTALL_SERVICE )); then
             systemctl --user daemon-reload
             systemctl --user enable proj-unreset.service
             systemctl --user restart proj-unreset.service
-            echo "  enabled and restarted proj-unreset — tail with: journalctl --user -u proj-unreset -f"
+            echo "  enabled and restarted proj-unreset; tail with: journalctl --user -u proj-unreset -f"
             ;;
         Darwin)
             mkdir -p "$AGENT_DIR"
@@ -176,10 +176,10 @@ if (( INSTALL_SERVICE )); then
             launchctl bootout "gui/$UID/com.proj.unreset" 2>/dev/null || true
             launchctl bootstrap "gui/$UID" "$PLIST_PATH" 2>/dev/null \
                 || launchctl load -w "$PLIST_PATH"
-            echo "  loaded com.proj.unreset — logs at ~/.local/state/proj/unreset.log"
+            echo "  loaded com.proj.unreset; logs at ~/.local/state/proj/unreset.log"
             ;;
         *)
-            echo "  (skipping service install — unsupported OS)"
+            echo "  (skipping service install; unsupported OS)"
             ;;
     esac
 fi

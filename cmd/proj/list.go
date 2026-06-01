@@ -26,8 +26,8 @@ const (
 type listRow struct {
 	// indicator is the left-hand status symbol, always 2 terminal columns wide:
 	//   📌  (pinned + alive)
-	//   ●·  (alive — colored dot + space)
-	//   ○·  (dead — grey circle + space)
+	//   ●·  (alive; colored dot + space)
+	//   ○·  (dead; grey circle + space)
 	indicator string
 	name      string
 	lang      string // project lang, or abbreviated path for orphans
@@ -56,7 +56,7 @@ func runList(cmd *cobra.Command, args []string) error {
 	managed := unreset.LoadManagedState(unrCfg.StatePath)
 
 	// Scan panes for label (banner/error/selector state) per session.
-	// Model is read from JSONL session files instead — more reliable.
+	// Model is read from JSONL session files instead; more reliable.
 	scan := unreset.ScanPanes(unrCfg.Capture)
 	labelBySession := make(map[string]string, len(scan))
 	for _, s := range scan {
@@ -180,8 +180,8 @@ func runList(cmd *cobra.Command, args []string) error {
 // buildIndicator returns a 2-terminal-column-wide status symbol.
 //
 //	📌   pinned (alive or dead, emoji, 2 cols)
-//	● ·  alive — colored dot + space (1+1 cols)
-//	○ ·  dead  — grey circle + space (1+1 cols)
+//	● ·  alive; colored dot + space (1+1 cols)
+//	○ ·  dead ; grey circle + space (1+1 cols)
 func buildIndicator(alive, pinned bool, label string) string {
 	if pinned {
 		return "📌"

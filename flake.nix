@@ -1,5 +1,5 @@
 {
-  description = "proj — tmux + Claude Code project session manager";
+  description = "proj; tmux + Claude Code project session manager";
 
   inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
 

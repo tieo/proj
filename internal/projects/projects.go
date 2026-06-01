@@ -23,7 +23,7 @@ type Project struct {
 
 // SessionName builds a tmux-safe session name from a project's lang directory
 // and base name. The lang prefix disambiguates same-named projects living in
-// different lang dirs (e.g. nix/.dotfiles.nix vs Nix/.dotfiles.nix) — without
+// different lang dirs (e.g. nix/.dotfiles.nix vs Nix/.dotfiles.nix); without
 // it they collapse to a single tmux session and clobber each other's state.
 // tmux rejects '.' and ':' in session targets, and we fold '/' so the
 // lang/name join stays a single token.
@@ -144,7 +144,7 @@ func HasHistory(dir string) bool {
 
 func Reltime(ts, now int64) string {
 	if ts <= 0 {
-		return "—"
+		return "-"
 	}
 	d := time.Duration(now-ts) * time.Second
 	switch {

@@ -57,7 +57,7 @@ func TestDetect_NoTimezone(t *testing.T) {
 
 func TestDetect_StillUsingCreditsIgnored(t *testing.T) {
 	// Banner with the prefix but credits still active.
-	s := "  ⎿  out of extra usage · resets 3pm — continuing with extra usage"
+	s := "  ⎿  out of extra usage · resets 3pm; continuing with extra usage"
 	if Detect(s, time.Now()) != nil {
 		t.Error("must not track a session still proceeding via credits")
 	}
@@ -110,7 +110,7 @@ func TestDetect_BuriedInScrollbackIgnored(t *testing.T) {
 }
 
 func TestDetect_MostRecentValidMatchWins(t *testing.T) {
-	// Two prefixed banners — last one wins.
+	// Two prefixed banners; last one wins.
 	old := "  ⎿  You're out of extra usage · resets 6am (Europe/Berlin)\n"
 	current := "  ⎿  You're out of extra usage · resets 3am (Europe/Berlin)"
 	content := old + strings.Repeat("normal output\n", 5) + current
@@ -189,7 +189,7 @@ func TestDecide_BannerPlusSelectorIsResume(t *testing.T) {
 	}
 }
 
-// Real capture from a resume-old-session prompt — the daemon should
+// Real capture from a resume-old-session prompt; the daemon should
 // recognize this as a dismissable picker even with no usage-limit banner.
 const realResumePicker = `  This session is 2d 21h old and 126.3k tokens.
 
@@ -218,7 +218,7 @@ func TestHasSelector_QuotedPickerInScrollbackRejected(t *testing.T) {
 }
 
 func TestHasSelector_PhraseWithoutOptionLineRejected(t *testing.T) {
-	// Just the phrase mentioned in prose — no "❯ 1." option line.
+	// Just the phrase mentioned in prose; no "❯ 1." option line.
 	s := "Earlier I saw the prompt that says 'Stop and wait for limit to reset' and dismissed it."
 	if HasSelector(s) {
 		t.Error("phrase-only mention must not be flagged without the option-line structure")
@@ -309,7 +309,7 @@ func TestParseReset_FuturePicked(t *testing.T) {
 
 func TestParseReset_ExplicitDate(t *testing.T) {
 	// Real banner: "out of extra usage · resets May 24, 2am (Europe/Berlin)"
-	// captured on May 21. Must resolve to May 24, 02:00 in Europe/Berlin —
+	// captured on May 21. Must resolve to May 24, 02:00 in Europe/Berlin -
 	// NOT the nearest-occurrence 2am.
 	berlin := mustLoad(t, "Europe/Berlin")
 	now := time.Date(2026, 5, 21, 23, 20, 0, 0, berlin)
@@ -362,7 +362,7 @@ func TestDetect_DatedBanner(t *testing.T) {
 
 func TestNextAttemptAfter_TrustsExplicitFutureDate(t *testing.T) {
 	// When the banner says "May 24, 2am" three days from now, schedule
-	// for exactly that time — don't apply the MaxWait cap.
+	// for exactly that time; don't apply the MaxWait cap.
 	berlin := mustLoad(t, "Europe/Berlin")
 	now := time.Date(2026, 5, 21, 23, 20, 0, 0, berlin)
 	reset := time.Date(2026, 5, 24, 2, 0, 0, 0, berlin)
@@ -448,7 +448,7 @@ func TestDetectAPIError_DifferentStatus(t *testing.T) {
 // --- false-positive rejection ---
 
 func TestDetectAPIError_NoPrefixRejected(t *testing.T) {
-	// Claude talking about an API error in prose — no ⎿ prefix.
+	// Claude talking about an API error in prose; no ⎿ prefix.
 	s := "I received an API Error: 400 {\"type\":\"error\",\"error\":{\"message\":\"Could not process image\"}}\n❯ "
 	if got := DetectAPIError(s); got != nil {
 		t.Errorf("prose mention without ⎿ must not match, got %+v", got)
@@ -473,18 +473,18 @@ func TestDetectAPIError_PickerPromptRejected(t *testing.T) {
 
 func TestDetectAPIError_RecoveryContentAfterError(t *testing.T) {
 	// An error followed by successful tool output means Claude recovered.
-	// DetectAPIError should still fire IF the session is at the prompt — the
+	// DetectAPIError should still fire IF the session is at the prompt; the
 	// two structural guards (⎿ prefix + lone ❯) are what matter, not position.
 	// Actual protection against stale scrollback is provided by the daemon's
 	// cfg.Capture limit (10 lines), not by an offset threshold.
 	s := "  ⎿  API Error: 400 {\"type\":\"error\",\"error\":{\"message\":\"old\"}}\n  ⎿  subsequent tool output\n❯ "
-	// This CAN match — both error and prompt are visible, which is the signal.
+	// This CAN match; both error and prompt are visible, which is the signal.
 	// The two-tick persistence in Tick() prevents acting on transient errors.
 	_ = DetectAPIError(s) // just ensure it doesn't panic
 }
 
 func TestDetectAPIError_EmptyPromptNoError(t *testing.T) {
-	// Normal idle session — input prompt is visible but no error.
+	// Normal idle session; input prompt is visible but no error.
 	s := "$ ls\nfile.txt\n❯ "
 	if got := DetectAPIError(s); got != nil {
 		t.Errorf("idle session at prompt must not match, got %+v", got)
@@ -493,7 +493,7 @@ func TestDetectAPIError_EmptyPromptNoError(t *testing.T) {
 
 
 func TestDetectAPIError_MostRecentErrorWins(t *testing.T) {
-	// Two API errors in the recent window — the most recent one is returned.
+	// Two API errors in the recent window; the most recent one is returned.
 	first := "  ⎿  API Error: 400 {\"type\":\"error\",\"error\":{\"message\":\"first\"}}\n"
 	second := "  ⎿  API Error: 422 {\"type\":\"error\",\"error\":{\"message\":\"second\"}}\n"
 	s := first + second + "❯ "
@@ -567,10 +567,10 @@ func TestInputPromptRE_Matches(t *testing.T) {
 		"❯ ",
 		"❯",
 		"❯  ",
-		"❯ ",                          // NBSP — actual Claude Code TUI output
+		"❯ ",                          // NBSP; actual Claude Code TUI output
 		"line before\n❯ \nline after",
 		"line before\n❯ \nline after", // NBSP variant
-		"❯ commit this",               // text in input buffer — session still idle
+		"❯ commit this",               // text in input buffer; session still idle
 		"❯ some pending text",
 	}
 	for _, s := range cases {

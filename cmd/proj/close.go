@@ -1,4 +1,4 @@
-// proj close [session] — mark a session as intentionally closed and kill it.
+// proj close [session]; mark a session as intentionally closed and kill it.
 //
 // Use this instead of `tmux kill-session` when you want proj unreset to know
 // the close was deliberate. Without this (or the shell exit trap in proj.zsh /

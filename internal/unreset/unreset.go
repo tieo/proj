@@ -1,6 +1,6 @@
 // Package unreset watches tmux panes for Claude Code's usage-limit banner
 // and resumes them by dismissing any "stop and wait" selector then typing
-// "continue". Acts on banner presence alone — does not gate on the reset
+// "continue". Acts on banner presence alone; does not gate on the reset
 // time printed in the banner, because that time is informational (the
 // underlying limit may have already cleared).
 package unreset
@@ -25,7 +25,7 @@ type Banner struct {
 	// Reset is the parsed reset time from the banner.
 	Reset time.Time
 	// ResetExplicit is true when the banner included an explicit date
-	// ("resets May 24, 2am") — meaning Reset is the authoritative time.
+	// ("resets May 24, 2am"); meaning Reset is the authoritative time.
 	// False when only a clock time was given ("resets 2am") and Reset was
 	// inferred via nearest-occurrence; in that case the daemon caps
 	// scheduling at MaxWait in case the inference is wrong.
@@ -110,11 +110,11 @@ var timeRE = regexp.MustCompile(`^(\d{1,2})(?::(\d{2}))?(am|pm)$`)
 
 // Known Claude TUI picker phrases. Recognised pickers we'll dismiss with
 // Escape:
-//   - "What do you want to do?" / "Stop and wait …" — /rate-limit-options
-//   - "Resume from summary" / "Resume the full session" — old-session resume
+//   - "What do you want to do?" / "Stop and wait …"; /rate-limit-options
+//   - "Resume from summary" / "Resume the full session"; old-session resume
 var selectorRE = regexp.MustCompile(`(?i)(?:What do you want to do\?|Stop and wait for limit to reset|Resume from summary|Resume the full session)`)
 
-// A "❯ <digit>." line — the highlighted option marker. Distinctive: the
+// A "❯ <digit>." line; the highlighted option marker. Distinctive: the
 // regular input prompt is "❯ " with no number after, so this only matches
 // inside an actual picker overlay (or its verbatim quote).
 var pickerOptionRE = regexp.MustCompile(`(?m)^\s*❯\s+\d+\.\s`)
@@ -139,7 +139,7 @@ var compactFailedRE = regexp.MustCompile(`⎿` + sp + `+Error: Error during comp
 // line (after a newline or at the beginning of the string). In Claude Code's
 // TUI, picker option lines (e.g. "❯ 1. Stop and wait") always have leading
 // spaces, so they cannot start at column 0 and ^❯ never matches them. Text
-// in the input buffer ("❯ commit this") is intentionally matched — a session
+// in the input buffer ("❯ commit this") is intentionally matched; a session
 // with unsent text AND a recent API error is still idle and should be recovered.
 var inputPromptRE = regexp.MustCompile(`(?m)^❯`)
 
@@ -187,7 +187,7 @@ func DetectAPIError(content string) *APIError {
 		return nil
 	}
 	m := matches[len(matches)-1] // most recent occurrence
-	// Require the input prompt to be visible — the session must be idle, not
+	// Require the input prompt to be visible; the session must be idle, not
 	// actively running tools (which would suppress the lone ❯ line).
 	if !inputPromptRE.MatchString(content) {
 		return nil
@@ -400,7 +400,7 @@ func parseReset(dateStr, timeStr, tzStr string, now time.Time) (time.Time, bool,
 			}
 			return target, true, nil
 		}
-		// Date couldn't be parsed — fall through to clock-only inference.
+		// Date couldn't be parsed; fall through to clock-only inference.
 	}
 
 	target := time.Date(n.Year(), n.Month(), n.Day(), hour, minute, 0, 0, loc)
@@ -493,7 +493,7 @@ func ModelFromDir(workDir string) string {
 			} `json:"message"`
 		}
 		// Skip angle-bracketed sentinels like "<synthetic>" that Claude Code
-		// writes for harness-generated messages — they're not real model ids
+		// writes for harness-generated messages; they're not real model ids
 		// and would shadow the actual model from the last assistant turn.
 		if err := json.Unmarshal([]byte(line), &entry); err == nil && entry.Message.Model != "" && !strings.HasPrefix(entry.Message.Model, "<") {
 			return entry.Message.Model
@@ -504,7 +504,7 @@ func ModelFromDir(workDir string) string {
 
 // recentSessionFile returns the path of the most recently modified .jsonl
 // session file in the Claude Code project directory for workDir. Returns ""
-// if none is found. Call this before sending /clear — /clear causes Claude
+// if none is found. Call this before sending /clear; /clear causes Claude
 // Code to start a new session file, so the pre-clear file is the most recent
 // one at the time of the call.
 func recentSessionFile(workDir string) string {
@@ -545,7 +545,7 @@ func extractSessionContext(sessionFile string) string {
 	}
 	defer f.Close()
 
-	// Read the tail — 100 KB is enough to cover 30 records with room to spare.
+	// Read the tail; 100 KB is enough to cover 30 records with room to spare.
 	const readBytes = 100 * 1024
 	size, _ := f.Seek(0, io.SeekEnd)
 	start := size - readBytes
@@ -646,7 +646,7 @@ func truncate(v interface{}, max int) string {
 
 // compactResumeMessage is sent after a successful /compact so Claude continues
 // without waiting for user input.
-const compactResumeMessage = "The conversation was just compacted automatically to recover from a stuck state. Continue the current task immediately without asking the user anything — just resume."
+const compactResumeMessage = "The conversation was just compacted automatically to recover from a stuck state. Continue the current task immediately without asking the user anything; just resume."
 
 // isImageError reports whether an API error message is about an image being
 // corrupt, unreadable, or in an unsupported format.
@@ -665,18 +665,18 @@ func clearRecoveryMessage(apiErr *APIError, context string) string {
 	}
 	imageAdvice := ""
 	if isImageError(apiErr.Message) {
-		imageAdvice = "Before resuming: save a memory about how to avoid this error — " +
+		imageAdvice = "Before resuming: save a memory about how to avoid this error; " +
 			"always verify screenshot/image files are valid (check size > 10 KB " +
 			"and run `file <path>` to confirm format) before passing them to the Read tool. " +
 			"Never read a file that was just written by a tool without checking it first. "
 	}
 	return fmt.Sprintf(
 		"The conversation was just cleared automatically. "+
-			"The session was stuck on API Error %d (%s) — this also caused /compact to fail. "+
+			"The session was stuck on API Error %d (%s); this also caused /compact to fail. "+
 			"%s"+
 			"%s"+
 			"Then immediately continue working without asking the user anything. "+
-			"Do not summarize, do not ask what to work on — just resume.",
+			"Do not summarize, do not ask what to work on; just resume.",
 		apiErr.StatusCode, apiErr.Message, imageAdvice, contextSection)
 }
 
@@ -720,14 +720,14 @@ func SaveErrorState(path string, state ErrorState) error {
 // Sessions are automatically tracked as soon as the daemon observes them.
 //
 // Pinned sessions are always recreated by the daemon, even after a system
-// restart — because the daemon persists their state to disk.
+// restart; because the daemon persists their state to disk.
 //
 // Keep-alive sessions (governed by the global KeepAlive config flag, or the
 // per-session KeepAlive field) are recreated whenever they vanish without a
-// clean close signal — including across a system restart, which is the whole
+// clean close signal; including across a system restart, which is the whole
 // point of keep-alive: the sessions you had running come back.
 //
-// ExitedCleanly records whether the session got a clean goodbye signal — set
+// ExitedCleanly records whether the session got a clean goodbye signal; set
 // by `proj close` or by the shell exit trap in proj.zsh / proj.bash /
 // proj.fish, both of which call `proj unreset mark-closed <name>` before the
 // session is destroyed. It distinguishes a deliberate exit from a crash or a
@@ -811,7 +811,7 @@ func SaveState(path string, state State) error {
 }
 
 // Action describes the per-banner decision in one tick. Selector
-// dismissal is handled separately in Tick — it's a side-channel concern,
+// dismissal is handled separately in Tick; it's a side-channel concern,
 // independent of banner state.
 type Action int
 
@@ -866,7 +866,7 @@ func Tick(cfg Config, state State, errorState ErrorState, managed ManagedState, 
 	for _, s := range liveSessions {
 		prev := managed[s.Name]
 		prev.Name = s.Name
-		// Only record Dir if not already set — preserves dirs set via `proj unreset pin --dir`.
+		// Only record Dir if not already set; preserves dirs set via `proj unreset pin --dir`.
 		if prev.Dir == "" {
 			prev.Dir = s.Path
 		}
@@ -883,7 +883,7 @@ func Tick(cfg Config, state State, errorState ErrorState, managed ManagedState, 
 		}
 		if ms.ExitedCleanly {
 			if ms.Pinned {
-				// Pinned sessions are always recreated — a clean exit (which sets
+				// Pinned sessions are always recreated; a clean exit (which sets
 				// ExitedCleanly via the trap) is not honored as a stop signal.
 				// Clear the flag and fall through to recreate below.
 				ms.ExitedCleanly = false
@@ -926,7 +926,7 @@ func Tick(cfg Config, state State, errorState ErrorState, managed ManagedState, 
 		content := tmux.CapturePane(p.ID, cfg.Capture)
 
 		// 1) Dismiss any known Claude interactive picker. Independent of
-		//    banner state — a stuck prompt is itself something to resolve.
+		//    banner state; a stuck prompt is itself something to resolve.
 		//    Esc is idempotent; if already gone next tick, nothing happens.
 		if HasSelector(content) {
 			slog.Info("dismiss selector", "session", p.Session, "pane", p.ID)
@@ -947,11 +947,11 @@ func Tick(cfg Config, state State, errorState ErrorState, managed ManagedState, 
 			prev := errorState[p.ID]
 			switch {
 			case compactFailed:
-				// /compact failed (either this run or a prior daemon run) —
+				// /compact failed (either this run or a prior daemon run) -
 				// the broken content is embedded in history. Fall back to
 				// /clear, then send Claude an explanation so it can resume from memory.
 				workDir := tmux.PaneCurrentPath(p.ID)
-				// Extract context BEFORE /clear — /clear causes Claude Code to
+				// Extract context BEFORE /clear; /clear causes Claude Code to
 				// start a new session file, so the pre-clear file has the history.
 				sessFile := recentSessionFile(workDir)
 				sessContext := extractSessionContext(sessFile)
@@ -971,7 +971,7 @@ func Tick(cfg Config, state State, errorState ErrorState, managed ManagedState, 
 						// Wait for Claude Code to finish processing /clear and
 						// redraw to the idle prompt. Then send the recovery message
 						// in literal mode (no key-name expansion) followed by a
-						// separate Enter — this guarantees Enter only arrives after
+						// separate Enter; this guarantees Enter only arrives after
 						// all the message text has landed in the input buffer.
 						time.Sleep(2 * time.Second)
 						msg := clearRecoveryMessage(apiErr, sessContext)
@@ -995,7 +995,7 @@ func Tick(cfg Config, state State, errorState ErrorState, managed ManagedState, 
 				prev.Acted = clearOK
 				errorState[p.ID] = prev
 			case prev.FirstSeen.IsZero():
-				// First sighting — record, wait for next tick to confirm.
+				// First sighting; record, wait for next tick to confirm.
 				errorState[p.ID] = ErrorTracked{
 					Session: p.Session, Pane: p.ID, Text: apiErr.Text,
 					FirstSeen: now, LastSeen: now,
@@ -1023,10 +1023,10 @@ func Tick(cfg Config, state State, errorState ErrorState, managed ManagedState, 
 				errorState[p.ID] = prev
 			default:
 				if prev.Acted {
-					// /compact was sent but the error is still visible — the
+					// /compact was sent but the error is still visible; the
 					// compact itself may have failed (e.g. broken image in
 					// history). Warn every poll so the user knows to intervene.
-					slog.Warn("compact sent but error persists — manual intervention needed",
+					slog.Warn("compact sent but error persists; manual intervention needed",
 						"session", p.Session, "pane", p.ID,
 						"stuck_for", now.Sub(prev.FirstSeen).Round(time.Second))
 				}

@@ -1,4 +1,4 @@
-# proj — fish shim. Source from config.fish:
+# proj; fish shim. Source from config.fish:
 #   source /path/to/proj/shells/proj.fish
 
 function proj
@@ -15,7 +15,7 @@ end
 if set -q TMUX
     function _proj_on_shell_exit --on-event fish_exit
         # Resolve the *exiting* pane's session via $TMUX_PANE, not the active
-        # client's session — `display-message -p '#S'` with no target returns
+        # client's session; `display-message -p '#S'` with no target returns
         # the latter and would mark-closed the wrong session.
         set -l _proj_sess (tmux display-message -p -t "$TMUX_PANE" '#S' 2>/dev/null)
         and command proj unreset mark-closed "$_proj_sess" 2>/dev/null

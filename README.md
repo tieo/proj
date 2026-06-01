@@ -72,24 +72,24 @@ When it sees a banner, it acts:
 always immediate. On the next poll, if the banner is gone, the resume
 worked. If it's still there, the daemon schedules the next attempt at the
 banner's parsed clock time (advanced to the next future occurrence),
-capped at `max_wait` (5h default — longer than any single Claude window).
+capped at `max_wait` (5h default; longer than any single Claude window).
 
 **False-positive resistance.** A banner only counts if the matching line
 starts with Claude's tool-output continuation marker (`⎿`). Prose
 mentioning the phrase, user-typed text containing it, code-block quotes,
-and so on are all rejected — only real TUI tool output triggers an action.
+and so on are all rejected; only real TUI tool output triggers an action.
 
 Sessions without the banner are never touched.
 
 | Command | What it does |
 | --- | --- |
-| `proj unreset` | status — service state, tracked sessions, next resume time |
+| `proj unreset` | status; service state, tracked sessions, next resume time |
 | `proj unreset run` | run the daemon in foreground (what the service unit calls) |
 | `proj unreset start` / `stop` / `restart` | manage the systemd user service |
 | `proj unreset enable` / `disable` | enable+start / stop+disable |
 | `proj unreset logs` | `journalctl --user -u proj-unreset -f` |
 
-On macOS, `enable`/`disable`/`start`/`stop` are not wired up — use `launchctl`
+On macOS, `enable`/`disable`/`start`/`stop` are not wired up; use `launchctl`
 on `gui/$UID/com.proj.unreset` directly.
 
 ## Config
@@ -120,7 +120,7 @@ capture_lines = 300
 ./install.sh --uninstall
 ```
 
-Leaves the `source …/proj.{zsh,bash,fish}` line in your shell rc — remove it
+Leaves the `source …/proj.{zsh,bash,fish}` line in your shell rc; remove it
 manually.
 
 ## Requirements
@@ -132,4 +132,4 @@ manually.
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+MIT; see [LICENSE](LICENSE).

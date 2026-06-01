@@ -1,5 +1,5 @@
 [Unit]
-Description=proj-unreset — auto-resume Claude Code sessions after usage-limit cooldown
+Description=proj-unreset; auto-resume Claude Code sessions after usage-limit cooldown
 After=default.target
 
 [Service]
