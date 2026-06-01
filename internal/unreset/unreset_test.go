@@ -257,17 +257,6 @@ func TestNextAttemptAfter_UsesParsedFutureOccurrence(t *testing.T) {
 	}
 }
 
-func TestNextAttemptAfter_CapsAtMaxWait(t *testing.T) {
-	now := time.Date(2026, 5, 21, 11, 0, 0, 0, time.UTC)
-	reset := now.Add(20 * time.Hour) // way past MaxWait
-	cfg := Config{MaxWait: 5 * time.Hour, Jitter: 30 * time.Second}
-	got := nextAttemptAfter(&Banner{Reset: reset}, now, cfg)
-	wantCap := now.Add(5 * time.Hour)
-	if !got.Equal(wantCap) {
-		t.Errorf("got %v, want %v (capped at now+MaxWait)", got, wantCap)
-	}
-}
-
 func TestNextAttemptAfter_FallbackWhenUnparseable(t *testing.T) {
 	now := time.Now()
 	cfg := Config{MaxWait: 5 * time.Hour, Jitter: 30 * time.Second}
@@ -284,12 +273,9 @@ func TestParseReset_NearestOccurrencePicked(t *testing.T) {
 	berlin := mustLoad(t, "Europe/Berlin")
 	// 11am Berlin; "3am" should resolve to TODAY's 3am (8h ago), not tomorrow's.
 	now := time.Date(2026, 5, 21, 11, 0, 0, 0, berlin)
-	got, explicit, err := parseReset("", "3am", "Europe/Berlin", now)
+	got, err := parseReset("", "3am", "Europe/Berlin", now)
 	if err != nil {
 		t.Fatal(err)
-	}
-	if explicit {
-		t.Error("clock-only banner must report explicit=false")
 	}
 	want := time.Date(2026, 5, 21, 3, 0, 0, 0, berlin)
 	if !got.Equal(want) {
@@ -300,7 +286,7 @@ func TestParseReset_NearestOccurrencePicked(t *testing.T) {
 func TestParseReset_FuturePicked(t *testing.T) {
 	berlin := mustLoad(t, "Europe/Berlin")
 	now := time.Date(2026, 5, 21, 1, 0, 0, 0, berlin)
-	got, _, _ := parseReset("", "3am", "Europe/Berlin", now)
+	got, _ := parseReset("", "3am", "Europe/Berlin", now)
 	want := time.Date(2026, 5, 21, 3, 0, 0, 0, berlin)
 	if !got.Equal(want) {
 		t.Errorf("got %v, want %v", got, want)
@@ -313,12 +299,9 @@ func TestParseReset_ExplicitDate(t *testing.T) {
 	// NOT the nearest-occurrence 2am.
 	berlin := mustLoad(t, "Europe/Berlin")
 	now := time.Date(2026, 5, 21, 23, 20, 0, 0, berlin)
-	got, explicit, err := parseReset("May 24", "2am", "Europe/Berlin", now)
+	got, err := parseReset("May 24", "2am", "Europe/Berlin", now)
 	if err != nil {
 		t.Fatal(err)
-	}
-	if !explicit {
-		t.Error("date-qualified banner must report explicit=true")
 	}
 	want := time.Date(2026, 5, 24, 2, 0, 0, 0, berlin)
 	if !got.Equal(want) {
@@ -331,7 +314,7 @@ func TestParseReset_Formats(t *testing.T) {
 	cases := map[string]int{"3am": 3, "3pm": 15, "12am": 0, "12pm": 12, "3:30 pm": 15}
 	for in, wantHour := range cases {
 		t.Run(in, func(t *testing.T) {
-			got, _, err := parseReset("", in, "", now)
+			got, err := parseReset("", in, "", now)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -351,26 +334,23 @@ func TestDetect_DatedBanner(t *testing.T) {
 	if b == nil {
 		t.Fatal("expected detection of dated banner")
 	}
-	if !b.ResetExplicit {
-		t.Error("expected ResetExplicit=true for dated banner")
-	}
 	want := time.Date(2026, 5, 24, 2, 0, 0, 0, berlin)
 	if !b.Reset.Equal(want) {
 		t.Errorf("Reset = %v, want %v", b.Reset, want)
 	}
 }
 
-func TestNextAttemptAfter_TrustsExplicitFutureDate(t *testing.T) {
+func TestNextAttemptAfter_TrustsFutureDate(t *testing.T) {
 	// When the banner says "May 24, 2am" three days from now, schedule
-	// for exactly that time; don't apply the MaxWait cap.
+	// for exactly that time; trust the parsed reset, no cap.
 	berlin := mustLoad(t, "Europe/Berlin")
 	now := time.Date(2026, 5, 21, 23, 20, 0, 0, berlin)
 	reset := time.Date(2026, 5, 24, 2, 0, 0, 0, berlin)
 	cfg := Config{MaxWait: 5 * time.Hour, Jitter: time.Second}
-	got := nextAttemptAfter(&Banner{Reset: reset, ResetExplicit: true}, now, cfg)
+	got := nextAttemptAfter(&Banner{Reset: reset}, now, cfg)
 	want := reset.Add(time.Second)
 	if !got.Equal(want) {
-		t.Errorf("got %v, want %v (explicit future date must bypass MaxWait cap)", got, want)
+		t.Errorf("got %v, want %v (future date must be trusted, not capped)", got, want)
 	}
 }
 

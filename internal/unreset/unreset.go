@@ -24,13 +24,7 @@ import (
 type Banner struct {
 	// Reset is the parsed reset time from the banner.
 	Reset time.Time
-	// ResetExplicit is true when the banner included an explicit date
-	// ("resets May 24, 2am"); meaning Reset is the authoritative time.
-	// False when only a clock time was given ("resets 2am") and Reset was
-	// inferred via nearest-occurrence; in that case the daemon caps
-	// scheduling at MaxWait in case the inference is wrong.
-	ResetExplicit bool
-	Text          string
+	Text  string
 }
 
 type Tracked struct {
@@ -49,7 +43,7 @@ type State map[string]Tracked
 
 type Config struct {
 	Poll             time.Duration
-	MaxWait          time.Duration // upper bound on how long we'll wait between retries
+	MaxWait          time.Duration // fallback retry interval when the banner has no parseable time
 	Jitter           time.Duration // added to the scheduled retry time
 	DismissGap       time.Duration // pause between Escape and "continue"
 	ResumeText       string
@@ -65,7 +59,7 @@ type Config struct {
 func DefaultConfig() Config {
 	return Config{
 		Poll:        60 * time.Second,
-		MaxWait:     5 * time.Hour, // ≥ any single Claude usage window
+		MaxWait:     5 * time.Hour, // fallback retry interval when the banner has no parseable time at all
 		Jitter:      time.Second,   // reset times are accurate to the minute; 1s grace is enough
 		DismissGap:  300 * time.Millisecond,
 		ResumeText:  "continue",
@@ -261,12 +255,12 @@ func Detect(content string, now time.Time) *Banner {
 			if len(m) >= 8 && m[6] >= 0 {
 				tzStr = content[m[6]:m[7]]
 			}
-			reset, explicit, _ := parseReset(dateStr, timeStr, tzStr, now)
+			reset, _ := parseReset(dateStr, timeStr, tzStr, now)
 			text := strings.Join(strings.Fields(content[m[0]:m[1]]), " ")
 			if len(text) > 160 {
 				text = text[:160]
 			}
-			return &Banner{Reset: reset, ResetExplicit: explicit, Text: text}
+			return &Banner{Reset: reset, Text: text}
 		}
 	}
 	return nil
@@ -356,17 +350,14 @@ func ScanPanes(captureLines int) []PaneState {
 	return out
 }
 
-// parseReset interprets banner date/time strings. Returns:
-//   - the resolved datetime,
-//   - explicit=true when an authoritative date string was given (e.g.
-//     "May 24") that pinned the day, false when only a clock-time was
-//     given and the day had to be inferred,
-//   - error on unparseable input.
-func parseReset(dateStr, timeStr, tzStr string, now time.Time) (time.Time, bool, error) {
+// parseReset interprets banner date/time strings and returns the resolved
+// datetime, or an error on unparseable input. When the banner gave only a
+// clock-time and no date, the day is inferred via nearest-occurrence.
+func parseReset(dateStr, timeStr, tzStr string, now time.Time) (time.Time, error) {
 	s := strings.ToLower(strings.ReplaceAll(timeStr, " ", ""))
 	m := timeRE.FindStringSubmatch(s)
 	if m == nil {
-		return time.Time{}, false, fmt.Errorf("unparseable time %q", timeStr)
+		return time.Time{}, fmt.Errorf("unparseable time %q", timeStr)
 	}
 	hour, _ := strconv.Atoi(m[1])
 	hour = hour % 12
@@ -398,7 +389,7 @@ func parseReset(dateStr, timeStr, tzStr string, now time.Time) (time.Time, bool,
 			if target.Before(n.AddDate(0, 0, -30)) {
 				target = target.AddDate(1, 0, 0)
 			}
-			return target, true, nil
+			return target, nil
 		}
 		// Date couldn't be parsed; fall through to clock-only inference.
 	}
@@ -411,7 +402,7 @@ func parseReset(dateStr, timeStr, tzStr string, now time.Time) (time.Time, bool,
 	case diff < -12*time.Hour:
 		target = target.AddDate(0, 0, 1)
 	}
-	return target, false, nil
+	return target, nil
 }
 
 // launchSession creates a tmux session for name at dir and sends the Claude
@@ -832,26 +823,19 @@ func Decide(content string, prev Tracked, now time.Time) Action {
 }
 
 // nextAttemptAfter computes when the next retry should fire if this one
-// fails. If the banner gave an explicit future date, trust it as-is. If
-// only a clock time was given (date inferred), advance to the next future
-// occurrence and cap at MaxWait so a bad inference doesn't strand us.
+// fails. Trust the banner's time: explicit dates are used as-is; clock-only
+// banners are advanced to the next future occurrence of that clock. If the
+// banner had no parseable time at all, fall back to a fixed retry after
+// MaxWait.
 func nextAttemptAfter(b *Banner, now time.Time, cfg Config) time.Time {
-	cap := now.Add(cfg.MaxWait)
 	if b.Reset.IsZero() {
-		return cap
-	}
-	if b.ResetExplicit && b.Reset.After(now) {
-		return b.Reset.Add(cfg.Jitter)
+		return now.Add(cfg.MaxWait)
 	}
 	next := b.Reset
 	for !next.After(now) {
 		next = next.AddDate(0, 0, 1)
 	}
-	next = next.Add(cfg.Jitter)
-	if next.After(cap) {
-		next = cap
-	}
-	return next
+	return next.Add(cfg.Jitter)
 }
 
 func Tick(cfg Config, state State, errorState ErrorState, managed ManagedState, now time.Time) {

@@ -72,7 +72,7 @@ When it sees a banner, it acts:
 always immediate. On the next poll, if the banner is gone, the resume
 worked. If it's still there, the daemon schedules the next attempt at the
 banner's parsed clock time (advanced to the next future occurrence),
-capped at `max_wait` (5h default; longer than any single Claude window).
+capped at `max_wait` (5h default).
 
 **False-positive resistance.** A banner only counts if the matching line
 starts with Claude's tool-output continuation marker (`⎿`). Prose
