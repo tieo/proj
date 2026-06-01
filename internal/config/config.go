@@ -21,6 +21,7 @@ type Config struct {
 type ClaudeConfig struct {
 	Command    string `toml:"command"`
 	ResumeFlag string `toml:"resume_flag"`
+	Home       string `toml:"home"` // Claude home override; default ~/.claude, or the Windows one when running under WSL
 }
 
 type DaemonConfig struct {
