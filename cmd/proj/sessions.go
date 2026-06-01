@@ -108,6 +108,7 @@ func sessionLines(cfg config.Config, all []sessions.Session, filterCwd string) (
 		cutoff = time.Now().AddDate(0, 0, -cfg.List.MaxAgeDays)
 	}
 	now := time.Now()
+	greened := map[string]bool{} // only the newest session of a managed project is green
 	for _, s := range all {
 		if filterCwd != "" && s.Cwd != filterCwd {
 			continue
@@ -116,11 +117,17 @@ func sessionLines(cfg config.Config, all []sessions.Session, filterCwd string) (
 			hidden++
 			continue
 		}
-		name, managed := nameByCwd[s.Cwd]
-		if !managed {
+		name, isManaged := nameByCwd[s.Cwd]
+		green := false
+		if isManaged {
+			// `all` is newest-first, so the first session seen for a managed
+			// project is its current one; older ones stay grey.
+			green = !greened[s.Cwd]
+			greened[s.Cwd] = true
+		} else {
 			name = dirBase(s.Cwd)
 		}
-		lines = append(lines, sessionRow(s, name, managed, now))
+		lines = append(lines, sessionRow(s, name, green, now))
 		shown = append(shown, s)
 	}
 	return sessionHeader(), lines, shown, hidden

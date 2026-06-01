@@ -184,12 +184,17 @@ func selectOrCreate(defaultName string, options []string) (name string, tags []s
 		}
 	}
 	draw()
+	// clearWidget wipes the whole combobox (header line down) so the caller's
+	// output replaces it instead of overlapping leftover option text.
+	clearWidget := func() {
+		fmt.Print("\033[1A\r\033[J\033[?25h")
+	}
 
 	buf := make([]byte, 8)
 	for {
 		n, err := os.Stdin.Read(buf)
 		if err != nil || n == 0 {
-			fmt.Print("\r\n")
+			clearWidget()
 			return "", nil, -1, false
 		}
 		k := buf[:n]
@@ -217,10 +222,10 @@ func selectOrCreate(defaultName string, options []string) (name string, tags []s
 				draw()
 			}
 		case len(k) == 1 && (k[0] == 3 || (k[0] == 27 && n == 1)): // Ctrl-C / Esc
-			fmt.Print("\r\n")
+			clearWidget()
 			return "", nil, -1, false
 		case focus >= 0 && len(k) == 1 && (k[0] == '\r' || k[0] == '\n'):
-			fmt.Print("\r\n")
+			clearWidget()
 			return "", nil, focus, true
 		case focus == fName:
 			switch {
@@ -246,7 +251,7 @@ func selectOrCreate(defaultName string, options []string) (name string, tags []s
 				if name == "" {
 					break
 				}
-				fmt.Print("\r\n")
+				clearWidget()
 				return name, strings.Fields(string(tg)), -1, true
 			case len(k) == 1 && (k[0] == 127 || k[0] == 8):
 				if len(tg) > 0 {
