@@ -57,7 +57,7 @@ func runAdopt(cmd *cobra.Command, args []string) error {
 		if p, err = projects.Resolve(cfg.BaseDir, args[1]); err != nil {
 			return err
 		}
-	} else if p, err = pickProject(cfg); err != nil {
+	} else if p, err = pickProject(cfg, dirBase(s.Cwd)); err != nil {
 		return err
 	}
 
@@ -87,7 +87,7 @@ func pickSession(cfg config.Config, all []sessions.Session) (sessions.Session, e
 
 // pickProject defaults to creating a new project (type a name) and lets the
 // user arrow down to adopt into an existing one instead.
-func pickProject(cfg config.Config) (projects.Project, error) {
+func pickProject(cfg config.Config, defaultName string) (projects.Project, error) {
 	all := projects.All(cfg.BaseDir)
 	lines := make([]string, len(all))
 	for i, p := range all {
@@ -96,7 +96,7 @@ func pickProject(cfg config.Config) (projects.Project, error) {
 			lines[i] += "  \033[90m" + strings.Join(p.Tags, " ") + "\033[0m"
 		}
 	}
-	text, idx, ok := selectOrCreate("adopt into project (type a new name, ↓ to pick existing):", lines)
+	text, idx, ok := selectOrCreate("adopt into project (Enter to accept, edit, or ↓ to pick existing):", defaultName, lines)
 	if !ok {
 		return projects.Project{}, fmt.Errorf("cancelled")
 	}

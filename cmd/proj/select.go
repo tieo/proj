@@ -26,7 +26,7 @@ func selectFromList(header string, lines []string) int {
 	defer fmt.Print("\033[?25h") // restore it on exit
 
 	if header != "" {
-		fmt.Printf("\r\033[K     %s\r\n", header)
+		fmt.Printf("\r\033[K  %s\r\n", header)
 	}
 	sel := 0
 	draw := func(redraw bool) {
@@ -34,11 +34,11 @@ func selectFromList(header string, lines []string) int {
 			fmt.Printf("\033[%dA", len(lines))
 		}
 		for i, ln := range lines {
-			marker := " "
+			marker := "  "
 			if i == sel {
-				marker = "\033[36m❯\033[0m"
+				marker = "\033[36m❯\033[0m "
 			}
-			fmt.Printf("\r\033[K%s %2d %s\r\n", marker, i+1, ln)
+			fmt.Printf("\r\033[K%s%s\r\n", marker, ln)
 		}
 	}
 	draw(false)
@@ -123,10 +123,10 @@ func numberedSelect(header string, lines []string) int {
 // new entry) above a list of existing options. ↓ moves into the list, ↑ returns
 // to the field. Enter on the field returns the typed text (idx -1); Enter on a
 // list item returns that index. ok is false if cancelled (Esc/Ctrl-C).
-func selectOrCreate(prompt string, options []string) (text string, idx int, ok bool) {
+func selectOrCreate(prompt, defaultText string, options []string) (text string, idx int, ok bool) {
 	restore, raw := sttyRaw()
 	if !raw {
-		return numberedOrCreate(prompt, options)
+		return numberedOrCreate(prompt, defaultText, options)
 	}
 	defer restore()
 	fmt.Print("\033[?25l")
@@ -143,9 +143,14 @@ func selectOrCreate(prompt string, options []string) (text string, idx int, ok b
 			fmt.Printf("\033[%dA", total)
 		}
 		marker := "  "
-		field := string(input) + "\033[7m \033[0m" // a reverse-video cursor block
 		if focus == -1 {
 			marker = "\033[36m❯\033[0m "
+		}
+		var field string
+		if len(input) == 0 && defaultText != "" {
+			field = "\033[7m \033[0m\033[90m" + defaultText + "\033[0m" // cursor, then greyed placeholder
+		} else {
+			field = string(input) + "\033[7m \033[0m"
 		}
 		fmt.Printf("\r\033[K%s\033[90mnew:\033[0m %s\r\n", marker, field)
 		for i, opt := range options {
@@ -182,7 +187,11 @@ func selectOrCreate(prompt string, options []string) (text string, idx int, ok b
 				fmt.Print("\r\n")
 				return "", focus, true
 			}
-			if t := strings.TrimSpace(string(input)); t != "" {
+			t := strings.TrimSpace(string(input))
+			if t == "" {
+				t = defaultText // Enter on the empty field accepts the placeholder
+			}
+			if t != "" {
 				fmt.Print("\r\n")
 				return t, -1, true
 			}
@@ -203,20 +212,23 @@ func selectOrCreate(prompt string, options []string) (text string, idx int, ok b
 
 // numberedOrCreate is the non-TTY fallback for selectOrCreate: type a name, or a
 // number to choose an existing option.
-func numberedOrCreate(prompt string, options []string) (string, int, bool) {
+func numberedOrCreate(prompt, defaultText string, options []string) (string, int, bool) {
 	if prompt != "" {
 		fmt.Println("  " + prompt)
 	}
 	for i, o := range options {
 		fmt.Printf("  %2d  %s\n", i+1, o)
 	}
-	fmt.Print("project (new name, or a number): ")
+	fmt.Printf("project (new name, or a number) [%s]: ", defaultText)
 	sc := bufio.NewScanner(os.Stdin)
 	if !sc.Scan() {
 		return "", -1, false
 	}
 	in := strings.TrimSpace(sc.Text())
 	if in == "" {
+		if defaultText != "" {
+			return defaultText, -1, true
+		}
 		return "", -1, false
 	}
 	if n, err := strconv.Atoi(in); err == nil && n >= 1 && n <= len(options) {

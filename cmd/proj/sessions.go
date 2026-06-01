@@ -89,7 +89,11 @@ func sessionRow(s sessions.Session, name string, managed bool, now time.Time) st
 	} else {
 		cell = "\033[90m" + cell + "\033[0m"
 	}
-	return fmt.Sprintf("%-8s %9s %6d  %s %s", s.ID[:8], formatAgo(now.Sub(s.Modified)), s.Messages, cell, s.Title)
+	title := s.Title
+	if title == "(no prompt)" {
+		title = "\033[90m" + name + "\033[0m" // placeholder when the session has no prompt yet
+	}
+	return fmt.Sprintf("%-8s %9s %6d  %s %s", s.ID[:8], formatAgo(now.Sub(s.Modified)), s.Messages, cell, title)
 }
 
 // sessionLines builds the header and rendered rows (recency-filtered unless
