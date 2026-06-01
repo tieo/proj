@@ -24,9 +24,19 @@ type Session struct {
 	Activity int64
 }
 
-func HasSession(name string) bool {
-	_, err := shellout.RunErr("tmux", "has-session", "-t", "="+name)
-	return err == nil
+// SessionForPath returns the name of the session whose working directory is
+// dir, or "" if none. A project's identity is its directory, not its session
+// name: the name carries tags and can drift (see `proj tag`), but the dir is
+// fixed, and is also what Claude keys its history on. Callers that look up by
+// dir therefore find the project's session even after a tag rename, and never
+// spawn a duplicate session for the same dir.
+func SessionForPath(dir string) string {
+	for _, s := range ListSessions() {
+		if s.Path == dir {
+			return s.Name
+		}
+	}
+	return ""
 }
 
 func ListPanes() []Pane {
@@ -79,13 +89,15 @@ func CapturePane(target string, lines int) string {
 
 // NewSession creates a detached session in `dir` and returns the new pane id.
 // When command is non-empty it becomes the pane's program (run via the
-// default shell), so nothing — no shell prompt, no echoed command line — is
+// default shell), so nothing (no shell prompt, no echoed command line) is
 // printed above it; an empty command starts a plain interactive shell.
 //
 // Mouse mode is enabled on the session so the scroll wheel scrolls pane
 // content (and enters copy-mode) instead of sending arrow keys to the
 // program. Scoped with -t to this session so the user's global tmux config
-// is left untouched.
+// is left untouched. The wheel scroll step is also set (see scrollStep);
+// that one is a global key binding because tmux has no per-session key
+// tables, but it is re-asserted idempotently on every session create.
 func NewSession(name, dir, command string) (string, error) {
 	args := []string{"new-session", "-d", "-P", "-F", "#{pane_id}", "-s", name, "-c", dir}
 	if command != "" {
@@ -95,11 +107,37 @@ func NewSession(name, dir, command string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	// Best effort: a failure here shouldn't prevent the session from opening.
+	// Best effort: failures here shouldn't prevent the session from opening.
 	// Note: set-option does not accept the "=" exact-match target prefix that
 	// has-session/kill-session use, so the bare name is passed here.
 	_, _ = shellout.RunErr("tmux", "set-option", "-t", name, "mouse", "on")
+	// Tear the pane (and thus the one-window session) down when its program
+	// exits, regardless of the user's global remain-on-exit. proj treats a
+	// finished claude as a finished session: the dir is left clean and the next
+	// open starts fresh rather than re-attaching a dead pane.
+	_, _ = shellout.RunErr("tmux", "set-option", "-t", name, "remain-on-exit", "off")
+	setScrollStep()
 	return pane, nil
+}
+
+// scrollStep is how many lines a single mouse-wheel notch scrolls in
+// copy-mode (tmux's default is 5).
+const scrollStep = 2
+
+// setScrollStep rebinds the mouse wheel in both copy-mode key tables to
+// scroll scrollStep lines per notch. Key bindings are server-global (tmux has
+// no per-session key tables), so this affects all sessions; it is idempotent.
+func setScrollStep() {
+	n := strconv.Itoa(scrollStep)
+	// The command after select-pane must be joined with an escaped `\;`; a
+	// bare `;` is consumed by tmux as a top-level command separator and the
+	// binding would collapse to just select-pane.
+	for _, table := range []string{"copy-mode", "copy-mode-vi"} {
+		_, _ = shellout.RunErr("tmux", "bind-key", "-T", table, "WheelUpPane",
+			"select-pane", `\;`, "send-keys", "-X", "-N", n, "scroll-up")
+		_, _ = shellout.RunErr("tmux", "bind-key", "-T", table, "WheelDownPane",
+			"select-pane", `\;`, "send-keys", "-X", "-N", n, "scroll-down")
+	}
 }
 
 // SendKeys sends `cmd` followed by Enter to `target`.

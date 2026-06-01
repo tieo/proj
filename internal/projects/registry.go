@@ -23,7 +23,8 @@ type ProjectMeta struct {
 }
 
 // RegistryPath returns the location of the registry file.
-//   $XDG_CONFIG_HOME/proj/projects.toml, or ~/.config/proj/projects.toml.
+//
+//	$XDG_CONFIG_HOME/proj/projects.toml, or ~/.config/proj/projects.toml.
 func RegistryPath() string {
 	base := os.Getenv("XDG_CONFIG_HOME")
 	if base == "" {
@@ -84,6 +85,11 @@ func (r Registry) Tags(name string) []string {
 // SetTags assigns tags to name, persisting the registry. An empty tag list
 // removes the project's entry entirely.
 func (r Registry) SetTags(name string, tags []string) error {
+	for _, t := range tags {
+		if err := ValidateTag(t); err != nil {
+			return err
+		}
+	}
 	clean := normalize(tags)
 	if len(clean) == 0 {
 		delete(r.Projects, name)

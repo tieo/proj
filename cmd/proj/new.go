@@ -12,23 +12,30 @@ import (
 )
 
 var newCmd = &cobra.Command{
-	Use:   "new <tags...> <name>",
-	Short: "create a project; the last argument is the name, any preceding ones are tags",
-	Long: "Create a project. The final argument is always the project name; every\n" +
-		"argument before it is a tag. Quote a multi-word name:\n\n" +
+	Use:   "new <name> <tags...>",
+	Short: "create a project; the first argument is the name, any following ones are tags",
+	Long: "Create a project. The first argument is always the project name; every\n" +
+		"argument after it is a tag. Names must be unique: each project is its own\n" +
+		"directory, and you open one by its name (or a unique prefix). Tags are just\n" +
+		"labels for grouping and may be shared across projects. Quote a multi-word name:\n\n" +
 		"  proj new webapp                 # untagged project \"webapp\"\n" +
-		"  proj new go oss webapp          # tags [go oss], name \"webapp\"\n" +
-		"  proj new work go \"client app\"   # tags [work go], name \"client app\"",
+		"  proj new webapp go oss          # name \"webapp\", tags [go oss]\n" +
+		"  proj new \"client app\" work go   # name \"client app\", tags [work go]",
 	Args: cobra.MinimumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		cfg, err := config.Load()
 		if err != nil {
 			return err
 		}
-		name := args[len(args)-1]
-		tags := args[:len(args)-1]
+		name := args[0]
+		tags := args[1:]
 		if err := projects.ValidateName(name); err != nil {
 			return err
+		}
+		for _, t := range tags {
+			if err := projects.ValidateTag(t); err != nil {
+				return err
+			}
 		}
 
 		dir := filepath.Join(cfg.BaseDir, name)

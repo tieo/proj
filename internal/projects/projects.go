@@ -24,21 +24,39 @@ type Project struct {
 	DirMTime  int64
 }
 
-// SessionName builds a tmux-safe session name from a project's tags and name.
-// Tags are sorted alphabetically and joined with the name by '_'. Untagged
-// projects produce just the name. tmux rejects '.' and ':' in session targets,
-// so those (and '/' and ' ') are normalised.
+// SessionName builds a tmux-safe session name from a project's name and tags,
+// formatted name-first as "name@tag1+tag2" (tags sorted; an untagged project is
+// just its name). '@' separates the name from the tag block and '+' joins tags;
+// both are valid in Windows and Linux filenames and in tmux session names. The
+// name keeps its own characters, so the '@' boundary stays unambiguous. tmux
+// rejects '.' and ':' in session targets, so those (and '/' and ' ') are
+// normalised.
 func SessionName(name string, tags []string) string {
-	sorted := append([]string{}, tags...)
-	sort.Strings(sorted)
-	joined := strings.Join(append(sorted, name), "_")
-	return strings.NewReplacer(".", "_", ":", "_", "/", "-", " ", "_").Replace(joined)
+	s := name
+	if len(tags) > 0 {
+		sorted := append([]string{}, tags...)
+		sort.Strings(sorted)
+		s += "@" + strings.Join(sorted, "+")
+	}
+	return strings.NewReplacer(".", "_", ":", "_", "/", "-", " ", "_").Replace(s)
 }
 
-// ValidateName rejects only the names that would break the flat one-dir-per-
-// project layout or the registry keying: empty, path separators, and the
-// directory aliases "." / "..". Spaces and shell metacharacters are allowed;
-// they are quoted at the point a command line is built (see shellout.Quote).
+// reservedNames are Windows device names that can't be used as a path
+// component. Project dirs live on Linux but are opened by claude.exe over the
+// \\wsl.localhost UNC path, so we avoid them even though Linux would allow them.
+var reservedNames = map[string]bool{
+	"con": true, "prn": true, "aux": true, "nul": true,
+	"com1": true, "com2": true, "com3": true, "com4": true, "com5": true,
+	"com6": true, "com7": true, "com8": true, "com9": true,
+	"lpt1": true, "lpt2": true, "lpt3": true, "lpt4": true, "lpt5": true,
+	"lpt6": true, "lpt7": true, "lpt8": true, "lpt9": true,
+}
+
+// ValidateName rejects names that would break the flat one-dir-per-project
+// layout, the registry keying, the "name@tag+tag" session format, or the
+// Windows path namespace (these dirs are opened by claude.exe over UNC). Spaces
+// mid-name are fine; they're quoted when a command line is built (shellout.Quote)
+// and normalised in session names.
 func ValidateName(name string) error {
 	switch {
 	case name == "":
@@ -47,6 +65,29 @@ func ValidateName(name string) error {
 		return fmt.Errorf("%q is not a valid project name", name)
 	case strings.ContainsAny(name, `/\`):
 		return fmt.Errorf("name %q may not contain a path separator", name)
+	case strings.ContainsAny(name, "@+"):
+		return fmt.Errorf("name %q may not contain '@' or '+' (reserved for the name@tag session format)", name)
+	case strings.ContainsAny(name, "<>:\"|?*"):
+		return fmt.Errorf(`name %q may not contain any of < > : " | ? * (not allowed in Windows paths)`, name)
+	case strings.HasSuffix(name, ".") || strings.HasSuffix(name, " "):
+		return fmt.Errorf("name %q may not end with a space or '.'", name)
+	case reservedNames[strings.ToLower(name)]:
+		return fmt.Errorf("%q is a reserved device name on Windows", name)
+	}
+	return nil
+}
+
+// ValidateTag rejects tags that would break the "name@tag+tag" session format.
+// Tags never become directories, so they aren't held to the full path rules;
+// only the structural separators and path separators are forbidden.
+func ValidateTag(tag string) error {
+	switch {
+	case strings.TrimSpace(tag) == "":
+		return fmt.Errorf("empty tag")
+	case strings.ContainsAny(tag, "@+"):
+		return fmt.Errorf("tag %q may not contain '@' or '+'", tag)
+	case strings.ContainsAny(tag, `/\`):
+		return fmt.Errorf("tag %q may not contain a path separator", tag)
 	}
 	return nil
 }
@@ -84,6 +125,39 @@ func FindByName(baseDir, name string) (Project, error) {
 		Tags:     reg.Tags(name),
 		DirMTime: info.ModTime().Unix(),
 	}, nil
+}
+
+// Resolve maps a query to exactly one existing project under baseDir. An exact
+// name match always wins; otherwise a unique name prefix wins. It errors (naming
+// the candidates) when a prefix is ambiguous, and errors when nothing matches.
+// Because project names are unique, a fully-typed name is never ambiguous;
+// prefixes are purely a typing shortcut.
+func Resolve(baseDir, query string) (Project, error) {
+	entries, err := os.ReadDir(baseDir)
+	if err != nil {
+		return Project{}, err
+	}
+	var prefixes []string
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		switch n := e.Name(); {
+		case n == query:
+			return FindByName(baseDir, n) // exact match always wins
+		case strings.HasPrefix(n, query):
+			prefixes = append(prefixes, n)
+		}
+	}
+	switch len(prefixes) {
+	case 1:
+		return FindByName(baseDir, prefixes[0])
+	case 0:
+		return Project{}, fmt.Errorf("no project matching %q (use `proj new %s` to create it)", query, query)
+	default:
+		sort.Strings(prefixes)
+		return Project{}, fmt.Errorf("%q is ambiguous: matches %s", query, strings.Join(prefixes, ", "))
+	}
 }
 
 // All returns every project directly under baseDir, with session status filled
@@ -133,36 +207,6 @@ func OrphanSessions(baseDir string) []tmux.Session {
 		}
 	}
 	return orphans
-}
-
-// HasHistory reports whether Claude Code has a prior transcript for `dir`.
-// Claude encodes the project path by replacing every non-alphanumeric rune
-// with '-' (so '/', '.', '_', ' ', '+' all become '-', and adjacent specials
-// like '/.' produce '--'). Stored under ~/.claude/projects/<encoded>/.
-func HasHistory(dir string) bool {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return false
-	}
-	encoded := strings.Map(func(r rune) rune {
-		switch {
-		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9':
-			return r
-		default:
-			return '-'
-		}
-	}, dir)
-	histDir := filepath.Join(home, ".claude", "projects", encoded)
-	entries, err := os.ReadDir(histDir)
-	if err != nil {
-		return false
-	}
-	for _, e := range entries {
-		if !e.IsDir() && strings.HasSuffix(e.Name(), ".jsonl") {
-			return true
-		}
-	}
-	return false
 }
 
 func Reltime(ts, now int64) string {

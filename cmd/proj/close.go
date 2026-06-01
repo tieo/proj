@@ -1,4 +1,5 @@
-// proj close [session]; mark a session as intentionally closed and kill it.
+// proj close [project]; mark a project's session as intentionally closed and
+// kill it.
 //
 // Use this instead of `tmux kill-session` when you want proj unreset to know
 // the close was deliberate. Without this (or the shell exit trap in proj.zsh /
@@ -14,13 +15,15 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/tieo/proj/internal/config"
+	"github.com/tieo/proj/internal/projects"
 	"github.com/tieo/proj/internal/tmux"
 	"github.com/tieo/proj/internal/unreset"
 )
 
 var closeCmd = &cobra.Command{
-	Use:   "close [session]",
-	Short: "mark a session as intentionally closed and kill it",
+	Use:   "close [project]",
+	Short: "close a project's session: mark it intentionally closed and kill it",
 	Args:  cobra.MaximumNArgs(1),
 	RunE:  runClose,
 }
@@ -30,17 +33,21 @@ func init() {
 }
 
 func runClose(cmd *cobra.Command, args []string) error {
-	name, err := resolveCloseSession(args)
+	cfg, err := config.Load()
 	if err != nil {
 		return err
 	}
-	cfg := unresetConfig()
-	managed := unreset.LoadManagedState(cfg.StatePath)
+	name, err := resolveCloseSession(cfg.BaseDir, args)
+	if err != nil {
+		return err
+	}
+	ucfg := unresetConfig()
+	managed := unreset.LoadManagedState(ucfg.StatePath)
 	ms := managed[name]
 	ms.Name = name
 	ms.ExitedCleanly = true
 	managed[name] = ms
-	if err := unreset.SaveManagedState(cfg.StatePath, managed); err != nil {
+	if err := unreset.SaveManagedState(ucfg.StatePath, managed); err != nil {
 		return fmt.Errorf("save managed state: %w", err)
 	}
 	if err := tmux.KillSession(name); err != nil {
@@ -50,14 +57,24 @@ func runClose(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-// resolveCloseSession returns the session name from args, or from the current
-// tmux session if no arg is given.
-func resolveCloseSession(args []string) (string, error) {
+// resolveCloseSession returns the tmux session name to close. With an argument
+// it is treated as a project name or unique prefix (like `proj` open) and
+// resolved to that project's open session; with no argument it is the current
+// tmux session.
+func resolveCloseSession(baseDir string, args []string) (string, error) {
 	if len(args) > 0 && args[0] != "" {
-		return args[0], nil
+		p, err := projects.Resolve(baseDir, args[0])
+		if err != nil {
+			return "", err
+		}
+		session := tmux.SessionForPath(p.Dir)
+		if session == "" {
+			return "", fmt.Errorf("%q has no open session", p.Name)
+		}
+		return session, nil
 	}
 	if os.Getenv("TMUX") == "" {
-		return "", fmt.Errorf("no session name given and not inside a tmux session")
+		return "", fmt.Errorf("no project name given and not inside a tmux session")
 	}
 	out, err := exec.Command("tmux", "display-message", "-p", "#S").Output()
 	if err != nil {
