@@ -18,6 +18,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/tieo/proj/internal/shellout"
 	"github.com/tieo/proj/internal/tmux"
 )
 
@@ -405,23 +406,21 @@ func parseReset(dateStr, timeStr, tzStr string, now time.Time) (time.Time, error
 	return target, nil
 }
 
-// launchSession creates a tmux session for name at dir and sends the Claude
-// launch command, appending the resume flag when there is prior history.
+// launchSession recreates a tmux session for name at dir, running the Claude
+// launch command as the pane's program (then dropping to a shell on exit) and
+// appending the resume flag when there is prior history. An empty command
+// just starts a plain shell.
 func launchSession(cfg Config, name, dir string) {
-	pane, err := tmux.NewSession(name, dir)
-	if err != nil {
+	command := ""
+	if cfg.ClaudeCommand != "" {
+		cmdLine := strings.NewReplacer("{name}", shellout.Quote(name), "{dir}", shellout.Quote(dir)).Replace(cfg.ClaudeCommand)
+		if cfg.ClaudeResumeFlag != "" && hasHistory(dir) {
+			cmdLine += " " + cfg.ClaudeResumeFlag
+		}
+		command = cmdLine + `; exec "${SHELL:-bash}"`
+	}
+	if _, err := tmux.NewSession(name, dir, command); err != nil {
 		slog.Error("recreate session failed", "session", name, "err", err)
-		return
-	}
-	if cfg.ClaudeCommand == "" {
-		return
-	}
-	cmdLine := strings.NewReplacer("{name}", name, "{dir}", dir).Replace(cfg.ClaudeCommand)
-	if cfg.ClaudeResumeFlag != "" && hasHistory(dir) {
-		cmdLine += " " + cfg.ClaudeResumeFlag
-	}
-	if err := tmux.SendKeys(pane, cmdLine); err != nil {
-		slog.Error("send claude command failed", "session", name, "err", err)
 	}
 }
 

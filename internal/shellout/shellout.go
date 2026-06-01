@@ -24,3 +24,12 @@ func RunErr(name string, args ...string) (string, error) {
 	}
 	return strings.TrimRight(string(out), "\n"), nil
 }
+
+// Quote wraps s in single quotes so it survives as a single word when a
+// command line is typed into a shell (e.g. via tmux send-keys). Embedded
+// single quotes are escaped using the standard '\'' idiom. This is only
+// context-free-correct when the placeholder sits in an unquoted position in
+// the surrounding command template.
+func Quote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
+}

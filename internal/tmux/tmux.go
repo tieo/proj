@@ -78,8 +78,28 @@ func CapturePane(target string, lines int) string {
 }
 
 // NewSession creates a detached session in `dir` and returns the new pane id.
-func NewSession(name, dir string) (string, error) {
-	return shellout.RunErr("tmux", "new-session", "-d", "-P", "-F", "#{pane_id}", "-s", name, "-c", dir)
+// When command is non-empty it becomes the pane's program (run via the
+// default shell), so nothing — no shell prompt, no echoed command line — is
+// printed above it; an empty command starts a plain interactive shell.
+//
+// Mouse mode is enabled on the session so the scroll wheel scrolls pane
+// content (and enters copy-mode) instead of sending arrow keys to the
+// program. Scoped with -t to this session so the user's global tmux config
+// is left untouched.
+func NewSession(name, dir, command string) (string, error) {
+	args := []string{"new-session", "-d", "-P", "-F", "#{pane_id}", "-s", name, "-c", dir}
+	if command != "" {
+		args = append(args, command)
+	}
+	pane, err := shellout.RunErr("tmux", args...)
+	if err != nil {
+		return "", err
+	}
+	// Best effort: a failure here shouldn't prevent the session from opening.
+	// Note: set-option does not accept the "=" exact-match target prefix that
+	// has-session/kill-session use, so the bare name is passed here.
+	_, _ = shellout.RunErr("tmux", "set-option", "-t", name, "mouse", "on")
+	return pane, nil
 }
 
 // SendKeys sends `cmd` followed by Enter to `target`.
