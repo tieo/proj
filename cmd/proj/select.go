@@ -121,27 +121,25 @@ func numberedSelect(header string, lines []string) int {
 
 // fName and fTags are the two field "focus" values; focus >= 0 is an option.
 const (
-	fName = -2
-	fTags = -1
+	fName       = -2
+	fTags       = -1
+	projNameCol = 16 // width of the NAME column, shared with pickProject
 )
 
-// selectOrCreate is a combobox for choosing or creating a project. The top line
-// holds a name field and a tags field; the existing projects are listed below.
-// On the name field, space/tab/enter jump to tags; on the tags field, enter
-// confirms and tab returns to the name. ↓ enters the project list and ↑ leaves
-// it. It returns a typed name and tags (idx -1) to create, or an option index to
-// pick an existing project. ok is false if cancelled (Esc/Ctrl-C).
-func selectOrCreate(prompt, defaultName string, options []string) (name string, tags []string, idx int, ok bool) {
+// selectOrCreate is a combobox for choosing or creating a project: a NAME field
+// and a TAGS field on the top line, existing projects below. On NAME,
+// space/tab/enter jump to TAGS; on TAGS, enter creates the project and Shift+Tab
+// goes back to NAME. ↓ enters the project list, ↑ leaves it. Returns a typed name
+// and tags (idx -1) to create, or an option index to pick an existing project.
+func selectOrCreate(defaultName string, options []string) (name string, tags []string, idx int, ok bool) {
 	restore, raw := sttyRaw()
 	if !raw {
-		return numberedOrCreate(prompt, defaultName, options)
+		return numberedOrCreate(defaultName, options)
 	}
 	defer restore()
 	defer fmt.Print("\033[?25h")
 
-	if prompt != "" {
-		fmt.Printf("\r\033[K  %s\r\n", prompt)
-	}
+	fmt.Printf("\r\033[K  \033[90m%-*s  %s\033[0m\r\n", projNameCol, "NAME", "TAGS")
 	total := len(options) + 1 // input line + options
 	var nm, tg []rune
 	focus := fName
@@ -159,11 +157,16 @@ func selectOrCreate(prompt, defaultName string, options []string) (name string, 
 		fmt.Print("\033[?25l\r")
 		nameText, nameW := seg(nm, defaultName)
 		tagsText, _ := seg(tg, "tags")
+		colW := projNameCol
+		if nameW > colW {
+			colW = nameW
+		}
+		nameField := nameText + strings.Repeat(" ", colW-nameW)
 		marker := "  "
 		if focus < 0 {
 			marker = "\033[36m❯\033[0m "
 		}
-		fmt.Printf("\033[K%s%s  %s\r\n", marker, nameText, tagsText)
+		fmt.Printf("\033[K%s%s  %s\r\n", marker, nameField, tagsText)
 		for i, opt := range options {
 			m := "  "
 			if focus == i {
@@ -175,7 +178,7 @@ func selectOrCreate(prompt, defaultName string, options []string) (name string, 
 		if focus < 0 {
 			col := 2 + len(nm)
 			if focus == fTags {
-				col = 2 + nameW + 2 + len(tg)
+				col = 2 + colW + 2 + len(tg)
 			}
 			fmt.Printf("\033[%dC\033[?25h", col) // place the real (blinking) cursor
 		}
@@ -206,6 +209,11 @@ func selectOrCreate(prompt, defaultName string, options []string) (name string, 
 				draw()
 			} else if focus > 0 {
 				focus--
+				draw()
+			}
+		case len(k) >= 3 && k[0] == 27 && k[1] == '[' && k[2] == 'Z': // Shift+Tab
+			if focus == fTags {
+				focus = fName
 				draw()
 			}
 		case len(k) == 1 && (k[0] == 3 || (k[0] == 27 && n == 1)): // Ctrl-C / Esc
@@ -240,9 +248,6 @@ func selectOrCreate(prompt, defaultName string, options []string) (name string, 
 				}
 				fmt.Print("\r\n")
 				return name, strings.Fields(string(tg)), -1, true
-			case len(k) == 1 && k[0] == '\t':
-				focus = fName
-				draw()
 			case len(k) == 1 && (k[0] == 127 || k[0] == 8):
 				if len(tg) > 0 {
 					tg = tg[:len(tg)-1]
@@ -259,10 +264,7 @@ func selectOrCreate(prompt, defaultName string, options []string) (name string, 
 }
 
 // numberedOrCreate is the non-TTY fallback for selectOrCreate.
-func numberedOrCreate(prompt, defaultName string, options []string) (string, []string, int, bool) {
-	if prompt != "" {
-		fmt.Println("  " + prompt)
-	}
+func numberedOrCreate(defaultName string, options []string) (string, []string, int, bool) {
 	for i, o := range options {
 		fmt.Printf("  %2d  %s\n", i+1, o)
 	}

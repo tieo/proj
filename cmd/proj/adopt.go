@@ -91,12 +91,13 @@ func pickProject(cfg config.Config, defaultName string) (projects.Project, error
 	all := projects.All(cfg.BaseDir)
 	lines := make([]string, len(all))
 	for i, p := range all {
-		lines[i] = p.Name
+		line := fmt.Sprintf("%-*s", projNameCol, p.Name)
 		if len(p.Tags) > 0 {
-			lines[i] += "  \033[90m" + strings.Join(p.Tags, " ") + "\033[0m"
+			line += "  \033[90m" + strings.Join(p.Tags, " ") + "\033[0m"
 		}
+		lines[i] = line
 	}
-	name, tags, idx, ok := selectOrCreate("adopt into project (name, space for tags, ↓ to pick existing):", defaultName, lines)
+	name, tags, idx, ok := selectOrCreate(defaultName, lines)
 	if !ok {
 		return projects.Project{}, fmt.Errorf("cancelled")
 	}
