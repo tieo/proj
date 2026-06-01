@@ -23,17 +23,28 @@ nix develop          # drops you into a shell with go, gopls, tmux
 Open a new shell, then:
 
 ```sh
-proj list            # show projects with session status
-proj go myapi        # create / open ~/projects/code/go/myapi in tmux
-proj cd myapi        # cd into the project's directory
-proj unreset         # show daemon status + pending resumes
+proj list                  # show projects with session status
+proj myapi work go         # create ~/projects/code/myapi/ with tags [work, go]
+proj myapi                 # open it later
+proj cd myapi              # cd into the project's directory
+proj unreset               # show daemon status + pending resumes
 ```
 
 ## Layout
 
 `proj` keeps projects on disk under one base directory (default
-`~/projects/code/`), organised as `<base>/<lang>/<name>/`. The tmux session
-name is derived from the project name (`.` and `:` become `_`).
+`~/projects/code/`), organised flat as `<base>/<name>/`. Tags live in an
+optional `<base>/<name>/.proj` TOML file:
+
+```toml
+tags = ["work", "go"]
+```
+
+A missing or empty `.proj` means an untagged project; any direct child
+directory of `base_dir` counts as a project. The tmux session name is the
+sorted tags joined to the name by `_` (so the same project always
+resolves to the same session): `<base>/myapi/` with tags `[work, go]`
+becomes session `go_work_myapi`. Untagged projects use just `<name>`.
 
 Opening a project creates the session detached, runs Claude Code in it
 (`claude --dangerously-skip-permissions --remote-control …`), and attaches.
@@ -44,11 +55,14 @@ Re-running `proj <name>` later just attaches.
 | Command | What it does |
 | --- | --- |
 | `proj <name>` | open the named project (must already exist) |
-| `proj <lang> <name>` | create the dir if absent, then open |
-| `proj new` | interactive wizard (asks lang, name, optional description) |
-| `proj list` | active projects first, then idle, then orphan tmux sessions |
+| `proj <name> <tag>...` | create the project with these tags, then open |
+| `proj new` | interactive wizard (asks name, then tags) |
+| `proj list [--tag <t>]` | active projects first, then idle, then orphan tmux sessions; `--tag` filters |
 | `proj cd <name>` | cd the current shell into the project (needs the shim) |
 | `proj path <name>` | print the project's absolute path |
+| `proj tag add <name> <tag>...` | add tags to an existing project |
+| `proj tag rm <name> <tag>...` | remove tags from a project |
+| `proj tag set <name> [<tag>...]` | replace the project's tags |
 | `proj kill <name>` | kill the project's tmux session |
 | `proj rm <name>` | delete the project directory (asks first) |
 | `proj rename <old> <new>` | rename dir + session |
@@ -97,8 +111,7 @@ on `gui/$UID/com.proj.unreset` directly.
 Optional. Defaults are usable. `~/.config/proj/config.toml`:
 
 ```toml
-base_dir     = "~/projects/code"
-default_lang = "polyglot"      # what `proj new` uses if you skip the language prompt
+base_dir = "~/projects/code"
 
 [claude]
 command     = "claude --dangerously-skip-permissions --remote-control --remote-control-session-name-prefix {name} -n {name}"
@@ -106,7 +119,7 @@ resume_flag = "-c"
 
 [unreset]
 poll_interval = "60s"
-max_wait      = "5h"   # upper bound between retry attempts on the same pane
+max_wait      = "5h"   # fallback retry interval when the banner has no parseable time
 jitter        = "1s"   # added to the scheduled retry time
 resume_text   = "continue"
 capture_lines = 300

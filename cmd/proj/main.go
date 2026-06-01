@@ -14,10 +14,10 @@ import (
 const Version = "0.1.0"
 
 var rootCmd = &cobra.Command{
-	Use:           "proj [name | <lang> <name> | <subcommand>]",
+	Use:           "proj [name | <name> <tag>... | <subcommand>]",
 	Short:         "tmux + Claude Code project session manager",
 	Long:          `proj opens a tmux session per project, optionally launching Claude Code inside it, and (via "proj unreset") auto-resumes those sessions when usage limits expire.`,
-	Args:          cobra.MaximumNArgs(2),
+	Args:          cobra.ArbitraryArgs,
 	SilenceUsage:  true,
 	SilenceErrors: true,
 	RunE:          runOpen,

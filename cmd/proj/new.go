@@ -10,6 +10,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/tieo/proj/internal/config"
+	"github.com/tieo/proj/internal/projects"
 )
 
 var newCmd = &cobra.Command{
@@ -27,27 +28,24 @@ var newCmd = &cobra.Command{
 			return strings.TrimSpace(line), err
 		}
 
-		desc, _ := ask("What are you building? ")
-
-		fmt.Printf("Language? [%s] (existing: %s) ",
-			cfg.DefaultLang, strings.Join(existingLangs(cfg.BaseDir), " "))
-		lang, _ := r.ReadString('\n')
-		lang = strings.TrimSpace(lang)
-		if lang == "" {
-			lang = cfg.DefaultLang
-		}
-
 		name, _ := ask("Project name? ")
 		if name == "" {
 			return fmt.Errorf("name required")
 		}
-
-		dir := filepath.Join(cfg.BaseDir, lang, name)
+		dir := filepath.Join(cfg.BaseDir, name)
 		if _, err := os.Stat(dir); err == nil {
 			return fmt.Errorf("%s already exists", dir)
 		}
 
-		ans, _ := ask(fmt.Sprintf("\nCreate %s? [Y/n] ", dir))
+		existing := projects.ExistingTags(cfg.BaseDir)
+		hint := ""
+		if len(existing) > 0 {
+			hint = fmt.Sprintf(" (existing: %s)", strings.Join(existing, " "))
+		}
+		raw, _ := ask(fmt.Sprintf("Tags?%s ", hint))
+		tags := splitTags(raw)
+
+		ans, _ := ask(fmt.Sprintf("Create %s? [Y/n] ", dir))
 		ans = strings.ToLower(ans)
 		if ans != "" && ans != "y" && ans != "yes" {
 			return fmt.Errorf("aborted")
@@ -55,26 +53,22 @@ var newCmd = &cobra.Command{
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			return err
 		}
-		if desc != "" {
-			_ = os.WriteFile(filepath.Join(dir, "README.md"),
-				[]byte("# "+name+"\n\n"+desc+"\n"), 0o644)
+		if err := projects.SaveTags(dir, tags); err != nil {
+			return err
 		}
-		return openInTmux(cfg, name, dir)
+		p, err := projects.FindByName(cfg.BaseDir, name)
+		if err != nil {
+			return err
+		}
+		return openInTmux(cfg, p)
 	},
 }
 
-func existingLangs(base string) []string {
-	entries, err := os.ReadDir(base)
-	if err != nil {
-		return nil
-	}
-	var out []string
-	for _, e := range entries {
-		if e.IsDir() {
-			out = append(out, e.Name())
-		}
-	}
-	return out
+// splitTags splits on any combination of commas, spaces, and tabs.
+func splitTags(s string) []string {
+	return strings.FieldsFunc(s, func(r rune) bool {
+		return r == ' ' || r == '\t' || r == ','
+	})
 }
 
 func init() {

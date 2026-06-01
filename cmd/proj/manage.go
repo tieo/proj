@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"time"
 
@@ -15,31 +14,6 @@ import (
 	"github.com/tieo/proj/internal/projects"
 	"github.com/tieo/proj/internal/tmux"
 )
-
-// resolveProjectDir maps a bare project name to a single directory. When the
-// name exists under exactly one lang it resolves silently; under several it
-// lists the langs on stderr and prompts for a choice (so the captured stdout
-// of `proj path`/`cd` stays clean). Returns an error when nothing matches.
-func resolveProjectDir(baseDir, name string) (string, error) {
-	matches := projects.FindAll(baseDir, name)
-	switch len(matches) {
-	case 0:
-		return "", fmt.Errorf("%q not found under %s", name, baseDir)
-	case 1:
-		return matches[0], nil
-	}
-	fmt.Fprintf(os.Stderr, "%q exists in %d langs:\n", name, len(matches))
-	for i, m := range matches {
-		fmt.Fprintf(os.Stderr, "  %d) %s\n", i+1, filepath.Base(filepath.Dir(m)))
-	}
-	fmt.Fprintf(os.Stderr, "select [1-%d]: ", len(matches))
-	ans, _ := bufio.NewReader(os.Stdin).ReadString('\n')
-	idx, err := strconv.Atoi(strings.TrimSpace(ans))
-	if err != nil || idx < 1 || idx > len(matches) {
-		return "", fmt.Errorf("invalid selection")
-	}
-	return matches[idx-1], nil
-}
 
 var killCmd = &cobra.Command{
 	Use:   "kill <name>",
@@ -53,12 +27,8 @@ var killCmd = &cobra.Command{
 		// Fall back to the raw arg so orphan sessions (no project dir) can
 		// still be killed by their literal tmux name.
 		target := args[0]
-		if len(projects.FindAll(cfg.BaseDir, args[0])) > 0 {
-			dir, err := resolveProjectDir(cfg.BaseDir, args[0])
-			if err != nil {
-				return err
-			}
-			target = projects.SessionNameForDir(dir)
+		if p, err := projects.FindByName(cfg.BaseDir, args[0]); err == nil {
+			target = projects.SessionName(p.Name, p.Tags)
 		}
 		return tmux.KillSession(target)
 	},
@@ -73,17 +43,17 @@ var rmCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		dir, err := resolveProjectDir(cfg.BaseDir, args[0])
+		p, err := projects.FindByName(cfg.BaseDir, args[0])
 		if err != nil {
 			return err
 		}
-		fmt.Printf("delete %s and kill its tmux session? [y/N] ", dir)
+		fmt.Printf("delete %s and kill its tmux session? [y/N] ", p.Dir)
 		ans, _ := bufio.NewReader(os.Stdin).ReadString('\n')
 		if a := strings.ToLower(strings.TrimSpace(ans)); a != "y" && a != "yes" {
 			return fmt.Errorf("aborted")
 		}
-		_ = tmux.KillSession(projects.SessionNameForDir(dir))
-		return os.RemoveAll(dir)
+		_ = tmux.KillSession(projects.SessionName(p.Name, p.Tags))
+		return os.RemoveAll(p.Dir)
 	},
 }
 
@@ -94,11 +64,11 @@ func printPathRunE(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
-	dir, err := resolveProjectDir(cfg.BaseDir, args[0])
+	p, err := projects.FindByName(cfg.BaseDir, args[0])
 	if err != nil {
 		return err
 	}
-	fmt.Println(dir)
+	fmt.Println(p.Dir)
 	return nil
 }
 
@@ -125,19 +95,21 @@ var renameCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		old, err := resolveProjectDir(cfg.BaseDir, args[0])
+		p, err := projects.FindByName(cfg.BaseDir, args[0])
 		if err != nil {
 			return err
 		}
-		newDir := filepath.Join(filepath.Dir(old), args[1])
+		newDir := filepath.Join(cfg.BaseDir, args[1])
 		if _, err := os.Stat(newDir); err == nil {
 			return fmt.Errorf("%s already exists", newDir)
 		}
-		if err := os.Rename(old, newDir); err != nil {
+		oldSession := projects.SessionName(p.Name, p.Tags)
+		if err := os.Rename(p.Dir, newDir); err != nil {
 			return err
 		}
-		_ = tmux.RenameSession(projects.SessionNameForDir(old), projects.SessionNameForDir(newDir))
-		fmt.Printf("renamed %s → %s\n", old, newDir)
+		newSession := projects.SessionName(args[1], p.Tags)
+		_ = tmux.RenameSession(oldSession, newSession)
+		fmt.Printf("renamed %s -> %s\n", p.Dir, newDir)
 		return nil
 	},
 }

@@ -18,42 +18,51 @@ func runOpen(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
-	switch len(args) {
-	case 0:
+	switch {
+	case len(args) == 0:
 		return runList(cmd, args)
-	case 1:
+	case len(args) == 1:
 		return openExisting(cfg, args[0])
-	case 2:
-		return openOrCreate(cfg, args[0], args[1])
+	default:
+		return createWithTags(cfg, args[0], args[1:])
 	}
-	return nil
 }
 
 func openExisting(cfg config.Config, name string) error {
-	dir, err := resolveProjectDir(cfg.BaseDir, name)
+	p, err := projects.FindByName(cfg.BaseDir, name)
 	if err != nil {
 		return err
 	}
-	return openInTmux(cfg, name, dir)
+	return openInTmux(cfg, p)
 }
 
-func openOrCreate(cfg config.Config, lang, name string) error {
-	dir := filepath.Join(cfg.BaseDir, lang, name)
+func createWithTags(cfg config.Config, name string, tags []string) error {
+	dir := filepath.Join(cfg.BaseDir, name)
+	if _, err := os.Stat(dir); err == nil {
+		return fmt.Errorf("%q already exists; use `proj tag add %s ...` to add tags", name, name)
+	}
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
-	return openInTmux(cfg, name, dir)
+	if err := projects.SaveTags(dir, tags); err != nil {
+		return err
+	}
+	p, err := projects.FindByName(cfg.BaseDir, name)
+	if err != nil {
+		return err
+	}
+	return openInTmux(cfg, p)
 }
 
-func openInTmux(cfg config.Config, name, dir string) error {
-	session := projects.SessionNameForDir(dir)
+func openInTmux(cfg config.Config, p projects.Project) error {
+	session := projects.SessionName(p.Name, p.Tags)
 	if !tmux.HasSession(session) {
-		pane, err := tmux.NewSession(session, dir)
+		pane, err := tmux.NewSession(session, p.Dir)
 		if err != nil {
 			return fmt.Errorf("create tmux session: %w", err)
 		}
-		cmdLine := strings.NewReplacer("{name}", name, "{dir}", dir).Replace(cfg.Claude.Command)
-		if cfg.Claude.ResumeFlag != "" && projects.HasHistory(dir) {
+		cmdLine := strings.NewReplacer("{name}", p.Name, "{dir}", p.Dir).Replace(cfg.Claude.Command)
+		if cfg.Claude.ResumeFlag != "" && projects.HasHistory(p.Dir) {
 			cmdLine += " " + cfg.Claude.ResumeFlag
 		}
 		if err := tmux.SendKeys(pane, cmdLine); err != nil {

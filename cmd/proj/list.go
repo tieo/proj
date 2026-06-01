@@ -30,14 +30,17 @@ type listRow struct {
 	//   ○·  (dead; grey circle + space)
 	indicator string
 	name      string
-	lang      string // project lang, or abbreviated path for orphans
+	tags      string // space-joined tags, or abbreviated path for orphans
 	model     string // empty when not detected
 	ts        int64
 	note      string // plain-text description of a non-normal state
 	noteColor string // ANSI color for the note, empty = dim
 }
 
-var listAll bool
+var (
+	listAll    bool
+	listTagF   string
+)
 
 var listCmd = &cobra.Command{
 	Use:     "list",
@@ -69,9 +72,18 @@ func runList(cmd *cobra.Command, args []string) error {
 	}
 
 	all := projects.All(cfg.BaseDir)
+	if listTagF != "" {
+		filtered := all[:0]
+		for _, p := range all {
+			if hasTag(p.Tags, listTagF) {
+				filtered = append(filtered, p)
+			}
+		}
+		all = filtered
+	}
 	sort.SliceStable(all, func(i, j int) bool {
-		mi := managed[projects.SessionName(all[i].Lang, all[i].Name)]
-		mj := managed[projects.SessionName(all[j].Lang, all[j].Name)]
+		mi := managed[projects.SessionName(all[i].Name, all[i].Tags)]
+		mj := managed[projects.SessionName(all[j].Name, all[j].Tags)]
 		if mi.Pinned != mj.Pinned {
 			return mi.Pinned
 		}
@@ -99,7 +111,7 @@ func runList(cmd *cobra.Command, args []string) error {
 	hidden := 0
 
 	for _, p := range all {
-		sessName := projects.SessionName(p.Lang, p.Name)
+		sessName := projects.SessionName(p.Name, p.Tags)
 		ms, tracked := managed[sessName]
 		label := labelBySession[sessName]
 		alive := p.SessionTS > 0
@@ -113,7 +125,7 @@ func runList(cmd *cobra.Command, args []string) error {
 		rows = append(rows, listRow{
 			indicator: buildIndicator(alive, ms.Pinned, label),
 			name:      p.Name,
-			lang:      p.Lang,
+			tags:      strings.Join(p.Tags, " "),
 			model:     unreset.ModelFromDir(p.Dir),
 			ts:        sessionTS(p, alive),
 			note:      buildNote(label, ms, tracked, alive, unrCfg.KeepAlive),
@@ -121,43 +133,45 @@ func runList(cmd *cobra.Command, args []string) error {
 		})
 	}
 
-	home := os.Getenv("HOME")
-	for _, s := range projects.OrphanSessions(cfg.BaseDir) {
-		ms, tracked := managed[s.Name]
-		label := labelBySession[s.Name]
-		path := strings.Replace(s.Path, home, "~", 1)
-		rows = append(rows, listRow{
-			indicator: buildIndicator(true, ms.Pinned, label),
-			name:      s.Name,
-			lang:      path,
-			model:     "", // orphan: no known project dir for JSONL lookup
-			ts:        s.Activity,
-			note:      buildNote(label, ms, tracked, true, unrCfg.KeepAlive),
-			noteColor: noteColor(label, true),
-		})
+	if listTagF == "" {
+		home := os.Getenv("HOME")
+		for _, s := range projects.OrphanSessions(cfg.BaseDir) {
+			ms, tracked := managed[s.Name]
+			label := labelBySession[s.Name]
+			path := strings.Replace(s.Path, home, "~", 1)
+			rows = append(rows, listRow{
+				indicator: buildIndicator(true, ms.Pinned, label),
+				name:      s.Name,
+				tags:      path,
+				model:     "", // orphan: no known project dir for JSONL lookup
+				ts:        s.Activity,
+				note:      buildNote(label, ms, tracked, true, unrCfg.KeepAlive),
+				noteColor: noteColor(label, true),
+			})
+		}
 	}
 
 	// Adaptive column widths: max content width + 2, with minimums.
-	nameW, langW, modelW := 8, 5, 0
+	nameW, tagsW, modelW := 8, 5, 0
 	for _, r := range rows {
 		if len(r.name) > nameW {
 			nameW = len(r.name)
 		}
-		if len(r.lang) > langW {
-			langW = len(r.lang)
+		if len(r.tags) > tagsW {
+			tagsW = len(r.tags)
 		}
 		if len(r.model) > modelW {
 			modelW = len(r.model)
 		}
 	}
 	nameW += 2
-	langW += 2
+	tagsW += 2
 	if modelW > 0 {
 		modelW += 2
 	}
 
 	for _, r := range rows {
-		line := fmt.Sprintf("  %s %-*s %-*s", r.indicator, nameW, r.name, langW, r.lang)
+		line := fmt.Sprintf("  %s %-*s %-*s", r.indicator, nameW, r.name, tagsW, r.tags)
 		if modelW > 0 {
 			line += fmt.Sprintf("%-*s", modelW, r.model)
 		}
@@ -175,6 +189,15 @@ func runList(cmd *cobra.Command, args []string) error {
 		fmt.Printf("%s  + %d older projects hidden (--all to show)%s\n", ansiDim, hidden, ansiReset)
 	}
 	return nil
+}
+
+func hasTag(tags []string, want string) bool {
+	for _, t := range tags {
+		if t == want {
+			return true
+		}
+	}
+	return false
 }
 
 // buildIndicator returns a 2-terminal-column-wide status symbol.
@@ -237,5 +260,6 @@ func sessionTS(p projects.Project, alive bool) int64 {
 }
 
 func init() {
+	listCmd.Flags().StringVar(&listTagF, "tag", "", "only show projects with this tag")
 	rootCmd.AddCommand(listCmd)
 }

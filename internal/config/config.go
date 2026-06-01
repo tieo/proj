@@ -12,11 +12,10 @@ import (
 )
 
 type Config struct {
-	BaseDir     string        `toml:"base_dir"`
-	DefaultLang string        `toml:"default_lang"`
-	Claude      ClaudeConfig  `toml:"claude"`
-	Unreset     UnresetConfig `toml:"unreset"`
-	List        ListConfig    `toml:"list"`
+	BaseDir string        `toml:"base_dir"`
+	Claude  ClaudeConfig  `toml:"claude"`
+	Unreset UnresetConfig `toml:"unreset"`
+	List    ListConfig    `toml:"list"`
 }
 
 type ClaudeConfig struct {
@@ -40,8 +39,7 @@ type ListConfig struct {
 func Default() Config {
 	home, _ := os.UserHomeDir()
 	return Config{
-		BaseDir:     filepath.Join(home, "projects", "code"),
-		DefaultLang: "polyglot",
+		BaseDir: filepath.Join(home, "projects", "code"),
 		Claude: ClaudeConfig{
 			Command:    "claude --dangerously-skip-permissions --remote-control --remote-control-session-name-prefix {name} -n {name}",
 			ResumeFlag: "-c",
