@@ -1,12 +1,8 @@
 package main
 
 import (
-	"bufio"
 	"fmt"
-	"os"
-	"strconv"
 	"strings"
-	"time"
 
 	"github.com/spf13/cobra"
 
@@ -50,7 +46,7 @@ func runAdopt(cmd *cobra.Command, args []string) error {
 		if s, err = sessions.FindIn(all, args[0]); err != nil {
 			return err
 		}
-	} else if s, err = pickSession(all, cfg); err != nil {
+	} else if s, err = pickSession(cfg, all); err != nil {
 		return err
 	}
 
@@ -74,71 +70,35 @@ func runAdopt(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-// pickSession prints a numbered, recency-sorted session list and reads a choice.
-func pickSession(all []sessions.Session, cfg config.Config) (sessions.Session, error) {
-	var cutoff time.Time
-	if !listAll && cfg.List.MaxAgeDays > 0 {
-		cutoff = time.Now().AddDate(0, 0, -cfg.List.MaxAgeDays)
-	}
-	nameByCwd := map[string]string{}
-	for _, pr := range projects.All(cfg.BaseDir) {
-		nameByCwd[sessions.CwdForDir(pr.Dir, all)] = pr.Name
-	}
-	now := time.Now()
-	var shown []sessions.Session
-	for _, s := range all {
-		if !cutoff.IsZero() && s.Modified.Before(cutoff) {
-			continue
-		}
-		shown = append(shown, s)
-	}
+// pickSession shows the same table as `proj sessions`, with a moving cursor.
+func pickSession(cfg config.Config, all []sessions.Session) (sessions.Session, error) {
+	header, lines, shown, _ := sessionLines(cfg, all, "")
 	if len(shown) == 0 {
 		return sessions.Session{}, fmt.Errorf("no recent sessions (use --all to include older ones)")
 	}
-	for i, s := range shown {
-		name, managed := nameByCwd[s.Cwd]
-		if !managed {
-			name = dirBase(s.Cwd)
-		}
-		fmt.Printf("  %2d  %-8s %9s %5d  %-16s %s\n",
-			i+1, s.ID[:8], formatAgo(now.Sub(s.Modified)), s.Messages, truncPad(name, 16), s.Title)
-	}
-	i, err := promptIndex("adopt which session", len(shown))
-	if err != nil {
-		return sessions.Session{}, err
+	i := selectFromList(header, lines)
+	if i < 0 {
+		return sessions.Session{}, fmt.Errorf("cancelled")
 	}
 	return shown[i], nil
 }
 
-// pickProject prints a numbered project list and reads a choice.
+// pickProject lets the user choose a target project from a moving-cursor list.
 func pickProject(cfg config.Config) (projects.Project, error) {
 	all := projects.All(cfg.BaseDir)
 	if len(all) == 0 {
 		return projects.Project{}, fmt.Errorf("no projects under %s", cfg.BaseDir)
 	}
+	lines := make([]string, len(all))
 	for i, p := range all {
-		fmt.Printf("  %2d  %s\n", i+1, p.Name)
+		lines[i] = p.Name
+		if len(p.Tags) > 0 {
+			lines[i] += "  \033[90m" + strings.Join(p.Tags, " ") + "\033[0m"
+		}
 	}
-	i, err := promptIndex("into which project", len(all))
-	if err != nil {
-		return projects.Project{}, err
+	i := selectFromList("", lines)
+	if i < 0 {
+		return projects.Project{}, fmt.Errorf("cancelled")
 	}
 	return projects.FindByName(cfg.BaseDir, all[i].Name)
-}
-
-func promptIndex(prompt string, n int) (int, error) {
-	fmt.Printf("%s? [1-%d, q to cancel]: ", prompt, n)
-	sc := bufio.NewScanner(os.Stdin)
-	if !sc.Scan() {
-		return 0, fmt.Errorf("cancelled")
-	}
-	in := strings.TrimSpace(sc.Text())
-	if in == "" || in == "q" {
-		return 0, fmt.Errorf("cancelled")
-	}
-	i, err := strconv.Atoi(in)
-	if err != nil || i < 1 || i > n {
-		return 0, fmt.Errorf("invalid selection %q", in)
-	}
-	return i - 1, nil
 }

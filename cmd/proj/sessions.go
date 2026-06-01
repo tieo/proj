@@ -47,12 +47,6 @@ func runSessions(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	// Map each proj project's Claude cwd to its name, to label "mine" vs loose.
-	nameByCwd := map[string]string{}
-	for _, p := range projects.All(cfg.BaseDir) {
-		nameByCwd[sessions.CwdForDir(p.Dir, all)] = p.Name
-	}
-
 	var filterCwd string
 	if len(args) == 1 {
 		p, err := projects.Resolve(cfg.BaseDir, args[0])
@@ -62,20 +56,54 @@ func runSessions(cmd *cobra.Command, args []string) error {
 		filterCwd = sessions.CwdForDir(p.Dir, all)
 	}
 
-	// Hide sessions older than the cutoff unless --all (same knob as `proj list`).
+	header, lines, _, hidden := sessionLines(cfg, all, filterCwd)
+	if len(lines) == 0 {
+		if hidden > 0 {
+			fmt.Printf("no recent Claude sessions (%d older; --all to show)\n", hidden)
+		} else {
+			fmt.Println("no Claude sessions found")
+		}
+		return nil
+	}
+	fmt.Printf("  %s\n", header)
+	for _, ln := range lines {
+		fmt.Printf("  %s\n", ln)
+	}
+	if hidden > 0 {
+		fmt.Printf("\n  \033[90m%d older session(s) hidden; --all to show\033[0m\n", hidden)
+	}
+	return nil
+}
+
+// sessionHeader is the shared column header for both the table and the picker.
+func sessionHeader() string {
+	return fmt.Sprintf("\033[90m%-8s %9s %6s  %-16s %s\033[0m", "ID", "AGE", "MSGS", "PROJECT", "TITLE")
+}
+
+// sessionRow renders one session line; the project cell is green when it belongs
+// to a proj project and grey when loose.
+func sessionRow(s sessions.Session, name string, managed bool, now time.Time) string {
+	cell := truncPad(name, 16)
+	if managed {
+		cell = "\033[32m" + cell + "\033[0m"
+	} else {
+		cell = "\033[90m" + cell + "\033[0m"
+	}
+	return fmt.Sprintf("%-8s %9s %6d  %s %s", s.ID[:8], formatAgo(now.Sub(s.Modified)), s.Messages, cell, s.Title)
+}
+
+// sessionLines builds the header and rendered rows (recency-filtered unless
+// --all), returning the sessions parallel to lines and the hidden count.
+func sessionLines(cfg config.Config, all []sessions.Session, filterCwd string) (header string, lines []string, shown []sessions.Session, hidden int) {
+	nameByCwd := map[string]string{}
+	for _, p := range projects.All(cfg.BaseDir) {
+		nameByCwd[sessions.CwdForDir(p.Dir, all)] = p.Name
+	}
 	var cutoff time.Time
 	if !listAll && cfg.List.MaxAgeDays > 0 {
 		cutoff = time.Now().AddDate(0, 0, -cfg.List.MaxAgeDays)
 	}
-
 	now := time.Now()
-	hidden := 0
-	type srow struct {
-		id, age, project, title string
-		msgs                    int
-		managed                 bool
-	}
-	var rows []srow
 	for _, s := range all {
 		if filterCwd != "" && s.Cwd != filterCwd {
 			continue
@@ -88,32 +116,10 @@ func runSessions(cmd *cobra.Command, args []string) error {
 		if !managed {
 			name = dirBase(s.Cwd)
 		}
-		rows = append(rows, srow{s.ID[:8], formatAgo(now.Sub(s.Modified)), name, s.Title, s.Messages, managed})
+		lines = append(lines, sessionRow(s, name, managed, now))
+		shown = append(shown, s)
 	}
-
-	if len(rows) == 0 {
-		if hidden > 0 {
-			fmt.Printf("no recent Claude sessions (%d older; --all to show)\n", hidden)
-		} else {
-			fmt.Println("no Claude sessions found")
-		}
-		return nil
-	}
-
-	fmt.Printf("  \033[90m%-8s %9s %6s  %-16s %s\033[0m\n", "ID", "AGE", "MSGS", "PROJECT", "TITLE")
-	for _, r := range rows {
-		cell := truncPad(r.project, 16)
-		if r.managed {
-			cell = "\033[32m" + cell + "\033[0m"
-		} else {
-			cell = "\033[90m" + cell + "\033[0m"
-		}
-		fmt.Printf("  %-8s %9s %6d  %s %s\n", r.id, r.age, r.msgs, cell, r.title)
-	}
-	if hidden > 0 {
-		fmt.Printf("\n  \033[90m%d older session(s) hidden; --all to show\033[0m\n", hidden)
-	}
-	return nil
+	return sessionHeader(), lines, shown, hidden
 }
 
 // dirBase is filepath.Base for both / and \ separated paths (the cwd may be a

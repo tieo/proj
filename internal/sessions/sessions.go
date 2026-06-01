@@ -8,7 +8,6 @@
 package sessions
 
 import (
-	"bufio"
 	"bytes"
 	"encoding/json"
 	"fmt"
@@ -18,6 +17,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 	"unicode"
 )
@@ -93,30 +93,47 @@ type Session struct {
 	Title    string
 }
 
-// List returns every session under home, newest first.
+// List returns every session under home, newest first. Transcripts are read
+// concurrently: they live on a slow filesystem (the Windows .claude over the WSL
+// 9p mount), so overlapping the reads is what dominates wall-clock.
 func List(home string) ([]Session, error) {
 	files, err := filepath.Glob(filepath.Join(home, "projects", "*", "*.jsonl"))
 	if err != nil {
 		return nil, err
 	}
-	var out []Session
-	for _, f := range files {
-		info, err := os.Stat(f)
-		if err != nil {
-			continue
-		}
-		cwd, title, n := readMeta(f)
-		out = append(out, Session{
-			ID:       strings.TrimSuffix(filepath.Base(f), ".jsonl"),
-			Cwd:      cwd,
-			Path:     f,
-			Modified: info.ModTime(),
-			Messages: n,
-			Title:    title,
-		})
+	out := make([]Session, len(files))
+	sem := make(chan struct{}, 16)
+	var wg sync.WaitGroup
+	for i, f := range files {
+		wg.Add(1)
+		sem <- struct{}{}
+		go func(i int, f string) {
+			defer wg.Done()
+			defer func() { <-sem }()
+			info, err := os.Stat(f)
+			if err != nil {
+				return
+			}
+			cwd, title, n := readMeta(f)
+			out[i] = Session{
+				ID:       strings.TrimSuffix(filepath.Base(f), ".jsonl"),
+				Cwd:      cwd,
+				Path:     f,
+				Modified: info.ModTime(),
+				Messages: n,
+				Title:    title,
+			}
+		}(i, f)
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].Modified.After(out[j].Modified) })
-	return out, nil
+	wg.Wait()
+	res := make([]Session, 0, len(out))
+	for _, s := range out {
+		if s.ID != "" {
+			res = append(res, s)
+		}
+	}
+	sort.Slice(res, func(i, j int) bool { return res[i].Modified.After(res[j].Modified) })
+	return res, nil
 }
 
 // Find returns the session whose id equals or uniquely prefixes the argument.
@@ -160,65 +177,74 @@ type record struct {
 	} `json:"message"`
 }
 
-// readMeta scans a transcript once for its cwd, a human title, and a message
-// count, tolerating very long lines.
+var (
+	userTok = []byte(`"type":"user"`)
+	asstTok = []byte(`"type":"assistant"`)
+	cwdTok  = []byte(`"cwd"`)
+	trTok   = []byte(`"tool_result"`)
+)
+
+// readMeta extracts a transcript's cwd, message count, and title with as little
+// JSON parsing as possible: the count is a substring scan, and only the cwd line
+// and the last few genuine user prompts are unmarshalled. Tool-result lines
+// (which carry no prompt text and are often the largest) are skipped.
 func readMeta(path string) (cwd, title string, messages int) {
-	f, err := os.Open(path)
+	data, err := os.ReadFile(path)
 	if err != nil {
 		return "", "", 0
 	}
-	defer f.Close()
-	r := bufio.NewReader(f)
-	var summary, custom string
-	var lastProse, lastAny string
-	for {
-		line, err := r.ReadBytes('\n')
-		if len(line) > 0 {
+	messages = bytes.Count(data, userTok) + bytes.Count(data, asstTok)
+	var lastPrompts [][]byte
+	for rest := data; len(rest) > 0; {
+		var line []byte
+		if nl := bytes.IndexByte(rest, '\n'); nl >= 0 {
+			line, rest = rest[:nl], rest[nl+1:]
+		} else {
+			line, rest = rest, nil
+		}
+		if len(line) == 0 {
+			continue
+		}
+		if cwd == "" && bytes.Contains(line, cwdTok) {
 			var rec record
 			if json.Unmarshal(line, &rec) == nil {
-				if cwd == "" && rec.Cwd != "" {
-					cwd = rec.Cwd
-				}
-				if rec.Summary != "" {
-					summary = rec.Summary
-				}
-				if rec.CustomTitle != "" {
-					custom = rec.CustomTitle
-				}
-				if rec.Type == "user" || rec.Type == "assistant" {
-					messages++
-				}
-				if rec.Type == "user" && rec.Message.Role == "user" {
-					// Track the most recent real prompt: a session's title should
-					// reflect where it ended up, not a stale opening message.
-					if t := cleanText(firstText(rec.Message.Content)); t != "" {
-						lastAny = t
-						if letterRatio(t) > 0.5 {
-							lastProse = t
-						}
-					}
-				}
+				cwd = rec.Cwd
 			}
 		}
-		if err != nil {
-			break
+		if bytes.Contains(line, userTok) && !bytes.Contains(line, trTok) {
+			lastPrompts = append(lastPrompts, line)
+			if len(lastPrompts) > 8 {
+				lastPrompts = lastPrompts[1:]
+			}
 		}
 	}
-	best := lastProse
-	if best == "" {
-		best = lastAny
+	return cwd, oneLine(lastPromptTitle(lastPrompts), 56), messages
+}
+
+// lastPromptTitle parses the kept user lines newest-first and returns the most
+// recent prose prompt, falling back to the most recent non-empty text.
+func lastPromptTitle(lines [][]byte) string {
+	var fallback string
+	for i := len(lines) - 1; i >= 0; i-- {
+		var rec record
+		if json.Unmarshal(lines[i], &rec) != nil || rec.Message.Role != "user" {
+			continue
+		}
+		t := cleanText(firstText(rec.Message.Content))
+		if t == "" {
+			continue
+		}
+		if letterRatio(t) > 0.5 {
+			return t
+		}
+		if fallback == "" {
+			fallback = t
+		}
 	}
-	switch {
-	case summary != "":
-		title = summary
-	case best != "":
-		title = best
-	case custom != "":
-		title = custom
-	default:
-		title = "(no prompt)"
+	if fallback != "" {
+		return fallback
 	}
-	return cwd, oneLine(title, 56), messages
+	return "(no prompt)"
 }
 
 // firstText returns the plain text of a user message's content (string form or
