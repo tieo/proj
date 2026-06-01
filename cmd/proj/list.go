@@ -10,8 +10,8 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/tieo/proj/internal/config"
+	"github.com/tieo/proj/internal/daemon"
 	"github.com/tieo/proj/internal/projects"
-	"github.com/tieo/proj/internal/unreset"
 )
 
 const (
@@ -38,8 +38,8 @@ type listRow struct {
 }
 
 var (
-	listAll    bool
-	listTagF   string
+	listAll  bool
+	listTagF string
 )
 
 var listCmd = &cobra.Command{
@@ -55,12 +55,12 @@ func runList(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	unrCfg := unresetConfig()
-	managed := unreset.LoadManagedState(unrCfg.StatePath)
+	unrCfg := daemonConfig()
+	managed := daemon.LoadManagedState(unrCfg.StatePath)
 
 	// Scan panes for label (banner/error/selector state) per session.
 	// Model is read from JSONL session files instead; more reliable.
-	scan := unreset.ScanPanes(unrCfg.Capture)
+	scan := daemon.ScanPanes(unrCfg.Capture)
 	labelBySession := make(map[string]string, len(scan))
 	for _, s := range scan {
 		n := s.Pane.Session
@@ -126,7 +126,7 @@ func runList(cmd *cobra.Command, args []string) error {
 			indicator: buildIndicator(alive, ms.Pinned, label),
 			name:      p.Name,
 			tags:      strings.Join(p.Tags, " "),
-			model:     unreset.ModelFromDir(p.Dir),
+			model:     daemon.ModelFromDir(p.Dir),
 			ts:        sessionTS(p, alive),
 			note:      buildNote(label, ms, tracked, alive, unrCfg.KeepAlive),
 			noteColor: noteColor(label, alive),
@@ -222,7 +222,7 @@ func buildIndicator(alive, pinned bool, label string) string {
 	}
 }
 
-func buildNote(label string, ms unreset.ManagedSession, tracked, alive, globalKeepAlive bool) string {
+func buildNote(label string, ms daemon.ManagedSession, tracked, alive, globalKeepAlive bool) string {
 	// Only the daemon's tracked sessions get recreated. globalKeepAlive on its
 	// own must not paint every dead project as "restarting".
 	if !alive && tracked && (ms.Pinned || ms.KeepAlive || globalKeepAlive) && !ms.ExitedCleanly {

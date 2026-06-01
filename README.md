@@ -1,6 +1,6 @@
 # proj
 
-A tmux-first project session manager with a built-in daemon (`proj unreset`)
+A tmux-first project session manager with a built-in daemon (`proj daemon`)
 that auto-resumes Claude Code sessions when their usage-limit cooldown ends.
 
 One tmux session per project, one binary, one process per shell.
@@ -27,7 +27,7 @@ proj list                  # show projects with session status
 proj myapi work go         # create ~/projects/code/myapi/ with tags [work, go]
 proj myapi                 # open it later
 proj cd myapi              # cd into the project's directory
-proj unreset               # show daemon status + pending resumes
+proj daemon               # show daemon status + pending resumes
 ```
 
 ## Layout
@@ -61,21 +61,21 @@ Re-running `proj <name>` later just attaches.
 
 | Command | What it does |
 | --- | --- |
-| `proj <name>` | open the named project (must already exist) |
-| `proj <tag>... <name>` | create the project with these tags, then open (last arg is the name) |
-| `proj new <tag>... <name>` | same as above; last arg is the name, preceding args are tags. Quote a multi-word name. |
+| `proj <name-or-prefix>` | open an existing project by name or unique prefix (names are unique) |
+| `proj new <name> <tag>...` | create a project: first arg is the name, the rest are tags. Quote a multi-word name. |
 | `proj list [--tag <t>]` | active projects first, then idle, then orphan tmux sessions; `--tag` filters |
-| `proj cd <name>` | cd the current shell into the project (needs the shim) |
-| `proj path <name>` | print the project's absolute path |
+| `proj cd <name-or-prefix>` | cd the current shell into the project (needs the shim) |
+| `proj path <name-or-prefix>` | print the project's absolute path |
 | `proj tag add <name> <tag>...` | add tags to an existing project |
 | `proj tag rm <name> <tag>...` | remove tags from a project |
 | `proj tag set <name> [<tag>...]` | replace the project's tags |
-| `proj kill <name>` | kill the project's tmux session |
-| `proj rm <name>` | delete the project directory (asks first) |
-| `proj rename <old> <new>` | rename dir + session |
+| `proj pin <name>` / `proj unpin <name>` | pin a project so the daemon always recreates its session (or remove the pin) |
+| `proj close [name] [--force]` | kill a project's session and mark it intentionally closed; `--force` also unpins. No arg = current session |
+| `proj rm <name-or-prefix>` | delete the project directory (asks first) |
+| `proj rename <old> <new>` | rename dir + session (also moves Claude's history folder when resolvable) |
 | `proj clean [--days N]` | kill tmux sessions idle longer than N days (default 7) |
 
-### `proj unreset` (the daemon)
+### `proj daemon`
 
 Watches every tmux pane (~60s default) for Claude Code's blocking banner:
 
@@ -104,14 +104,14 @@ Sessions without the banner are never touched.
 
 | Command | What it does |
 | --- | --- |
-| `proj unreset` | status: service state, tracked sessions, next resume time |
-| `proj unreset run` | run the daemon in foreground (what the service unit calls) |
-| `proj unreset start` / `stop` / `restart` | manage the systemd user service |
-| `proj unreset enable` / `disable` | enable+start / stop+disable |
-| `proj unreset logs` | `journalctl --user -u proj-unreset -f` |
+| `proj daemon` | status: service state, tracked sessions, next resume time |
+| `proj daemon run` | run the daemon in foreground (what the service unit calls) |
+| `proj daemon start` / `stop` / `restart` | manage the systemd user service |
+| `proj daemon enable` / `disable` | enable+start / stop+disable |
+| `proj daemon logs` | `journalctl --user -u proj-daemon -f` |
 
 On macOS, `enable`/`disable`/`start`/`stop` are not wired up; use `launchctl`
-on `gui/$UID/com.proj.unreset` directly.
+on `gui/$UID/com.proj.daemon` directly.
 
 ## Config
 
@@ -124,7 +124,7 @@ base_dir = "~/projects/code"
 command     = "claude --dangerously-skip-permissions --remote-control --remote-control-session-name-prefix {name} -n {name}"
 resume_flag = "-c"
 
-[unreset]
+[daemon]
 poll_interval = "60s"
 max_wait      = "5h"   # fallback retry interval when the banner has no parseable time
 jitter        = "1s"   # added to the scheduled retry time

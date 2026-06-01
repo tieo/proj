@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # proj; install script. Builds the binary, installs the shell shim, and
-# wires up the unreset service unit for the current OS.
+# wires up the daemon service unit for the current OS.
 #
 # Usage:
 #   ./install.sh                # full install
@@ -13,8 +13,8 @@ HERE=$(cd "$(dirname "$0")" && pwd)
 BIN_DIR="${XDG_BIN_HOME:-$HOME/.local/bin}"
 UNIT_DIR="$HOME/.config/systemd/user"
 AGENT_DIR="$HOME/Library/LaunchAgents"
-UNIT_PATH="$UNIT_DIR/proj-unreset.service"
-PLIST_PATH="$AGENT_DIR/com.proj.unreset.plist"
+UNIT_PATH="$UNIT_DIR/proj-daemon.service"
+PLIST_PATH="$AGENT_DIR/com.proj.daemon.plist"
 
 INSTALL_SERVICE=1
 UNINSTALL=0
@@ -67,12 +67,12 @@ uninstall() {
     fi
     case "$(uname -s)" in
         Linux)
-            systemctl --user disable --now proj-unreset 2>/dev/null || true
+            systemctl --user disable --now proj-daemon 2>/dev/null || true
             rm -f "$UNIT_PATH"
             systemctl --user daemon-reload || true
             ;;
         Darwin)
-            launchctl bootout "gui/$UID/com.proj.unreset" 2>/dev/null \
+            launchctl bootout "gui/$UID/com.proj.daemon" 2>/dev/null \
                 || launchctl unload "$PLIST_PATH" 2>/dev/null || true
             rm -f "$PLIST_PATH"
             ;;
@@ -158,25 +158,25 @@ if (( INSTALL_SERVICE )); then
     case "$(uname -s)" in
         Linux)
             mkdir -p "$UNIT_DIR"
-            backup_if_modified "$HERE/service/systemd/proj-unreset.service" "$UNIT_PATH"
-            install -m 0644 "$HERE/service/systemd/proj-unreset.service" "$UNIT_PATH"
+            backup_if_modified "$HERE/service/systemd/proj-daemon.service" "$UNIT_PATH"
+            install -m 0644 "$HERE/service/systemd/proj-daemon.service" "$UNIT_PATH"
             echo "→ reloading and restarting systemd service"
             systemctl --user daemon-reload
-            systemctl --user enable proj-unreset.service
-            systemctl --user restart proj-unreset.service
-            echo "  enabled and restarted proj-unreset; tail with: journalctl --user -u proj-unreset -f"
+            systemctl --user enable proj-daemon.service
+            systemctl --user restart proj-daemon.service
+            echo "  enabled and restarted proj-daemon; tail with: journalctl --user -u proj-daemon -f"
             ;;
         Darwin)
             mkdir -p "$AGENT_DIR"
             tmp_plist=$(mktemp)
-            sed "s|__HOME__|$HOME|g" "$HERE/service/launchd/com.proj.unreset.plist" > "$tmp_plist"
+            sed "s|__HOME__|$HOME|g" "$HERE/service/launchd/com.proj.daemon.plist" > "$tmp_plist"
             backup_if_modified "$tmp_plist" "$PLIST_PATH"
             install -m 0644 "$tmp_plist" "$PLIST_PATH"
             rm -f "$tmp_plist"
-            launchctl bootout "gui/$UID/com.proj.unreset" 2>/dev/null || true
+            launchctl bootout "gui/$UID/com.proj.daemon" 2>/dev/null || true
             launchctl bootstrap "gui/$UID" "$PLIST_PATH" 2>/dev/null \
                 || launchctl load -w "$PLIST_PATH"
-            echo "  loaded com.proj.unreset; logs at ~/.local/state/proj/unreset.log"
+            echo "  loaded com.proj.daemon; logs at ~/.local/state/proj/daemon.log"
             ;;
         *)
             echo "  (skipping service install; unsupported OS)"
@@ -187,4 +187,4 @@ fi
 echo
 echo "done. open a new shell, then try:"
 echo "  proj list"
-echo "  proj unreset"
+echo "  proj daemon"

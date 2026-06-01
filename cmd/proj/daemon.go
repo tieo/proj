@@ -16,79 +16,64 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/tieo/proj/internal/config"
-	"github.com/tieo/proj/internal/unreset"
+	"github.com/tieo/proj/internal/daemon"
 )
 
-var unresetCmd = &cobra.Command{
-	Use:   "unreset",
-	Short: "auto-resume Claude Code sessions when usage limits expire",
+var daemonCmd = &cobra.Command{
+	Use:   "daemon",
+	Short: "background daemon: auto-resume after usage limits, recreate pinned sessions",
 	Long: `Polls tmux panes for Claude Code's usage-limit banner ("You're out of
 extra usage · resets 3am"). On detection, sends Escape to dismiss the
-/rate-limit-options selector (if present) and types "continue".
+/rate-limit-options selector (if present) and types "continue". It also
+recreates pinned and keep-alive sessions that have vanished.
 
-Run as a user service (` + "`proj unreset enable`" + `) or in the
-foreground for debugging (` + "`proj unreset run`" + `).`,
-	RunE: runUnresetStatus,
+Pin a project from the top level with ` + "`proj pin`" + `. Run the daemon as a
+user service (` + "`proj daemon enable`" + `) or in the foreground for
+debugging (` + "`proj daemon run`" + `).`,
+	RunE: runDaemonStatus,
 }
 
-var unresetRunCmd = &cobra.Command{
+var daemonRunCmd = &cobra.Command{
 	Use:   "run",
 	Short: "run the daemon in foreground (service unit calls this)",
-	RunE:  runUnresetDaemon,
+	RunE:  runDaemonForeground,
 }
 
 var (
-	unresetStartCmd   = systemctlCmd("start", "start the service")
-	unresetStopCmd    = systemctlCmd("stop", "stop the service")
-	unresetRestartCmd = systemctlCmd("restart", "restart the service")
-	unresetEnableCmd  = systemctlCmd("enable --now", "enable and start the service")
-	unresetDisableCmd = systemctlCmd("disable --now", "stop and disable the service")
-	unresetLogsCmd    = &cobra.Command{
+	daemonStartCmd   = systemctlCmd("start", "start the service")
+	daemonStopCmd    = systemctlCmd("stop", "stop the service")
+	daemonRestartCmd = systemctlCmd("restart", "restart the service")
+	daemonEnableCmd  = systemctlCmd("enable --now", "enable and start the service")
+	daemonDisableCmd = systemctlCmd("disable --now", "stop and disable the service")
+	daemonLogsCmd    = &cobra.Command{
 		Use:   "logs",
 		Short: "tail the service logs",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runForeground("journalctl", "--user", "-u", "proj-unreset", "-f")
+			return runForeground("journalctl", "--user", "-u", "proj-daemon", "-f")
 		},
 	}
 )
 
-var unresetPinDir string
-
-var unresetPinCmd = &cobra.Command{
-	Use:   "pin [session]",
-	Short: "mark a session as pinned (always recreated by the daemon)",
-	Args:  cobra.MaximumNArgs(1),
-	RunE:  runUnresetPin,
-}
-
-var unresetUnpinCmd = &cobra.Command{
-	Use:   "unpin [session]",
-	Short: "remove the pinned flag from a session",
-	Args:  cobra.MaximumNArgs(1),
-	RunE:  runUnresetUnpin,
-}
-
-var unresetKeepAliveCmd = &cobra.Command{
+var daemonKeepAliveCmd = &cobra.Command{
 	Use:   "keep-alive [on|off]",
 	Short: "show or set the global keep-alive flag",
 	Args:  cobra.MaximumNArgs(1),
-	RunE:  runUnresetKeepAlive,
+	RunE:  runDaemonKeepAlive,
 }
 
-var unresetMarkClosedCmd = &cobra.Command{
+var daemonMarkClosedCmd = &cobra.Command{
 	Use:    "mark-closed <session>",
 	Short:  "mark a session as intentionally closed (called by shell exit trap)",
 	Args:   cobra.ExactArgs(1),
-	RunE:   runUnresetMarkClosed,
+	RunE:   runDaemonMarkClosed,
 	Hidden: true,
 }
 
 func init() {
-	rootCmd.AddCommand(unresetCmd)
-	unresetCmd.AddCommand(unresetRunCmd, unresetStartCmd, unresetStopCmd,
-		unresetRestartCmd, unresetEnableCmd, unresetDisableCmd, unresetLogsCmd,
-		unresetPinCmd, unresetUnpinCmd, unresetKeepAliveCmd, unresetMarkClosedCmd)
-	unresetPinCmd.Flags().StringVar(&unresetPinDir, "dir", "", "working directory for session recreation (default: last known dir)")
+	rootCmd.AddCommand(daemonCmd)
+	daemonCmd.AddCommand(daemonRunCmd, daemonStartCmd, daemonStopCmd,
+		daemonRestartCmd, daemonEnableCmd, daemonDisableCmd, daemonLogsCmd,
+		daemonKeepAliveCmd, daemonMarkClosedCmd)
 }
 
 // ----- status output -----
@@ -131,7 +116,7 @@ func gatherService() serviceInfo {
 		"-p", "ActiveEnterTimestamp",
 		"-p", "MainPID",
 		"-p", "MemoryCurrent",
-		"proj-unreset").Output()
+		"proj-daemon").Output()
 	if err != nil {
 		return serviceInfo{}
 	}
@@ -218,12 +203,12 @@ func formatAgo(d time.Duration) string {
 	}
 }
 
-func runUnresetStatus(cmd *cobra.Command, args []string) error {
-	cfg := unresetConfig()
-	state := unreset.LoadState(cfg.StatePath)
+func runDaemonStatus(cmd *cobra.Command, args []string) error {
+	cfg := daemonConfig()
+	state := daemon.LoadState(cfg.StatePath)
 	svc := gatherService()
 
-	fmt.Printf("%s proj-unreset; auto-resume Claude Code sessions after usage-limit cooldown\n", svc.dot())
+	fmt.Printf("%s proj-daemon; auto-resume Claude Code sessions after usage-limit cooldown\n", svc.dot())
 
 	if svc.exists {
 		enabledStr := svc.unitFileState
@@ -250,9 +235,9 @@ func runUnresetStatus(cmd *cobra.Command, args []string) error {
 			fmt.Printf("     Memory: %s\n", formatBytes(svc.memory))
 		}
 	} else if runtime.GOOS == "linux" {
-		fmt.Printf("     Loaded: (not installed; `proj unreset enable` or use the nix module)\n")
+		fmt.Printf("     Loaded: (not installed; `proj daemon enable` or use the nix module)\n")
 	} else if runtime.GOOS == "darwin" {
-		fmt.Println("     Loaded: (manage via `launchctl print gui/$UID/com.proj.unreset`)")
+		fmt.Println("     Loaded: (manage via `launchctl print gui/$UID/com.proj.daemon`)")
 	}
 
 	fmt.Printf("     Config: poll=%s  max_wait=%s  jitter=%s  resume=%q\n",
@@ -291,7 +276,7 @@ func runUnresetStatus(cmd *cobra.Command, args []string) error {
 
 	if svc.exists && runtime.GOOS == "linux" {
 		fmt.Println()
-		out, _ := exec.Command("journalctl", "--user", "-u", "proj-unreset",
+		out, _ := exec.Command("journalctl", "--user", "-u", "proj-daemon",
 			"-n", "5", "--no-pager", "-o", "short").Output()
 		if len(out) > 0 {
 			fmt.Print(string(out))
@@ -300,26 +285,26 @@ func runUnresetStatus(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-func runUnresetDaemon(cmd *cobra.Command, args []string) error {
+func runDaemonForeground(cmd *cobra.Command, args []string) error {
 	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stdout, nil)))
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
-	return unreset.Run(ctx, unresetConfig())
+	return daemon.Run(ctx, daemonConfig())
 }
 
-func unresetConfig() unreset.Config {
+func daemonConfig() daemon.Config {
 	user, _ := config.Load()
-	out := unreset.DefaultConfig()
-	out.Poll = config.Duration(user.Unreset.PollInterval, out.Poll)
-	out.MaxWait = config.Duration(user.Unreset.MaxWait, out.MaxWait)
-	out.Jitter = config.Duration(user.Unreset.Jitter, out.Jitter)
-	if user.Unreset.ResumeText != "" {
-		out.ResumeText = user.Unreset.ResumeText
+	out := daemon.DefaultConfig()
+	out.Poll = config.Duration(user.Daemon.PollInterval, out.Poll)
+	out.MaxWait = config.Duration(user.Daemon.MaxWait, out.MaxWait)
+	out.Jitter = config.Duration(user.Daemon.Jitter, out.Jitter)
+	if user.Daemon.ResumeText != "" {
+		out.ResumeText = user.Daemon.ResumeText
 	}
-	if user.Unreset.CaptureLines > 0 {
-		out.Capture = user.Unreset.CaptureLines
+	if user.Daemon.CaptureLines > 0 {
+		out.Capture = user.Daemon.CaptureLines
 	}
-	out.KeepAlive = user.Unreset.KeepAlive
+	out.KeepAlive = user.Daemon.KeepAlive
 	out.ClaudeCommand = user.Claude.Command
 	out.ClaudeResumeFlag = user.Claude.ResumeFlag
 	return out
@@ -335,7 +320,7 @@ func systemctlCmd(action, summary string) *cobra.Command {
 				return fmt.Errorf("systemctl-based actions are linux-only; on macOS use launchctl directly")
 			}
 			parts := append([]string{"--user"}, strings.Fields(action)...)
-			parts = append(parts, "proj-unreset")
+			parts = append(parts, "proj-daemon")
 			return runForeground("systemctl", parts...)
 		},
 	}
@@ -360,64 +345,13 @@ func currentSessionName() string {
 	return strings.TrimSpace(string(out))
 }
 
-// resolveSessionArg returns the named session, or the current tmux session if
-// no name was given. Returns an error if neither is available.
-func resolveSessionArg(args []string) (string, error) {
-	if len(args) > 0 && args[0] != "" {
-		return args[0], nil
-	}
-	name := currentSessionName()
-	if name == "" {
-		return "", fmt.Errorf("no session name given and not inside a tmux session")
-	}
-	return name, nil
-}
-
-func runUnresetPin(cmd *cobra.Command, args []string) error {
-	name, err := resolveSessionArg(args)
-	if err != nil {
-		return err
-	}
-	cfg := unresetConfig()
-	managed := unreset.LoadManagedState(cfg.StatePath)
-	ms := managed[name]
-	ms.Name = name
-	ms.Pinned = true
-	if unresetPinDir != "" {
-		ms.Dir = unresetPinDir
-	}
-	managed[name] = ms
-	if err := unreset.SaveManagedState(cfg.StatePath, managed); err != nil {
-		return err
-	}
-	fmt.Printf("pinned %s\n", name)
-	return nil
-}
-
-func runUnresetUnpin(cmd *cobra.Command, args []string) error {
-	name, err := resolveSessionArg(args)
-	if err != nil {
-		return err
-	}
-	cfg := unresetConfig()
-	managed := unreset.LoadManagedState(cfg.StatePath)
-	ms := managed[name]
-	ms.Pinned = false
-	managed[name] = ms
-	if err := unreset.SaveManagedState(cfg.StatePath, managed); err != nil {
-		return err
-	}
-	fmt.Printf("unpinned %s\n", name)
-	return nil
-}
-
-func runUnresetKeepAlive(cmd *cobra.Command, args []string) error {
+func runDaemonKeepAlive(cmd *cobra.Command, args []string) error {
 	userCfg, err := config.Load()
 	if err != nil {
 		return err
 	}
 	if len(args) == 0 {
-		if userCfg.Unreset.KeepAlive {
+		if userCfg.Daemon.KeepAlive {
 			fmt.Println("keep-alive: on")
 		} else {
 			fmt.Println("keep-alive: off")
@@ -426,9 +360,9 @@ func runUnresetKeepAlive(cmd *cobra.Command, args []string) error {
 	}
 	switch args[0] {
 	case "on":
-		userCfg.Unreset.KeepAlive = true
+		userCfg.Daemon.KeepAlive = true
 	case "off":
-		userCfg.Unreset.KeepAlive = false
+		userCfg.Daemon.KeepAlive = false
 	default:
 		return fmt.Errorf("expected on or off, got %q", args[0])
 	}
@@ -439,13 +373,13 @@ func runUnresetKeepAlive(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-func runUnresetMarkClosed(cmd *cobra.Command, args []string) error {
+func runDaemonMarkClosed(cmd *cobra.Command, args []string) error {
 	name := args[0]
-	cfg := unresetConfig()
-	managed := unreset.LoadManagedState(cfg.StatePath)
+	cfg := daemonConfig()
+	managed := daemon.LoadManagedState(cfg.StatePath)
 	ms := managed[name]
 	ms.Name = name
 	ms.ExitedCleanly = true
 	managed[name] = ms
-	return unreset.SaveManagedState(cfg.StatePath, managed)
+	return daemon.SaveManagedState(cfg.StatePath, managed)
 }

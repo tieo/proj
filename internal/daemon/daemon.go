@@ -1,9 +1,9 @@
-// Package unreset watches tmux panes for Claude Code's usage-limit banner
+// Package daemon watches tmux panes for Claude Code's usage-limit banner
 // and resumes them by dismissing any "stop and wait" selector then typing
 // "continue". Acts on banner presence alone; does not gate on the reset
 // time printed in the banner, because that time is informational (the
 // underlying limit may have already cleared).
-package unreset
+package daemon
 
 import (
 	"context"
@@ -77,7 +77,7 @@ func defaultStatePath() string {
 		home, _ := os.UserHomeDir()
 		base = filepath.Join(home, ".local", "state")
 	}
-	return filepath.Join(base, "proj", "unreset.json")
+	return filepath.Join(base, "proj", "daemon.json")
 }
 
 // recentWindow is a loose first filter on where in the pane capture the
@@ -706,7 +706,7 @@ func SaveErrorState(path string, state ErrorState) error {
 	return os.Rename(tmp, p)
 }
 
-// ManagedSession tracks a session unreset knows about.
+// ManagedSession tracks a session daemon knows about.
 // Sessions are automatically tracked as soon as the daemon observes them.
 //
 // Pinned sessions are always recreated by the daemon, even after a system
@@ -719,7 +719,7 @@ func SaveErrorState(path string, state ErrorState) error {
 //
 // ExitedCleanly records whether the session got a clean goodbye signal; set
 // by `proj close` or by the shell exit trap in proj.zsh / proj.bash /
-// proj.fish, both of which call `proj unreset mark-closed <name>` before the
+// proj.fish, both of which call `proj daemon mark-closed <name>` before the
 // session is destroyed. It distinguishes a deliberate exit from a crash or a
 // reboot (which leave it false), so keep-alive can skip the former.
 type ManagedSession struct {
@@ -731,7 +731,7 @@ type ManagedSession struct {
 	SeenAt        time.Time `json:"seen_at"`        // last time daemon observed session alive
 }
 
-// ManagedState is the persisted map of all sessions proj unreset knows about.
+// ManagedState is the persisted map of all sessions proj daemon knows about.
 type ManagedState map[string]ManagedSession // session name → entry
 
 func managedStatePath(statePath string) string {
@@ -849,7 +849,7 @@ func Tick(cfg Config, state State, errorState ErrorState, managed ManagedState, 
 	for _, s := range liveSessions {
 		prev := managed[s.Name]
 		prev.Name = s.Name
-		// Only record Dir if not already set; preserves dirs set via `proj unreset pin --dir`.
+		// Only record Dir if not already set; preserves dirs set via `proj daemon pin --dir`.
 		if prev.Dir == "" {
 			prev.Dir = s.Path
 		}

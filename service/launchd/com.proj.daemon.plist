@@ -4,12 +4,12 @@
 <plist version="1.0">
 <dict>
     <key>Label</key>
-    <string>com.proj.unreset</string>
+    <string>com.proj.daemon</string>
 
     <key>ProgramArguments</key>
     <array>
         <string>__HOME__/.local/bin/proj</string>
-        <string>unreset</string>
+        <string>daemon</string>
         <string>run</string>
     </array>
 
@@ -20,9 +20,9 @@
     <true/>
 
     <key>StandardOutPath</key>
-    <string>__HOME__/.local/state/proj/unreset.log</string>
+    <string>__HOME__/.local/state/proj/daemon.log</string>
 
     <key>StandardErrorPath</key>
-    <string>__HOME__/.local/state/proj/unreset.log</string>
+    <string>__HOME__/.local/state/proj/daemon.log</string>
 </dict>
 </plist>

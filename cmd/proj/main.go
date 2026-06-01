@@ -16,7 +16,7 @@ const Version = "0.1.0"
 var rootCmd = &cobra.Command{
 	Use:   "proj [name-or-prefix | <subcommand>]",
 	Short: "tmux + Claude Code project session manager",
-	Long: `proj opens a tmux session per project, optionally launching Claude Code inside it, and (via "proj unreset") auto-resumes those sessions when usage limits expire.
+	Long: `proj opens a tmux session per project, optionally launching Claude Code inside it, and (via "proj daemon") auto-resumes those sessions when usage limits expire.
 
 Each project is a uniquely-named directory under base_dir; open one by its name or a unique prefix. Tags are labels for grouping and never affect identity.`,
 	Args:          cobra.ArbitraryArgs,

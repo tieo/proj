@@ -12,10 +12,10 @@ import (
 )
 
 type Config struct {
-	BaseDir string        `toml:"base_dir"`
-	Claude  ClaudeConfig  `toml:"claude"`
-	Unreset UnresetConfig `toml:"unreset"`
-	List    ListConfig    `toml:"list"`
+	BaseDir string       `toml:"base_dir"`
+	Claude  ClaudeConfig `toml:"claude"`
+	Daemon  DaemonConfig `toml:"daemon"`
+	List    ListConfig   `toml:"list"`
 }
 
 type ClaudeConfig struct {
@@ -23,7 +23,7 @@ type ClaudeConfig struct {
 	ResumeFlag string `toml:"resume_flag"`
 }
 
-type UnresetConfig struct {
+type DaemonConfig struct {
 	PollInterval string `toml:"poll_interval"`
 	MaxWait      string `toml:"max_wait"`
 	Jitter       string `toml:"jitter"`
@@ -44,7 +44,7 @@ func Default() Config {
 			Command:    "claude --dangerously-skip-permissions --remote-control --remote-control-session-name-prefix {name} -n {name}",
 			ResumeFlag: "-c",
 		},
-		Unreset: UnresetConfig{
+		Daemon: DaemonConfig{
 			PollInterval: "60s",
 			MaxWait:      "5h",
 			Jitter:       "1s",

@@ -67,7 +67,7 @@ func mutateTags(name string, fn func([]string) []string) error {
 	if err != nil {
 		return err
 	}
-	p, err := projects.FindByName(cfg.BaseDir, name)
+	p, err := projects.Resolve(cfg.BaseDir, name)
 	if err != nil {
 		return err
 	}

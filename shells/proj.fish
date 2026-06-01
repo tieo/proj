@@ -18,7 +18,7 @@ if set -q TMUX
         # client's session; `display-message -p '#S'` with no target returns
         # the latter and would mark-closed the wrong session.
         set -l _proj_sess (tmux display-message -p -t "$TMUX_PANE" '#S' 2>/dev/null)
-        and command proj unreset mark-closed "$_proj_sess" 2>/dev/null
+        and command proj daemon mark-closed "$_proj_sess" 2>/dev/null
         or true
     end
 end

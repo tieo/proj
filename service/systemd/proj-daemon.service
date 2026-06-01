@@ -1,10 +1,10 @@
 [Unit]
-Description=proj-unreset; auto-resume Claude Code sessions after usage-limit cooldown
+Description=proj-daemon; auto-resume Claude Code sessions after usage-limit cooldown
 After=default.target
 
 [Service]
 Type=simple
-ExecStart=%h/.local/bin/proj unreset run
+ExecStart=%h/.local/bin/proj daemon run
 Restart=always
 RestartSec=10
 StandardOutput=journal

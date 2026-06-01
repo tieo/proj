@@ -23,7 +23,7 @@ if [[ -n "$TMUX" ]]; then
         # client's session; `display-message -p '#S'` with no target returns
         # the latter and would mark-closed the wrong session.
         _proj_sess=$(tmux display-message -p -t "$TMUX_PANE" '#S' 2>/dev/null) || return
-        command proj unreset mark-closed "$_proj_sess" 2>/dev/null || true
+        command proj daemon mark-closed "$_proj_sess" 2>/dev/null || true
     }
     trap '_proj_on_shell_exit' EXIT
 fi

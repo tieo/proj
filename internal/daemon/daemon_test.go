@@ -1,4 +1,4 @@
-package unreset
+package daemon
 
 import (
 	"strings"
@@ -471,7 +471,6 @@ func TestDetectAPIError_EmptyPromptNoError(t *testing.T) {
 	}
 }
 
-
 func TestDetectAPIError_MostRecentErrorWins(t *testing.T) {
 	// Two API errors in the recent window; the most recent one is returned.
 	first := "  ⎿  API Error: 400 {\"type\":\"error\",\"error\":{\"message\":\"first\"}}\n"
@@ -547,7 +546,7 @@ func TestInputPromptRE_Matches(t *testing.T) {
 		"❯ ",
 		"❯",
 		"❯  ",
-		"❯ ",                          // NBSP; actual Claude Code TUI output
+		"❯ ", // NBSP; actual Claude Code TUI output
 		"line before\n❯ \nline after",
 		"line before\n❯ \nline after", // NBSP variant
 		"❯ commit this",               // text in input buffer; session still idle

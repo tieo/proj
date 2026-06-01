@@ -1,7 +1,7 @@
 // proj close [project]; mark a project's session as intentionally closed and
 // kill it.
 //
-// Use this instead of `tmux kill-session` when you want proj unreset to know
+// Use this instead of `tmux kill-session` when you want proj daemon to know
 // the close was deliberate. Without this (or the shell exit trap in proj.zsh /
 // proj.bash / proj.fish), a vanished keep-alive or pinned session will be
 // automatically recreated by the daemon.
@@ -16,19 +16,28 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/tieo/proj/internal/config"
+	"github.com/tieo/proj/internal/daemon"
 	"github.com/tieo/proj/internal/projects"
 	"github.com/tieo/proj/internal/tmux"
-	"github.com/tieo/proj/internal/unreset"
 )
+
+var closeForce bool
 
 var closeCmd = &cobra.Command{
 	Use:   "close [project]",
 	Short: "close a project's session: mark it intentionally closed and kill it",
-	Args:  cobra.MaximumNArgs(1),
-	RunE:  runClose,
+	Long: `Mark a project's session as intentionally closed and kill it, so the daemon
+does not treat it as a vanished keep-alive session and recreate it. With no
+argument, closes the current tmux session.
+
+With --force, also unpin the project, so even a pinned session stays closed
+instead of being recreated on the next daemon tick.`,
+	Args: cobra.MaximumNArgs(1),
+	RunE: runClose,
 }
 
 func init() {
+	closeCmd.Flags().BoolVarP(&closeForce, "force", "f", false, "also unpin, so a pinned project stays closed")
 	rootCmd.AddCommand(closeCmd)
 }
 
@@ -41,13 +50,16 @@ func runClose(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
-	ucfg := unresetConfig()
-	managed := unreset.LoadManagedState(ucfg.StatePath)
+	ucfg := daemonConfig()
+	managed := daemon.LoadManagedState(ucfg.StatePath)
 	ms := managed[name]
 	ms.Name = name
 	ms.ExitedCleanly = true
+	if closeForce {
+		ms.Pinned = false
+	}
 	managed[name] = ms
-	if err := unreset.SaveManagedState(ucfg.StatePath, managed); err != nil {
+	if err := daemon.SaveManagedState(ucfg.StatePath, managed); err != nil {
 		return fmt.Errorf("save managed state: %w", err)
 	}
 	if err := tmux.KillSession(name); err != nil {
