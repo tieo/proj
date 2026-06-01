@@ -83,7 +83,7 @@ Sessions without the banner are never touched.
 
 | Command | What it does |
 | --- | --- |
-| `proj unreset` | status; service state, tracked sessions, next resume time |
+| `proj unreset` | status: service state, tracked sessions, next resume time |
 | `proj unreset run` | run the daemon in foreground (what the service unit calls) |
 | `proj unreset start` / `stop` / `restart` | manage the systemd user service |
 | `proj unreset enable` / `disable` | enable+start / stop+disable |
@@ -123,13 +123,45 @@ capture_lines = 300
 Leaves the `source …/proj.{zsh,bash,fish}` line in your shell rc; remove it
 manually.
 
+## Windows (WSL)
+
+proj runs inside WSL on Windows. tmux, the daemon, and Claude Code all live
+on the Linux side; PowerShell calls into it through a thin shim. Project
+files stay on WSL's ext4 (fast for git/go/node) and are reachable from
+Windows via the `\\wsl.localhost\<distro>\...` UNC path when needed.
+
+1. Inside WSL: install proj as usual (see Quick start above).
+
+2. On the PowerShell side: dot-source `shells/proj.ps1` from your
+   `$PROFILE`, or paste its function in directly:
+
+   ```powershell
+   . \\wsl.localhost\Ubuntu-24.04\home\<user>\projects\go\proj\shells\proj.ps1
+   ```
+
+   Then in PowerShell, `proj list` / `proj go myapi` / `proj cd myapi` work
+   as on Linux. Difference: `proj cd <name>` on Windows drops you into an
+   interactive WSL shell at the project directory (exit returns to
+   PowerShell), instead of changing the PowerShell pwd. PowerShell can't
+   run Linux tools at a UNC path, so a real WSL shell at the dir is what's
+   actually useful. From there you can `code .`, `explorer.exe .`, run
+   git/go, or just stay there to work.
+
+Caveat: corporate VPNs (Cisco AnyConnect, GlobalProtect) often block WSL2's
+NAT egress. If the daemon can't reach the network with the VPN on,
+disconnect VPN for WSL work, or enable `networkingMode=mirrored` in
+`%USERPROFILE%\.wslconfig` (requires the full Hyper-V Platform Windows
+feature, which corp policy may restrict).
+
 ## Requirements
 
 - `tmux`
+- `claude` (Claude Code CLI), runs inside each session; configurable via `[claude] command`
 - Go 1.22+ (build-time only)
-- Linux (systemd user instance) or macOS (launchd). The binary itself runs
-  on any unix; only the service-management subcommands are OS-specific.
+- Linux (systemd user instance) or macOS (launchd) or Windows via WSL2
+  (see above). The binary itself runs on any unix; only the
+  service-management subcommands are OS-specific.
 
 ## License
 
-MIT; see [LICENSE](LICENSE).
+MIT, see [LICENSE](LICENSE).
