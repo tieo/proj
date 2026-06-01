@@ -246,7 +246,7 @@ func cleanText(s string) string {
 		return ""
 	}
 	s = strings.TrimSpace(strings.TrimLeftFunc(s, func(r rune) bool {
-		return !(unicode.IsLetter(r) || unicode.IsDigit(r) || r == '"' || r == '\'')
+		return !unicode.IsLetter(r) && !unicode.IsDigit(r)
 	}))
 	// Claude injects these as user-role messages; they are not real prompts.
 	for _, noise := range []string{"This session is being continued", "Conversation compacted", "Caveat:"} {
