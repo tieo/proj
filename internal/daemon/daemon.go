@@ -921,6 +921,10 @@ func Tick(cfg Config, state State, errorState ErrorState, managed ManagedState, 
 		} else if ms.KeepAlive || cfg.KeepAlive {
 			slog.Info("recreate keep-alive session", "session", name, "dir", ms.Dir)
 			launchSession(cfg, name, ms.Dir)
+		} else {
+			// Nothing to recreate: the session is gone and is neither pinned nor
+			// kept alive. Stop tracking it so dead entries don't accumulate.
+			delete(managed, name)
 		}
 	}
 
