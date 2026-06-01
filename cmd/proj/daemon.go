@@ -208,7 +208,7 @@ func runDaemonStatus(cmd *cobra.Command, args []string) error {
 	state := daemon.LoadState(cfg.StatePath)
 	svc := gatherService()
 
-	fmt.Printf("%s proj-daemon; auto-resume Claude Code sessions after usage-limit cooldown\n", svc.dot())
+	fmt.Printf("%s proj-daemon; auto-resume after usage limits, recreate pinned sessions\n", svc.dot())
 
 	if svc.exists {
 		enabledStr := svc.unitFileState

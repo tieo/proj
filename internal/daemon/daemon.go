@@ -837,12 +837,43 @@ func nextAttemptAfter(b *Banner, now time.Time, cfg Config) time.Time {
 	return next.Add(cfg.Jitter)
 }
 
+// mergeRenamedAliases folds the pin and keep-alive flags from stale managed
+// entries onto the live session now running in the same directory, then drops
+// the stale aliases. Managed state is keyed by tmux session name, which changes
+// when a project's tags or the name format change; reconciling by directory
+// keeps a project's pin attached to whatever its session is now called. A stale
+// entry whose directory has no live session is left alone (it may be a genuinely
+// vanished pinned session to recreate).
+func mergeRenamedAliases(managed ManagedState, liveSessionMap map[string]tmux.Session, liveNameByDir map[string]string) {
+	for name, ms := range managed {
+		if _, alive := liveSessionMap[name]; alive {
+			continue
+		}
+		if ms.Dir == "" {
+			continue
+		}
+		liveName, ok := liveNameByDir[ms.Dir]
+		if !ok || liveName == name {
+			continue
+		}
+		live := managed[liveName]
+		live.Pinned = live.Pinned || ms.Pinned
+		live.KeepAlive = live.KeepAlive || ms.KeepAlive
+		managed[liveName] = live
+		delete(managed, name)
+	}
+}
+
 func Tick(cfg Config, state State, errorState ErrorState, managed ManagedState, now time.Time) {
 	// --- Session management: keep-alive and pinned recreation ---
 	liveSessions := tmux.ListSessions()
 	liveSessionMap := make(map[string]tmux.Session, len(liveSessions))
+	liveNameByDir := make(map[string]string, len(liveSessions))
 	for _, s := range liveSessions {
 		liveSessionMap[s.Name] = s
+		if s.Path != "" {
+			liveNameByDir[s.Path] = s.Name
+		}
 	}
 
 	// Upsert every live session into managed state.
@@ -860,6 +891,13 @@ func Tick(cfg Config, state State, errorState ErrorState, managed ManagedState, 
 	}
 
 	// For sessions we know about that are no longer live:
+	// Reconcile renamed sessions before deciding what to recreate: a live
+	// session running in a stale entry's directory under a new name (tag change
+	// or session-name format change) inherits that entry's pin/keep-alive, and
+	// the stale alias is dropped. Keeps flags across renames and stops aliases
+	// from piling up (or being spuriously recreated below).
+	mergeRenamedAliases(managed, liveSessionMap, liveNameByDir)
+
 	for name, ms := range managed {
 		if _, alive := liveSessionMap[name]; alive {
 			continue
