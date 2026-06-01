@@ -170,7 +170,7 @@ func readMeta(path string) (cwd, title string, messages int) {
 	defer f.Close()
 	r := bufio.NewReader(f)
 	var summary, custom string
-	var prompts []string
+	var lastProse, lastAny string
 	for {
 		line, err := r.ReadBytes('\n')
 		if len(line) > 0 {
@@ -188,9 +188,14 @@ func readMeta(path string) (cwd, title string, messages int) {
 				if rec.Type == "user" || rec.Type == "assistant" {
 					messages++
 				}
-				if rec.Type == "user" && rec.Message.Role == "user" && len(prompts) < 6 {
+				if rec.Type == "user" && rec.Message.Role == "user" {
+					// Track the most recent real prompt: a session's title should
+					// reflect where it ended up, not a stale opening message.
 					if t := cleanText(firstText(rec.Message.Content)); t != "" {
-						prompts = append(prompts, t)
+						lastAny = t
+						if letterRatio(t) > 0.5 {
+							lastProse = t
+						}
 					}
 				}
 			}
@@ -199,7 +204,10 @@ func readMeta(path string) (cwd, title string, messages int) {
 			break
 		}
 	}
-	best := bestPrompt(prompts)
+	best := lastProse
+	if best == "" {
+		best = lastAny
+	}
 	switch {
 	case summary != "":
 		title = summary
@@ -255,22 +263,6 @@ func cleanText(s string) string {
 		}
 	}
 	return s
-}
-
-// bestPrompt picks the most title-like prompt: prefer prose (starts with a
-// letter and is mostly letters), else the first non-empty candidate.
-func bestPrompt(prompts []string) string {
-	for _, p := range prompts {
-		if r := []rune(p); len(r) > 0 && unicode.IsLetter(r[0]) && letterRatio(p) > 0.5 {
-			return p
-		}
-	}
-	for _, p := range prompts {
-		if p != "" {
-			return p
-		}
-	}
-	return ""
 }
 
 func letterRatio(s string) float64 {
