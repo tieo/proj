@@ -55,6 +55,13 @@ func TestDetect_NoTimezone(t *testing.T) {
 	}
 }
 
+func TestDetect_SessionLimit(t *testing.T) {
+	s := `  ⎿  You've hit your session limit · resets 7:10pm (Europe/Berlin)`
+	if Detect(s, time.Now()) == nil {
+		t.Fatal("session-limit banner not detected")
+	}
+}
+
 func TestDetect_StillUsingCreditsIgnored(t *testing.T) {
 	// Banner with the prefix but credits still active.
 	s := "  ⎿  out of extra usage · resets 3pm; continuing with extra usage"

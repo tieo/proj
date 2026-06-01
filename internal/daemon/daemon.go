@@ -92,13 +92,14 @@ const recentWindow = 2000
 const toolPrefix = '⎿'
 
 var bannerPatterns = []*regexp.Regexp{
-	// The only banner format verified from real Claude Code (CLI TUI) captures:
+	// Verified banner formats from real Claude Code (CLI TUI):
 	//   ⎿  You're out of extra usage · resets 3am (Europe/Berlin)
 	//   ⎿  You're out of extra usage · resets May 24, 2am (Europe/Berlin)
-	// Timezone may wrap to the next line. The date prefix appears only when
-	// the reset is more than ~24h out.
-	// New patterns are added here only after a real capture proves them out.
-	regexp.MustCompile(`(?i)out of extra usage(?:\s*[·.\-])?\s+resets\s+(?:([A-Za-z]+\s+\d{1,2}),\s+)?(\d{1,2}(?::\d{2})?\s*(?:am|pm))(?:\s*\(([A-Za-z_/+\-0-9]+)\))?`),
+	//   ⎿  You've hit your session limit · resets 7:10pm (Europe/Berlin)
+	// The "· resets <time> (tz)" tail is shared; only the lead phrase differs.
+	// Timezone may wrap to the next line; the date prefix appears only when the
+	// reset is more than ~24h out. New phrases are added only after a real capture.
+	regexp.MustCompile(`(?i)(?:out of extra usage|session limit)(?:\s*[·.\-])?\s+resets\s+(?:([A-Za-z]+\s+\d{1,2}),\s+)?(\d{1,2}(?::\d{2})?\s*(?:am|pm))(?:\s*\(([A-Za-z_/+\-0-9]+)\))?`),
 }
 
 var timeRE = regexp.MustCompile(`^(\d{1,2})(?::(\d{2}))?(am|pm)$`)

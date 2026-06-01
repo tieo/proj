@@ -293,6 +293,11 @@ func runDaemonStatus(cmd *cobra.Command, args []string) error {
 	fmt.Printf("     Config: poll=%s  max_wait=%s  jitter=%s  resume=%q\n",
 		formatDur(cfg.Poll), formatDur(cfg.MaxWait), formatDur(cfg.Jitter), cfg.ResumeText)
 	fmt.Printf("      State: %s\n", cfg.StatePath)
+	if !svc.activeEnter.IsZero() && cfg.Poll > 0 {
+		n := int64(time.Since(svc.activeEnter)/cfg.Poll) + 1
+		next := svc.activeEnter.Add(time.Duration(n) * cfg.Poll)
+		fmt.Printf("  Next tick: in %s (%s)\n", formatAgo(time.Until(next)), next.Format("15:04:05"))
+	}
 	renderManaged(cfg)
 
 	now := time.Now()
