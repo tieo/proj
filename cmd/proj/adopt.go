@@ -2,6 +2,8 @@ package main
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -83,12 +85,10 @@ func pickSession(cfg config.Config, all []sessions.Session) (sessions.Session, e
 	return shown[i], nil
 }
 
-// pickProject lets the user choose a target project from a moving-cursor list.
+// pickProject defaults to creating a new project (type a name) and lets the
+// user arrow down to adopt into an existing one instead.
 func pickProject(cfg config.Config) (projects.Project, error) {
 	all := projects.All(cfg.BaseDir)
-	if len(all) == 0 {
-		return projects.Project{}, fmt.Errorf("no projects under %s", cfg.BaseDir)
-	}
 	lines := make([]string, len(all))
 	for i, p := range all {
 		lines[i] = p.Name
@@ -96,9 +96,21 @@ func pickProject(cfg config.Config) (projects.Project, error) {
 			lines[i] += "  \033[90m" + strings.Join(p.Tags, " ") + "\033[0m"
 		}
 	}
-	i := selectFromList("", lines)
-	if i < 0 {
+	text, idx, ok := selectOrCreate("adopt into project (type a new name, ↓ to pick existing):", lines)
+	if !ok {
 		return projects.Project{}, fmt.Errorf("cancelled")
 	}
-	return projects.FindByName(cfg.BaseDir, all[i].Name)
+	if idx >= 0 {
+		return projects.FindByName(cfg.BaseDir, all[idx].Name)
+	}
+	if err := projects.ValidateName(text); err != nil {
+		return projects.Project{}, err
+	}
+	dir := filepath.Join(cfg.BaseDir, text)
+	if _, err := os.Stat(dir); os.IsNotExist(err) {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			return projects.Project{}, err
+		}
+	}
+	return projects.FindByName(cfg.BaseDir, text)
 }
