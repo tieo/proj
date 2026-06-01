@@ -119,120 +119,168 @@ func numberedSelect(header string, lines []string) int {
 	return i - 1
 }
 
-// selectOrCreate is a combobox: a text field (focused by default, for typing a
-// new entry) above a list of existing options. ↓ moves into the list, ↑ returns
-// to the field. Enter on the field returns the typed text (idx -1); Enter on a
-// list item returns that index. ok is false if cancelled (Esc/Ctrl-C).
-func selectOrCreate(prompt, defaultText string, options []string) (text string, idx int, ok bool) {
+// fName and fTags are the two field "focus" values; focus >= 0 is an option.
+const (
+	fName = -2
+	fTags = -1
+)
+
+// selectOrCreate is a combobox for choosing or creating a project. The top line
+// holds a name field and a tags field; the existing projects are listed below.
+// On the name field, space/tab/enter jump to tags; on the tags field, enter
+// confirms and tab returns to the name. ↓ enters the project list and ↑ leaves
+// it. It returns a typed name and tags (idx -1) to create, or an option index to
+// pick an existing project. ok is false if cancelled (Esc/Ctrl-C).
+func selectOrCreate(prompt, defaultName string, options []string) (name string, tags []string, idx int, ok bool) {
 	restore, raw := sttyRaw()
 	if !raw {
-		return numberedOrCreate(prompt, defaultText, options)
+		return numberedOrCreate(prompt, defaultName, options)
 	}
 	defer restore()
-	fmt.Print("\033[?25l")
 	defer fmt.Print("\033[?25h")
 
 	if prompt != "" {
 		fmt.Printf("\r\033[K  %s\r\n", prompt)
 	}
-	total := len(options) + 1 // the input field plus the options
-	input := []rune{}
-	focus := -1 // -1 = input field, >=0 = option index
-	draw := func(redraw bool) {
-		if redraw {
-			fmt.Printf("\033[%dA", total)
+	total := len(options) + 1 // input line + options
+	var nm, tg []rune
+	focus := fName
+
+	// seg renders a field's text, or a greyed placeholder when empty, with its
+	// visible width (used to place the real cursor).
+	seg := func(typed []rune, placeholder string) (string, int) {
+		if len(typed) > 0 {
+			return string(typed), len(typed)
 		}
+		return "\033[90m" + placeholder + "\033[0m", len([]rune(placeholder))
+	}
+
+	draw := func() {
+		fmt.Print("\033[?25l\r")
+		nameText, nameW := seg(nm, defaultName)
+		tagsText, _ := seg(tg, "tags")
 		marker := "  "
-		if focus == -1 {
+		if focus < 0 {
 			marker = "\033[36m❯\033[0m "
 		}
-		var field string
-		if len(input) == 0 && defaultText != "" {
-			field = "\033[7m \033[0m\033[90m" + defaultText + "\033[0m" // cursor, then greyed placeholder
-		} else {
-			field = string(input) + "\033[7m \033[0m"
-		}
-		fmt.Printf("\r\033[K%s\033[90mnew:\033[0m %s\r\n", marker, field)
+		fmt.Printf("\033[K%s%s  %s\r\n", marker, nameText, tagsText)
 		for i, opt := range options {
 			m := "  "
 			if focus == i {
 				m = "\033[36m❯\033[0m "
 			}
-			fmt.Printf("\r\033[K%s%s\r\n", m, opt)
+			fmt.Printf("\033[K%s%s\r\n", m, opt)
+		}
+		fmt.Printf("\033[%dA\r", total) // back to the input line, column 0
+		if focus < 0 {
+			col := 2 + len(nm)
+			if focus == fTags {
+				col = 2 + nameW + 2 + len(tg)
+			}
+			fmt.Printf("\033[%dC\033[?25h", col) // place the real (blinking) cursor
 		}
 	}
-	draw(false)
+	draw()
 
 	buf := make([]byte, 8)
 	for {
 		n, err := os.Stdin.Read(buf)
 		if err != nil || n == 0 {
 			fmt.Print("\r\n")
-			return "", -1, false
+			return "", nil, -1, false
 		}
 		k := buf[:n]
 		switch {
 		case len(k) >= 3 && k[0] == 27 && k[1] == '[' && k[2] == 'B': // down
-			if focus < len(options)-1 {
-				focus++
-				draw(true)
+			if len(options) > 0 {
+				if focus < 0 {
+					focus = 0
+				} else if focus < len(options)-1 {
+					focus++
+				}
+				draw()
 			}
 		case len(k) >= 3 && k[0] == 27 && k[1] == '[' && k[2] == 'A': // up
-			if focus >= 0 {
+			if focus == 0 || focus == fTags {
+				focus = fName
+				draw()
+			} else if focus > 0 {
 				focus--
-				draw(true)
+				draw()
 			}
-		case len(k) == 1 && (k[0] == '\r' || k[0] == '\n'):
-			if focus >= 0 {
-				fmt.Print("\r\n")
-				return "", focus, true
-			}
-			t := strings.TrimSpace(string(input))
-			if t == "" {
-				t = defaultText // Enter on the empty field accepts the placeholder
-			}
-			if t != "" {
-				fmt.Print("\r\n")
-				return t, -1, true
-			}
-		case len(k) == 1 && (k[0] == 3 || k[0] == 27): // Ctrl-C / Esc
+		case len(k) == 1 && (k[0] == 3 || (k[0] == 27 && n == 1)): // Ctrl-C / Esc
 			fmt.Print("\r\n")
-			return "", -1, false
-		case len(k) == 1 && (k[0] == 127 || k[0] == 8): // backspace
-			if focus == -1 && len(input) > 0 {
-				input = input[:len(input)-1]
-				draw(true)
+			return "", nil, -1, false
+		case focus >= 0 && len(k) == 1 && (k[0] == '\r' || k[0] == '\n'):
+			fmt.Print("\r\n")
+			return "", nil, focus, true
+		case focus == fName:
+			switch {
+			case len(k) == 1 && (k[0] == ' ' || k[0] == '\t' || k[0] == '\r' || k[0] == '\n'):
+				focus = fTags
+				draw()
+			case len(k) == 1 && (k[0] == 127 || k[0] == 8):
+				if len(nm) > 0 {
+					nm = nm[:len(nm)-1]
+					draw()
+				}
+			case len(k) == 1 && k[0] >= 32 && k[0] < 127:
+				nm = append(nm, rune(k[0]))
+				draw()
 			}
-		case focus == -1 && len(k) == 1 && k[0] >= 32 && k[0] < 127:
-			input = append(input, rune(k[0]))
-			draw(true)
+		case focus == fTags:
+			switch {
+			case len(k) == 1 && (k[0] == '\r' || k[0] == '\n'):
+				name = strings.TrimSpace(string(nm))
+				if name == "" {
+					name = defaultName
+				}
+				if name == "" {
+					break
+				}
+				fmt.Print("\r\n")
+				return name, strings.Fields(string(tg)), -1, true
+			case len(k) == 1 && k[0] == '\t':
+				focus = fName
+				draw()
+			case len(k) == 1 && (k[0] == 127 || k[0] == 8):
+				if len(tg) > 0 {
+					tg = tg[:len(tg)-1]
+				} else {
+					focus = fName
+				}
+				draw()
+			case len(k) == 1 && k[0] >= 32 && k[0] < 127:
+				tg = append(tg, rune(k[0]))
+				draw()
+			}
 		}
 	}
 }
 
-// numberedOrCreate is the non-TTY fallback for selectOrCreate: type a name, or a
-// number to choose an existing option.
-func numberedOrCreate(prompt, defaultText string, options []string) (string, int, bool) {
+// numberedOrCreate is the non-TTY fallback for selectOrCreate.
+func numberedOrCreate(prompt, defaultName string, options []string) (string, []string, int, bool) {
 	if prompt != "" {
 		fmt.Println("  " + prompt)
 	}
 	for i, o := range options {
 		fmt.Printf("  %2d  %s\n", i+1, o)
 	}
-	fmt.Printf("project (new name, or a number) [%s]: ", defaultText)
+	fmt.Printf("project [%s] (name [tags...], or a number): ", defaultName)
 	sc := bufio.NewScanner(os.Stdin)
 	if !sc.Scan() {
-		return "", -1, false
+		return "", nil, -1, false
 	}
 	in := strings.TrimSpace(sc.Text())
 	if in == "" {
-		if defaultText != "" {
-			return defaultText, -1, true
+		if defaultName != "" {
+			return defaultName, nil, -1, true
 		}
-		return "", -1, false
+		return "", nil, -1, false
 	}
 	if n, err := strconv.Atoi(in); err == nil && n >= 1 && n <= len(options) {
-		return "", n - 1, true
+		return "", nil, n - 1, true
 	}
-	return in, -1, true
+	f := strings.Fields(in)
+	return f[0], f[1:], -1, true
 }

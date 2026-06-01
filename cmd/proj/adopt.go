@@ -96,21 +96,31 @@ func pickProject(cfg config.Config, defaultName string) (projects.Project, error
 			lines[i] += "  \033[90m" + strings.Join(p.Tags, " ") + "\033[0m"
 		}
 	}
-	text, idx, ok := selectOrCreate("adopt into project (Enter to accept, edit, or ↓ to pick existing):", defaultName, lines)
+	name, tags, idx, ok := selectOrCreate("adopt into project (name, space for tags, ↓ to pick existing):", defaultName, lines)
 	if !ok {
 		return projects.Project{}, fmt.Errorf("cancelled")
 	}
 	if idx >= 0 {
 		return projects.FindByName(cfg.BaseDir, all[idx].Name)
 	}
-	if err := projects.ValidateName(text); err != nil {
+	if err := projects.ValidateName(name); err != nil {
 		return projects.Project{}, err
 	}
-	dir := filepath.Join(cfg.BaseDir, text)
+	for _, t := range tags {
+		if err := projects.ValidateTag(t); err != nil {
+			return projects.Project{}, err
+		}
+	}
+	dir := filepath.Join(cfg.BaseDir, name)
 	if _, err := os.Stat(dir); os.IsNotExist(err) {
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			return projects.Project{}, err
 		}
 	}
-	return projects.FindByName(cfg.BaseDir, text)
+	if len(tags) > 0 {
+		if reg, err := projects.LoadRegistry(); err == nil {
+			_ = reg.SetTags(name, tags)
+		}
+	}
+	return projects.FindByName(cfg.BaseDir, name)
 }
