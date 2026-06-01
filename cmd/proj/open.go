@@ -44,7 +44,11 @@ func createWithTags(cfg config.Config, name string, tags []string) error {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
-	if err := projects.SaveTags(dir, tags); err != nil {
+	reg, err := projects.LoadRegistry()
+	if err != nil {
+		return err
+	}
+	if err := reg.SetTags(name, tags); err != nil {
 		return err
 	}
 	p, err := projects.FindByName(cfg.BaseDir, name)

@@ -37,7 +37,11 @@ var newCmd = &cobra.Command{
 			return fmt.Errorf("%s already exists", dir)
 		}
 
-		existing := projects.ExistingTags(cfg.BaseDir)
+		reg, err := projects.LoadRegistry()
+		if err != nil {
+			return err
+		}
+		existing := reg.AllTags()
 		hint := ""
 		if len(existing) > 0 {
 			hint = fmt.Sprintf(" (existing: %s)", strings.Join(existing, " "))
@@ -53,7 +57,7 @@ var newCmd = &cobra.Command{
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			return err
 		}
-		if err := projects.SaveTags(dir, tags); err != nil {
+		if err := reg.SetTags(name, tags); err != nil {
 			return err
 		}
 		p, err := projects.FindByName(cfg.BaseDir, name)

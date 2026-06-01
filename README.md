@@ -33,18 +33,25 @@ proj unreset               # show daemon status + pending resumes
 ## Layout
 
 `proj` keeps projects on disk under one base directory (default
-`~/projects/code/`), organised flat as `<base>/<name>/`. Tags live in an
-optional `<base>/<name>/.proj` TOML file:
+`~/projects/code/`), organised flat as `<base>/<name>/`. Tags live in a
+single global registry at `~/.config/proj/projects.toml`, not in the
+project directories themselves (so projects stay free of proj-specific
+files and don't need to gitignore anything):
 
 ```toml
+[projects.myapi]
 tags = ["work", "go"]
+
+[projects.cli]
+tags = ["oss"]
 ```
 
-A missing or empty `.proj` means an untagged project; any direct child
-directory of `base_dir` counts as a project. The tmux session name is the
-sorted tags joined to the name by `_` (so the same project always
-resolves to the same session): `<base>/myapi/` with tags `[work, go]`
-becomes session `go_work_myapi`. Untagged projects use just `<name>`.
+Any direct child directory of `base_dir` counts as a project; an entry
+in the registry is optional and a project without one is just untagged.
+The tmux session name is the sorted tags joined to the name by `_`, so
+the same project always resolves to the same session: `myapi` with tags
+`[work, go]` becomes session `go_work_myapi`. Untagged projects use just
+`<name>`.
 
 Opening a project creates the session detached, runs Claude Code in it
 (`claude --dangerously-skip-permissions --remote-control …`), and attaches.

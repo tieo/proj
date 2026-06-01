@@ -53,7 +53,14 @@ var rmCmd = &cobra.Command{
 			return fmt.Errorf("aborted")
 		}
 		_ = tmux.KillSession(projects.SessionName(p.Name, p.Tags))
-		return os.RemoveAll(p.Dir)
+		if err := os.RemoveAll(p.Dir); err != nil {
+			return err
+		}
+		reg, err := projects.LoadRegistry()
+		if err != nil {
+			return err
+		}
+		return reg.Delete(p.Name)
 	},
 }
 
@@ -105,6 +112,13 @@ var renameCmd = &cobra.Command{
 		}
 		oldSession := projects.SessionName(p.Name, p.Tags)
 		if err := os.Rename(p.Dir, newDir); err != nil {
+			return err
+		}
+		reg, err := projects.LoadRegistry()
+		if err != nil {
+			return err
+		}
+		if err := reg.Rename(p.Name, args[1]); err != nil {
 			return err
 		}
 		newSession := projects.SessionName(args[1], p.Tags)

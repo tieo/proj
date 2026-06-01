@@ -1,12 +1,8 @@
 // Package projects manages project directories under base_dir.
 //
-// Each direct child of base_dir is a project. A project's tags live in an
-// optional `.proj` TOML file at the project's root:
-//
-//	# <base_dir>/myapi/.proj
-//	tags = ["work", "go"]
-//
-// Missing or empty .proj means an untagged project.
+// Each direct child of base_dir is a project. A project's tags live in a
+// single global registry file outside any project tree (see registry.go), so
+// projects don't carry proj-specific files in their checkout.
 package projects
 
 import (
@@ -17,12 +13,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/BurntSushi/toml"
-
 	"github.com/tieo/proj/internal/tmux"
 )
-
-const MetaFile = ".proj"
 
 type Project struct {
 	Name      string
@@ -30,10 +22,6 @@ type Project struct {
 	Tags      []string // sorted
 	SessionTS int64    // tmux activity unix-time, 0 if no live session
 	DirMTime  int64
-}
-
-type meta struct {
-	Tags []string `toml:"tags"`
 }
 
 // SessionName builds a tmux-safe session name from a project's tags and name.
@@ -45,51 +33,6 @@ func SessionName(name string, tags []string) string {
 	sort.Strings(sorted)
 	joined := strings.Join(append(sorted, name), "_")
 	return strings.NewReplacer(".", "_", ":", "_", "/", "-", " ", "_").Replace(joined)
-}
-
-// SessionNameForDir reads the project's .proj to determine tags, then returns
-// the session name. Falls back to the bare directory name on read errors.
-func SessionNameForDir(dir string) string {
-	tags := loadTags(dir)
-	return SessionName(filepath.Base(dir), tags)
-}
-
-// LoadTags returns the tags stored in dir/.proj, sorted alphabetically.
-// Returns nil if the file is missing or unreadable.
-func LoadTags(dir string) []string {
-	return loadTags(dir)
-}
-
-// SaveTags writes the tag list (sorted, deduplicated) to dir/.proj.
-func SaveTags(dir string, tags []string) error {
-	clean := normalize(tags)
-	path := filepath.Join(dir, MetaFile)
-	if len(clean) == 0 {
-		// Empty tag set: remove the file rather than leave an empty one.
-		err := os.Remove(path)
-		if err != nil && !os.IsNotExist(err) {
-			return err
-		}
-		return nil
-	}
-	f, err := os.Create(path)
-	if err != nil {
-		return err
-	}
-	defer f.Close()
-	return toml.NewEncoder(f).Encode(meta{Tags: clean})
-}
-
-func loadTags(dir string) []string {
-	data, err := os.ReadFile(filepath.Join(dir, MetaFile))
-	if err != nil {
-		return nil
-	}
-	var m meta
-	if err := toml.Unmarshal(data, &m); err != nil {
-		return nil
-	}
-	return normalize(m.Tags)
 }
 
 func normalize(tags []string) []string {
@@ -110,28 +53,31 @@ func normalize(tags []string) []string {
 	return out
 }
 
-// FindByName returns the project at baseDir/name, or an error if no such
-// directory exists. Project names are unique by virtue of the flat layout.
+// FindByName returns the project at baseDir/name, with tags drawn from the
+// registry. Returns an error if no such directory exists.
 func FindByName(baseDir, name string) (Project, error) {
 	dir := filepath.Join(baseDir, name)
 	info, err := os.Stat(dir)
 	if err != nil || !info.IsDir() {
 		return Project{}, fmt.Errorf("%q not found under %s", name, baseDir)
 	}
+	reg, _ := LoadRegistry()
 	return Project{
 		Name:     name,
 		Dir:      dir,
-		Tags:     loadTags(dir),
+		Tags:     reg.Tags(name),
 		DirMTime: info.ModTime().Unix(),
 	}, nil
 }
 
-// All returns every project directly under baseDir, with session status filled in.
+// All returns every project directly under baseDir, with session status filled
+// in and tags joined in from the registry.
 func All(baseDir string) []Project {
 	entries, err := os.ReadDir(baseDir)
 	if err != nil {
 		return nil
 	}
+	reg, _ := LoadRegistry()
 	sessionByPath := make(map[string]int64)
 	for _, s := range tmux.ListSessions() {
 		sessionByPath[s.Path] = s.Activity
@@ -145,7 +91,7 @@ func All(baseDir string) []Project {
 		p := Project{
 			Name: e.Name(),
 			Dir:  dir,
-			Tags: loadTags(dir),
+			Tags: reg.Tags(e.Name()),
 		}
 		if ts, ok := sessionByPath[dir]; ok {
 			p.SessionTS = ts
@@ -171,22 +117,6 @@ func OrphanSessions(baseDir string) []tmux.Session {
 		}
 	}
 	return orphans
-}
-
-// ExistingTags returns the union of tags across all projects, sorted.
-func ExistingTags(baseDir string) []string {
-	seen := make(map[string]struct{})
-	for _, p := range All(baseDir) {
-		for _, t := range p.Tags {
-			seen[t] = struct{}{}
-		}
-	}
-	out := make([]string, 0, len(seen))
-	for t := range seen {
-		out = append(out, t)
-	}
-	sort.Strings(out)
-	return out
 }
 
 // HasHistory reports whether Claude Code has a prior transcript for `dir`.

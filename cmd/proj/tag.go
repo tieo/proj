@@ -71,20 +71,24 @@ func mutateTags(name string, fn func([]string) []string) error {
 	if err != nil {
 		return err
 	}
-	oldSession := projects.SessionName(p.Name, p.Tags)
-	newTags := fn(p.Tags)
-	if err := projects.SaveTags(p.Dir, newTags); err != nil {
+	reg, err := projects.LoadRegistry()
+	if err != nil {
 		return err
 	}
-	newSession := projects.SessionName(p.Name, projects.LoadTags(p.Dir))
+	oldSession := projects.SessionName(p.Name, p.Tags)
+	newTags := fn(p.Tags)
+	if err := reg.SetTags(p.Name, newTags); err != nil {
+		return err
+	}
+	stored := reg.Tags(p.Name)
+	newSession := projects.SessionName(p.Name, stored)
 	if oldSession != newSession {
 		_ = tmux.RenameSession(oldSession, newSession)
 	}
-	tags := projects.LoadTags(p.Dir)
-	if len(tags) == 0 {
+	if len(stored) == 0 {
 		fmt.Printf("%s: (no tags)\n", p.Name)
 	} else {
-		fmt.Printf("%s: %s\n", p.Name, strings.Join(tags, " "))
+		fmt.Printf("%s: %s\n", p.Name, strings.Join(stored, " "))
 	}
 	return nil
 }
