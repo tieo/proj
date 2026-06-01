@@ -62,8 +62,8 @@ Re-running `proj <name>` later just attaches.
 | Command | What it does |
 | --- | --- |
 | `proj <name>` | open the named project (must already exist) |
-| `proj <name> <tag>...` | create the project with these tags, then open |
-| `proj new` | interactive wizard (asks name, then tags) |
+| `proj <tag>... <name>` | create the project with these tags, then open (last arg is the name) |
+| `proj new <tag>... <name>` | same as above; last arg is the name, preceding args are tags. Quote a multi-word name. |
 | `proj list [--tag <t>]` | active projects first, then idle, then orphan tmux sessions; `--tag` filters |
 | `proj cd <name>` | cd the current shell into the project (needs the shim) |
 | `proj path <name>` | print the project's absolute path |

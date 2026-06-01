@@ -35,6 +35,22 @@ func SessionName(name string, tags []string) string {
 	return strings.NewReplacer(".", "_", ":", "_", "/", "-", " ", "_").Replace(joined)
 }
 
+// ValidateName rejects only the names that would break the flat one-dir-per-
+// project layout or the registry keying: empty, path separators, and the
+// directory aliases "." / "..". Spaces and shell metacharacters are allowed;
+// they are quoted at the point a command line is built (see shellout.Quote).
+func ValidateName(name string) error {
+	switch {
+	case name == "":
+		return fmt.Errorf("name required")
+	case name == "." || name == "..":
+		return fmt.Errorf("%q is not a valid project name", name)
+	case strings.ContainsAny(name, `/\`):
+		return fmt.Errorf("name %q may not contain a path separator", name)
+	}
+	return nil
+}
+
 func normalize(tags []string) []string {
 	seen := make(map[string]struct{}, len(tags))
 	out := make([]string, 0, len(tags))

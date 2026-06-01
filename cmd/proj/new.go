@@ -1,11 +1,9 @@
 package main
 
 import (
-	"bufio"
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -14,47 +12,34 @@ import (
 )
 
 var newCmd = &cobra.Command{
-	Use:   "new",
-	Short: "interactive new-project wizard",
+	Use:   "new <tags...> <name>",
+	Short: "create a project; the last argument is the name, any preceding ones are tags",
+	Long: "Create a project. The final argument is always the project name; every\n" +
+		"argument before it is a tag. Quote a multi-word name:\n\n" +
+		"  proj new webapp                 # untagged project \"webapp\"\n" +
+		"  proj new go oss webapp          # tags [go oss], name \"webapp\"\n" +
+		"  proj new work go \"client app\"   # tags [work go], name \"client app\"",
+	Args: cobra.MinimumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		cfg, err := config.Load()
 		if err != nil {
 			return err
 		}
-		r := bufio.NewReader(os.Stdin)
-		ask := func(prompt string) (string, error) {
-			fmt.Print(prompt)
-			line, err := r.ReadString('\n')
-			return strings.TrimSpace(line), err
-		}
-
-		name, _ := ask("Project name? ")
-		if name == "" {
-			return fmt.Errorf("name required")
-		}
-		dir := filepath.Join(cfg.BaseDir, name)
-		if _, err := os.Stat(dir); err == nil {
-			return fmt.Errorf("%s already exists", dir)
-		}
-
-		reg, err := projects.LoadRegistry()
-		if err != nil {
+		name := args[len(args)-1]
+		tags := args[:len(args)-1]
+		if err := projects.ValidateName(name); err != nil {
 			return err
 		}
-		existing := reg.AllTags()
-		hint := ""
-		if len(existing) > 0 {
-			hint = fmt.Sprintf(" (existing: %s)", strings.Join(existing, " "))
-		}
-		raw, _ := ask(fmt.Sprintf("Tags?%s ", hint))
-		tags := splitTags(raw)
 
-		ans, _ := ask(fmt.Sprintf("Create %s? [Y/n] ", dir))
-		ans = strings.ToLower(ans)
-		if ans != "" && ans != "y" && ans != "yes" {
-			return fmt.Errorf("aborted")
+		dir := filepath.Join(cfg.BaseDir, name)
+		if _, err := os.Stat(dir); err == nil {
+			return fmt.Errorf("%q already exists; use `proj tag add %s ...` to add tags", name, name)
 		}
 		if err := os.MkdirAll(dir, 0o755); err != nil {
+			return err
+		}
+		reg, err := projects.LoadRegistry()
+		if err != nil {
 			return err
 		}
 		if err := reg.SetTags(name, tags); err != nil {
@@ -66,13 +51,6 @@ var newCmd = &cobra.Command{
 		}
 		return openInTmux(cfg, p)
 	},
-}
-
-// splitTags splits on any combination of commas, spaces, and tabs.
-func splitTags(s string) []string {
-	return strings.FieldsFunc(s, func(r rune) bool {
-		return r == ' ' || r == '\t' || r == ','
-	})
 }
 
 func init() {
