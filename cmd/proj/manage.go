@@ -12,6 +12,7 @@ import (
 
 	"github.com/tieo/proj/internal/config"
 	"github.com/tieo/proj/internal/projects"
+	"github.com/tieo/proj/internal/sessions"
 	"github.com/tieo/proj/internal/tmux"
 )
 
@@ -107,12 +108,10 @@ var renameCmd = &cobra.Command{
 		}
 		newSession := projects.SessionName(args[1], p.Tags)
 		_ = tmux.RenameSession(oldSession, newSession)
-		// Best-effort: move Claude's history folder so the renamed project keeps
-		// its conversation. The folder is keyed on the project path; this works
-		// when proj and Claude resolve that path the same way (native setups).
-		// On a WSL setup that launches claude.exe via interop, Claude keys on the
-		// Windows UNC path instead, so this is a harmless no-op there.
-		migrateClaudeHistory(p.Dir, newDir)
+		// Move Claude's history folder so the renamed project keeps its
+		// conversation, resolving the cwd Claude actually uses (the \\wsl.localhost
+		// UNC form when claude.exe is launched via interop).
+		sessions.MigrateHistory(sessions.Home(cfg.Claude.Home), p.Dir, newDir)
 		fmt.Printf("renamed %s -> %s\n", p.Dir, newDir)
 		return nil
 	},
@@ -142,41 +141,6 @@ var versionCmd = &cobra.Command{
 	Run: func(cmd *cobra.Command, args []string) {
 		fmt.Printf("proj %s\n", Version)
 	},
-}
-
-// migrateClaudeHistory moves Claude Code's transcript folder for oldDir to the
-// one for newDir, when the source exists and the target doesn't.
-func migrateClaudeHistory(oldDir, newDir string) {
-	oldHist := claudeProjectDir(oldDir)
-	newHist := claudeProjectDir(newDir)
-	if oldHist == "" || newHist == "" {
-		return
-	}
-	if _, err := os.Stat(oldHist); err != nil {
-		return // nothing to migrate
-	}
-	if _, err := os.Stat(newHist); err == nil {
-		return // target already present; leave both alone
-	}
-	_ = os.Rename(oldHist, newHist)
-}
-
-// claudeProjectDir returns ~/.claude/projects/<encoded(workDir)>, where the
-// encoding replaces every non-alphanumeric rune with '-' (matching Claude Code).
-func claudeProjectDir(workDir string) string {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return ""
-	}
-	encoded := strings.Map(func(r rune) rune {
-		switch {
-		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9':
-			return r
-		default:
-			return '-'
-		}
-	}, workDir)
-	return filepath.Join(home, ".claude", "projects", encoded)
 }
 
 func init() {

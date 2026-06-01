@@ -318,6 +318,41 @@ func Adopt(home string, sess Session, targetCwd string) (string, error) {
 	return dst, nil
 }
 
+// MigrateHistory moves the Claude transcript folder for a project being renamed
+// from oldDir to newDir, rewriting each transcript's cwd to the new path. It is
+// best-effort and a no-op when there is nothing under the old location (so it
+// safely does nothing on setups where the project's history lives elsewhere).
+func MigrateHistory(home, oldDir, newDir string) {
+	all, _ := List(home)
+	oldCwd := CwdForDir(oldDir, all)
+	newCwd := CwdForDir(newDir, all)
+	if oldCwd == newCwd {
+		return
+	}
+	oldFolder := filepath.Join(home, "projects", EncodeCwd(oldCwd))
+	newFolder := filepath.Join(home, "projects", EncodeCwd(newCwd))
+	entries, err := os.ReadDir(oldFolder)
+	if err != nil {
+		return
+	}
+	if err := os.MkdirAll(newFolder, 0o755); err != nil {
+		return
+	}
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".jsonl") {
+			continue
+		}
+		data, err := os.ReadFile(filepath.Join(oldFolder, e.Name()))
+		if err != nil {
+			continue
+		}
+		data = bytes.ReplaceAll(data, []byte(jsonInner(oldCwd)), []byte(jsonInner(newCwd)))
+		if os.WriteFile(filepath.Join(newFolder, e.Name()), data, 0o644) == nil {
+			_ = os.Remove(filepath.Join(oldFolder, e.Name()))
+		}
+	}
+}
+
 // jsonInner returns the JSON encoding of s without the surrounding quotes, so it
 // matches the escaped form a path takes inside a transcript.
 func jsonInner(s string) string {
