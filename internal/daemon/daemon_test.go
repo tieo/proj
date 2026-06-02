@@ -215,6 +215,60 @@ func TestHasSelector_ResumePickerIgnored(t *testing.T) {
 	}
 }
 
+// A rate-limit picker quoted inside the user's input box: the live input box's
+// hint line sits below it, so it must not be dismissed.
+const pastedPickerInInput = `❯ here is the thing it kept showing me:
+  What do you want to do?
+  ❯ 1. Stop and wait for limit to reset
+    2. Upgrade your plan
+  Enter to confirm · Esc to cancel
+  and that is the bug
+──────────────────────────────
+  ⏵⏵ bypass permissions on (shift+tab to cycle)`
+
+func TestHasSelector_PastedIntoInputRejected(t *testing.T) {
+	if HasSelector(pastedPickerInInput) {
+		t.Error("picker text pasted into the input box must not be treated as a live selector")
+	}
+	// The same phrase as a genuine live overlay (no input box below) still counts.
+	if !HasSelector(realSelector) {
+		t.Error("a real picker overlay must still be recognized")
+	}
+}
+
+// The exact class of capture the user reported: a message being composed that
+// quotes Claude TUI output (API errors, the resume dialog), with the live input
+// box and its hint at the very bottom. The daemon must take no action on any of it.
+const composedMessageQuotingTUI = "● Background command \"Scan PCO bus\" completed (exit code 0)\n" +
+	"  ⎿  API Error: 400 messages.41.content.7: `thinking` or `redacted_thinking` blocks in the latest assistant message cannot be modified.\n" +
+	"✻ Churned for 0s\n" +
+	"❯ hello?\n" +
+	"  ⎿  API Error: 400 messages.41.content.7: `thinking` blocks cannot be modified.\n" +
+	"❯ /compact\n" +
+	"  ⎿  Error: Error during compaction: API Error: 400 messages.41.content.7: thinking blocks cannot be modified.\n" +
+	"  This session is 4d 16h old and 376.2k tokens.\n" +
+	"  Resuming the full session will consume a substantial portion of your usage limits. We recommend resuming from a summary.\n" +
+	"  ❯ 1. Resume from summary (recommended)\n" +
+	"    2. Resume full session as-is\n" +
+	"    3. Don't ask me again\n" +
+	"  Enter to confirm · Esc to cancel\n" +
+	"──────── proj ──❯ also right now i am not able to send this previous message because the daemon constantly presses esc\n" +
+	"  a string\n" +
+	"────────\n" +
+	"  ⏵⏵ bypass permissions on (shift+tab to cycle)"
+
+func TestNoActionOnComposedMessage(t *testing.T) {
+	if HasSelector(composedMessageQuotingTUI) {
+		t.Error("picker text quoted in the input box must not be flagged as a selector")
+	}
+	if b := Detect(composedMessageQuotingTUI, time.Now()); b != nil {
+		t.Errorf("quoted TUI output must not be flagged as a banner, got %+v", b)
+	}
+	if e := DetectAPIError(composedMessageQuotingTUI); e != nil {
+		t.Errorf("quoted TUI output must not be flagged as an API error, got %+v", e)
+	}
+}
+
 func TestHasSelector_QuotedPickerInScrollbackRejected(t *testing.T) {
 	// Picker text verbatim near the top, then plenty of newer chat content
 	// pushes it well past the recent-window threshold.

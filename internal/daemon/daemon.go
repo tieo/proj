@@ -119,6 +119,14 @@ var selectorRE = regexp.MustCompile(`(?i)(?:What do you want to do\?|Stop and wa
 // inside an actual picker overlay (or its verbatim quote).
 var pickerOptionRE = regexp.MustCompile(`(?m)^\s*❯\s+\d+\.\s`)
 
+// inputBoxRE matches the affordance line Claude renders directly beneath its
+// live input box (the permission-mode cycler / shortcuts hint). A real picker
+// replaces the input box, so none of these follow it. When one appears below a
+// picker phrase, the phrase is therefore text sitting inside or above the
+// user's input box, pasted TUI output or scrollback, not a live overlay, and
+// must not be dismissed.
+var inputBoxRE = regexp.MustCompile(`(?i)shift\+tab|\? for shortcuts|bypass permissions|accept edits|plan mode on`)
+
 // sp matches any mix of regular spaces and the non-breaking spaces (U+00A0)
 // that Claude Code's TUI uses for padding between its ⎿/❯ markers and text.
 // Go's \s covers only ASCII whitespace, so NBSP must be included explicitly.
@@ -297,6 +305,12 @@ func HasSelector(content string) bool {
 	// Use the most recent occurrence.
 	last := matches[len(matches)-1]
 	if last[0] < len(content)-recentWindow {
+		return false
+	}
+	// If the live input box (its mode/shortcut hint) sits below the phrase, the
+	// phrase is text inside or above the user's input, pasted TUI output or
+	// scrollback, not the live picker overlay, which replaces the input box.
+	if inputBoxRE.MatchString(content[last[1]:]) {
 		return false
 	}
 	// And there must be a ❯ <digit>. option line within ~500 chars.
