@@ -203,9 +203,18 @@ func runSessionsResume(cmd *cobra.Command, args []string) error {
 	} else if s, err = pickSession(cfg, all); err != nil {
 		return err
 	}
-	dir := sessions.UNCToWSL(s.Cwd)
+	dir := sessions.LocalDir(s.Cwd)
 	if dir == "" {
 		dir = s.Cwd
+	}
+	// Claude finds a session by its working directory, so it has to launch from
+	// that path. Temp-dir sessions outlive their directory; recreate it (empty)
+	// so the resume can still chdir there and locate the transcript.
+	if _, statErr := os.Stat(dir); os.IsNotExist(statErr) {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			return fmt.Errorf("session directory %s is gone and could not be recreated: %w", dir, err)
+		}
+		fmt.Fprintf(os.Stderr, "note: recreated missing session directory %s\n", dir)
 	}
 	c := exec.Command("claude", "--resume", s.ID, "--dangerously-skip-permissions")
 	c.Dir = dir

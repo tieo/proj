@@ -486,6 +486,19 @@ func UNCToWSL(p string) string {
 	return ""
 }
 
+// LocalDir returns a path the Linux side can chdir into for a session's cwd: a
+// \\wsl.localhost\... path becomes its native Linux path, a Windows drive path
+// (C:\...) becomes its /mnt mount, and a plain Linux path is returned as-is.
+func LocalDir(cwd string) string {
+	if w := UNCToWSL(cwd); w != "" {
+		return w
+	}
+	if len(cwd) >= 2 && cwd[1] == ':' {
+		return winPathToWSL(cwd)
+	}
+	return cwd
+}
+
 // WSLToUNC converts a Linux path to the \\wsl.localhost\<distro>\... form when
 // running under WSL; off WSL it returns the path unchanged.
 func WSLToUNC(p string) string {
