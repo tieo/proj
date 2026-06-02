@@ -5,9 +5,29 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"regexp"
 	"strconv"
 	"strings"
 )
+
+var ansiSeq = regexp.MustCompile("\x1b\\[[0-9;]*m")
+
+// visibleWidth is the rune count of s ignoring ANSI color sequences.
+func visibleWidth(s string) int {
+	return len([]rune(ansiSeq.ReplaceAllString(s, "")))
+}
+
+// highlightRow draws a subtle full-width background bar behind a selected row.
+// The bar is re-armed after every reset the row emits, so the per-cell colors
+// (green project, dimmed answer) keep their own foreground while sitting on it.
+func highlightRow(s string) string {
+	const bg = "\033[48;5;237m"
+	body := strings.ReplaceAll(s, "\033[0m", "\033[0m"+bg)
+	if pad := termWidth() - 1 - visibleWidth(s); pad > 0 {
+		body += strings.Repeat(" ", pad)
+	}
+	return bg + body + "\033[0m"
+}
 
 // selectFromList renders a header and lines with a moving ❯ cursor, returning
 // the chosen index or -1 if cancelled. Up/Down (or k/j) move, Enter selects, q
@@ -35,10 +55,12 @@ func selectFromList(header string, lines []string) int {
 		}
 		for i, ln := range lines {
 			marker := "  "
+			row := marker + ln
 			if i == sel {
 				marker = "\033[36m❯\033[0m "
+				row = highlightRow(marker + ln)
 			}
-			fmt.Printf("\r\033[K%s%s\r\n", marker, ln)
+			fmt.Printf("\r\033[K%s\r\n", row)
 		}
 	}
 	draw(false)
@@ -169,10 +191,12 @@ func selectOrCreate(defaultName string, options []string) (name string, tags []s
 		fmt.Printf("\033[K%s%s  %s\r\n", marker, nameField, tagsText)
 		for i, opt := range options {
 			m := "  "
+			row := m + opt
 			if focus == i {
 				m = "\033[36m❯\033[0m "
+				row = highlightRow(m + opt)
 			}
-			fmt.Printf("\033[K%s%s\r\n", m, opt)
+			fmt.Printf("\033[K%s\r\n", row)
 		}
 		fmt.Printf("\033[%dA\r", total) // back to the input line, column 0
 		if focus < 0 {
