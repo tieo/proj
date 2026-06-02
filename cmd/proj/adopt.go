@@ -65,10 +65,11 @@ func runAdopt(cmd *cobra.Command, args []string) error {
 	if s.Cwd == targetCwd {
 		return fmt.Errorf("session %s already belongs to %s", s.ID[:8], p.Name)
 	}
-	if _, err := sessions.Adopt(home, s, targetCwd); err != nil {
+	newID, err := sessions.Adopt(home, s, targetCwd)
+	if err != nil {
 		return err
 	}
-	fmt.Printf("adopted %s into %s\n  open with: proj %s\n", s.ID[:8], p.Name, p.Name)
+	fmt.Printf("adopted %s into %s as new session %s\n  open with: proj %s\n", s.ID[:8], p.Name, newID[:8], p.Name)
 	return nil
 }
 

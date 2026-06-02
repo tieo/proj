@@ -9,6 +9,7 @@ package sessions
 
 import (
 	"bytes"
+	"crypto/rand"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -319,29 +320,44 @@ func oneLine(s string, max int) string {
 // Adopt copies sess into the transcript folder for targetCwd, rewriting every
 // occurrence of the old cwd to targetCwd, then points .claude.json's
 // lastSessionId for targetCwd at the session so `claude -c` resumes it.
-func Adopt(home string, sess Session, targetCwd string) (string, error) {
+func Adopt(home string, sess Session, targetCwd string) (newID string, err error) {
 	targetDir := filepath.Join(home, "projects", EncodeCwd(targetCwd))
 	if err := os.MkdirAll(targetDir, 0o755); err != nil {
 		return "", err
-	}
-	dst := filepath.Join(targetDir, sess.ID+".jsonl")
-	if _, err := os.Stat(dst); err == nil {
-		return "", fmt.Errorf("session %s already exists in the target project", sess.ID)
 	}
 	data, err := os.ReadFile(sess.Path)
 	if err != nil {
 		return "", err
 	}
+	// The copy is an independent session: rewrite the cwd to the target project
+	// and give it a fresh id so it does not collide with the original (which
+	// stays put). Claude resumes by the filename id, and rewriting every
+	// internal sessionId to match keeps the transcript self-consistent.
 	if sess.Cwd != "" && sess.Cwd != targetCwd {
 		data = bytes.ReplaceAll(data, []byte(jsonInner(sess.Cwd)), []byte(jsonInner(targetCwd)))
 	}
+	newID = newSessionID()
+	data = bytes.ReplaceAll(data,
+		[]byte(`"sessionId":"`+sess.ID+`"`),
+		[]byte(`"sessionId":"`+newID+`"`))
+	dst := filepath.Join(targetDir, newID+".jsonl")
 	if err := os.WriteFile(dst, data, 0o644); err != nil {
 		return "", err
 	}
-	if err := pointLastSession(home, targetCwd, sess.ID); err != nil {
-		return dst, fmt.Errorf("copied transcript but could not update the continue pointer: %w", err)
+	if err := pointLastSession(home, targetCwd, newID); err != nil {
+		return newID, fmt.Errorf("copied transcript but could not update the continue pointer: %w", err)
 	}
-	return dst, nil
+	return newID, nil
+}
+
+// newSessionID returns a random UUIDv4, matching the id format Claude gives
+// natively created sessions.
+func newSessionID() string {
+	var b [16]byte
+	_, _ = rand.Read(b[:])
+	b[6] = (b[6] & 0x0f) | 0x40 // version 4
+	b[8] = (b[8] & 0x3f) | 0x80 // variant 10
+	return fmt.Sprintf("%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:16])
 }
 
 // MigrateHistory moves the Claude transcript folder for a project being renamed

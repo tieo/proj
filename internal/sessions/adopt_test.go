@@ -18,7 +18,7 @@ func TestAdopt(t *testing.T) {
 		t.Fatal(err)
 	}
 	src := filepath.Join(srcDir, "abc123.jsonl")
-	line := `{"type":"user","cwd":"C:\\Users\\u\\scratch","message":{"role":"user","content":"hi"}}` + "\n"
+	line := `{"type":"user","cwd":"C:\\Users\\u\\scratch","sessionId":"abc123","message":{"role":"user","content":"hi"}}` + "\n"
 	if err := os.WriteFile(src, []byte(line), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -26,15 +26,19 @@ func TestAdopt(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	dst, err := Adopt(home, Session{ID: "abc123", Cwd: oldCwd, Path: src}, newCwd)
+	newID, err := Adopt(home, Session{ID: "abc123", Cwd: oldCwd, Path: src}, newCwd)
 	if err != nil {
 		t.Fatalf("Adopt: %v", err)
 	}
+	// Fresh id, so the copy does not collide with the original.
+	if newID == "" || newID == "abc123" {
+		t.Errorf("expected a fresh session id, got %q", newID)
+	}
 
-	// Landed in the new project's encoded folder.
-	wantDir := filepath.Join(home, "projects", EncodeCwd(newCwd))
-	if filepath.Dir(dst) != wantDir {
-		t.Errorf("dst dir = %s, want %s", filepath.Dir(dst), wantDir)
+	// Landed in the new project's encoded folder under the new id.
+	dst := filepath.Join(home, "projects", EncodeCwd(newCwd), newID+".jsonl")
+	if _, err := os.Stat(dst); err != nil {
+		t.Fatalf("adopted transcript missing at %s: %v", dst, err)
 	}
 	data, _ := os.ReadFile(dst)
 	if strings.Contains(string(data), `Users\\u\\scratch`) {
@@ -43,13 +47,20 @@ func TestAdopt(t *testing.T) {
 	if !strings.Contains(string(data), jsonInner(newCwd)) {
 		t.Error("new cwd not written into adopted transcript")
 	}
+	// The internal session id was rewritten to match the new filename.
+	if strings.Contains(string(data), `"sessionId":"abc123"`) {
+		t.Error("old session id still present in adopted transcript")
+	}
+	if !strings.Contains(string(data), `"sessionId":"`+newID+`"`) {
+		t.Error("new session id not written into adopted transcript")
+	}
 	// Copy, not move: the original stays.
 	if _, err := os.Stat(src); err != nil {
 		t.Error("original transcript was removed; adopt should copy")
 	}
-	// Continue pointer updated.
+	// Continue pointer updated to the new id.
 	cj, _ := os.ReadFile(filepath.Join(base, ".claude.json"))
-	if !strings.Contains(string(cj), `"abc123"`) {
-		t.Error("lastSessionId not set in .claude.json")
+	if !strings.Contains(string(cj), newID) {
+		t.Error("lastSessionId not set to the new id in .claude.json")
 	}
 }
