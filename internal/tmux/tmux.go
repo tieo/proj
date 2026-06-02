@@ -98,17 +98,106 @@ func CapturePane(target string, lines int) string {
 // is left untouched. The wheel scroll step is also set (see scrollStep);
 // that one is a global key binding because tmux has no per-session key
 // tables, but it is re-asserted idempotently on every session create.
+//
+// Under WSL the server must be made to outlive the terminal first; see
+// ensureServer. The session itself is always created with a plain new-session
+// (attaching to that server), so the pane id is captured normally via -P.
 func NewSession(name, dir, command string) (string, error) {
-	args := []string{"new-session", "-d", "-P", "-F", "#{pane_id}", "-s", name, "-c", dir}
-	if command != "" {
-		args = append(args, command)
-	}
-	pane, err := shellout.RunErr("tmux", args...)
+	ensureServer()
+	pane, err := shellout.RunErr("tmux", newSessionArgs(name, dir, command, true)...)
 	if err != nil {
 		return "", err
 	}
-	// Best effort: failures here shouldn't prevent the session from opening.
-	// Note: set-option does not accept the "=" exact-match target prefix that
+	applySessionOptions(name)
+	return pane, nil
+}
+
+// bootstrapSession is the throwaway session used only to bring the tmux server
+// up; ensureServer kills it immediately, leaving an empty (but persistent)
+// server. It is never observed by callers, so it needs no filtering.
+const bootstrapSession = "_proj_bootstrap"
+
+// ensureServer guarantees a tmux server exists that will outlive the terminal
+// proj happens to run in. It is a no-op when a server is already running or off
+// WSL, where tmux servers already survive terminal exit (they reparent to PID 1
+// and no console subreaper kills them).
+//
+// Under WSL two things conspire to kill a normally-spawned server when its
+// terminal window closes:
+//  1. WSL turns each Windows console into an /init "relay" that acts as a
+//     subreaper, so a tmux server started from a terminal is adopted by that
+//     relay and torn down with its whole subtree when the window closes.
+//  2. Even a relay-immune server exits once its last session ends, and closing
+//     the terminal can transiently drop the lone session, taking the server.
+//
+// ensureServer defeats both: it starts the server via the systemd user manager
+// (systemd-run, Type=forking), which reparents it to the manager (the
+// user@.service) instead of the console relay, and sets the server option
+// exit-empty off so the server persists even with zero sessions. The bootstrap
+// session exists only to start the server and is killed once exit-empty is set;
+// no holder session is left behind (which would otherwise clutter tmux's own
+// session switcher). Each later `proj open` then attaches to a server that
+// simply never dies, and claude (claude.exe via interop) survives a console
+// close on its own, so once it rides on this server it persists across closing
+// the window. tmux command separators are passed as bare ";" arguments: no
+// shell is involved, so they reach tmux literally.
+//
+// If systemd-run is unusable the function is a best-effort no-op: NewSession
+// then falls back to a plain (terminal-owned) server, which still works but
+// dies on window close.
+func ensureServer() {
+	if serverRunning() || !useSystemdServer() {
+		return
+	}
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		home = "/"
+	}
+	boot := []string{
+		"new-session", "-d", "-s", bootstrapSession, "-c", home,
+		";", "set-option", "-s", "exit-empty", "off",
+		";", "kill-session", "-t", bootstrapSession,
+	}
+	_, _ = shellout.RunErr("systemd-run", systemdRunArgs(boot, os.Environ())...)
+}
+
+// newSessionArgs builds the tmux argv for creating a detached session. When
+// capturePane is set, -P/-F make tmux print the new pane id on stdout.
+func newSessionArgs(name, dir, command string, capturePane bool) []string {
+	args := []string{"new-session", "-d"}
+	if capturePane {
+		args = append(args, "-P", "-F", "#{pane_id}")
+	}
+	args = append(args, "-s", name, "-c", dir)
+	if command != "" {
+		args = append(args, command)
+	}
+	return args
+}
+
+// systemdRunArgs wraps a tmux invocation so it runs as a transient systemd
+// user service. Type=forking lets systemd track the daemonized tmux server as
+// the unit's main process; --collect removes the unit once the server exits.
+//
+// The caller's environment is forwarded with --setenv: systemd-run otherwise
+// starts the service with a minimal environment, and since the tmux server (and
+// every pane spawned on it) inherits that environment, a stripped PATH would
+// leave the pane's program (e.g. claude in ~/.local/bin) not found, so it would
+// exit immediately and tear the session down before it could be attached.
+func systemdRunArgs(tmuxArgs, env []string) []string {
+	args := []string{"--user", "--quiet", "--collect", "-p", "Type=forking"}
+	for _, kv := range env {
+		args = append(args, "--setenv="+kv)
+	}
+	args = append(args, "--", "tmux")
+	return append(args, tmuxArgs...)
+}
+
+// applySessionOptions sets the per-session tmux options proj relies on and the
+// global scroll-step binding. Best effort: failures here must not prevent the
+// session from opening.
+func applySessionOptions(name string) {
+	// set-option does not accept the "=" exact-match target prefix that
 	// has-session/kill-session use, so the bare name is passed here.
 	_, _ = shellout.RunErr("tmux", "set-option", "-t", name, "mouse", "on")
 	// Tear the pane (and thus the one-window session) down when its program
@@ -117,7 +206,34 @@ func NewSession(name, dir, command string) (string, error) {
 	// open starts fresh rather than re-attaching a dead pane.
 	_, _ = shellout.RunErr("tmux", "set-option", "-t", name, "remain-on-exit", "off")
 	setScrollStep()
-	return pane, nil
+}
+
+// serverRunning reports whether a tmux server is up on the default socket.
+func serverRunning() bool {
+	_, err := shellout.RunErr("tmux", "list-sessions")
+	return err == nil
+}
+
+// useSystemdServer reports whether new tmux servers should be started through
+// the systemd user manager. This matters only under WSL (see NewSession) and
+// only when systemd-run is available to do it.
+func useSystemdServer() bool {
+	if !IsWSL() {
+		return false
+	}
+	_, err := exec.LookPath("systemd-run")
+	return err == nil
+}
+
+// IsWSL reports whether proj is running under the Windows Subsystem for Linux.
+func IsWSL() bool {
+	b, _ := os.ReadFile("/proc/sys/kernel/osrelease")
+	return detectWSL(string(b))
+}
+
+// detectWSL reports whether a kernel osrelease string identifies a WSL kernel.
+func detectWSL(osRelease string) bool {
+	return strings.Contains(strings.ToLower(osRelease), "microsoft")
 }
 
 // scrollStep is how many lines a single mouse-wheel notch scrolls in

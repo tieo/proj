@@ -60,7 +60,9 @@ func openInTmux(cfg config.Config, p projects.Project) error {
 		// exits, the pane's program ends and tmux (with remain-on-exit off, set
 		// in NewSession) tears the single-window session down, so a finished
 		// project leaves nothing behind, and the next `proj <name>` launches a
-		// fresh `claude -c` instead of re-attaching a leftover shell.
+		// fresh `claude -c` instead of re-attaching a leftover shell. Surviving a
+		// closed terminal is handled at the server level (see tmux.NewSession /
+		// ensureServer), not by keeping a shell in the pane.
 		if _, err := tmux.NewSession(session, p.Dir, cmdLine); err != nil {
 			return fmt.Errorf("create tmux session: %w", err)
 		}

@@ -165,6 +165,11 @@ if (( INSTALL_SERVICE )); then
             systemctl --user enable proj-daemon.service
             systemctl --user restart proj-daemon.service
             echo "  enabled and restarted proj-daemon; tail with: journalctl --user -u proj-daemon -f"
+            # Keep the user manager alive with no login session open. The daemon
+            # needs this to run at boot; under WSL it is also what lets a
+            # systemd-owned tmux server (see tmux.NewSession) outlive closing the
+            # terminal window. Idempotent and harmless on a desktop.
+            loginctl enable-linger "$USER" 2>/dev/null || true
             ;;
         Darwin)
             mkdir -p "$AGENT_DIR"
