@@ -162,3 +162,65 @@ func TestAdoptCarriesSidecars(t *testing.T) {
 		}
 	})
 }
+
+// TestAdoptCarriesMemory checks that the source project's memory is merged into
+// the target's (copied, never moved) so an adopted session keeps what the
+// project taught it, the source keeps its own copy, and the target's existing
+// memory is preserved.
+func TestAdoptCarriesMemory(t *testing.T) {
+	base := t.TempDir()
+	home := filepath.Join(base, ".claude")
+	oldCwd := `C:\Users\u\scratch`
+	newCwd := `\\wsl.localhost\Ubuntu-24.04\home\u\projects\code\proj`
+
+	srcProj := filepath.Join(home, "projects", EncodeCwd(oldCwd))
+	srcMem := filepath.Join(srcProj, "memory")
+	if err := os.MkdirAll(srcMem, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	src := filepath.Join(srcProj, "abc123.jsonl")
+	if err := os.WriteFile(src, []byte(`{"sessionId":"abc123"}`+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(base, ".claude.json"), []byte(`{"projects":{}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	mustWrite(t, filepath.Join(srcMem, "MEMORY.md"), "- [Fact A](fact-a.md) — hook A\n")
+	mustWrite(t, filepath.Join(srcMem, "fact-a.md"), "fact a body")
+
+	// The target project already has its own memory; it must survive the merge.
+	dstMem := filepath.Join(home, "projects", EncodeCwd(newCwd), "memory")
+	if err := os.MkdirAll(dstMem, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	mustWrite(t, filepath.Join(dstMem, "MEMORY.md"), "- [Fact B](fact-b.md) — hook B\n")
+	mustWrite(t, filepath.Join(dstMem, "fact-b.md"), "fact b body")
+
+	if _, err := Adopt(home, Session{ID: "abc123", Cwd: oldCwd, Path: src}, newCwd, true); err != nil {
+		t.Fatalf("Adopt: %v", err)
+	}
+
+	// Source fact copied in; target fact untouched.
+	if b, err := os.ReadFile(filepath.Join(dstMem, "fact-a.md")); err != nil || string(b) != "fact a body" {
+		t.Errorf("source fact not carried over: %v %q", err, b)
+	}
+	if b, _ := os.ReadFile(filepath.Join(dstMem, "fact-b.md")); string(b) != "fact b body" {
+		t.Errorf("target fact must be preserved, got %q", b)
+	}
+	// Index merged: both pointers present.
+	idx, _ := os.ReadFile(filepath.Join(dstMem, "MEMORY.md"))
+	if !strings.Contains(string(idx), "Fact A") || !strings.Contains(string(idx), "Fact B") {
+		t.Errorf("MEMORY.md should hold both entries, got:\n%s", idx)
+	}
+	// Source memory preserved (copy, not move).
+	if _, err := os.Stat(filepath.Join(srcMem, "fact-a.md")); err != nil {
+		t.Error("source memory must remain in place (copied, not moved)")
+	}
+}
+
+func mustWrite(t *testing.T, path, content string) {
+	t.Helper()
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}

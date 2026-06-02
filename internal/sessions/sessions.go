@@ -348,6 +348,9 @@ func oneLine(s string, max int) string {
 // The per-session sidecars Claude Code keys by id (the task list and the
 // file-edit history) are carried over to the new id as well, so the adopted
 // session keeps its tasks and history instead of resuming with an empty list.
+// The source project's memory (projects/<cwd>/memory) is merged into the
+// target project's memory too - always copied, never moved, since memory is
+// shared by every session in a cwd and moving it would strand the others.
 //
 // When move is true the original is deleted, but only after the copy is read
 // back and verified byte-for-byte: the transcripts live on a flaky 9p mount, so
@@ -385,6 +388,9 @@ func Adopt(home string, sess Session, targetCwd string, move bool) (newID string
 	if err := relocateSidecars(home, sess.ID, newID, move); err != nil {
 		return newID, fmt.Errorf("adopted the session but could not carry over its tasks/history: %w", err)
 	}
+	if err := copyProjectMemory(home, sess.Cwd, targetCwd); err != nil {
+		return newID, fmt.Errorf("adopted the session but could not carry over project memory: %w", err)
+	}
 	if move {
 		if err := os.Remove(sess.Path); err != nil {
 			return newID, fmt.Errorf("copied to the new project but could not remove the original %s: %w", sess.ID[:8], err)
@@ -412,6 +418,75 @@ func relocateSidecars(home, oldID, newID string, move bool) error {
 		}
 	}
 	return firstErr
+}
+
+// copyProjectMemory merges the source project's memory folder into the target
+// project's, so an adopted session does not resume having forgotten everything
+// the project taught it. Memory is keyed by cwd (projects/<cwd>/memory) and is
+// shared by every session in that cwd, so it is always copied, never moved:
+// moving it would strand the source project's other sessions. Existing fact
+// files in the target are left untouched (the target's own knowledge wins on a
+// name clash); the MEMORY.md index is merged line-wise so both projects'
+// pointers survive. Best effort - a missing source memory folder is a no-op.
+func copyProjectMemory(home, oldCwd, newCwd string) error {
+	if oldCwd == "" || oldCwd == newCwd {
+		return nil
+	}
+	srcMem := filepath.Join(home, "projects", EncodeCwd(oldCwd), "memory")
+	entries, err := os.ReadDir(srcMem)
+	if err != nil {
+		return nil // no memory folder to carry over
+	}
+	dstMem := filepath.Join(home, "projects", EncodeCwd(newCwd), "memory")
+	if err := os.MkdirAll(dstMem, 0o755); err != nil {
+		return err
+	}
+	for _, e := range entries {
+		if e.IsDir() {
+			continue // memory is a flat folder of markdown files
+		}
+		src, dst := filepath.Join(srcMem, e.Name()), filepath.Join(dstMem, e.Name())
+		if e.Name() == "MEMORY.md" {
+			if err := mergeMemoryIndex(src, dst); err != nil {
+				return err
+			}
+			continue
+		}
+		if _, err := os.Stat(dst); err == nil {
+			continue // keep the target's existing fact file on a name clash
+		}
+		data, err := os.ReadFile(src)
+		if err != nil {
+			return err
+		}
+		if err := os.WriteFile(dst, data, 0o644); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// mergeMemoryIndex appends the pointer lines from the source MEMORY.md to the
+// target's, dropping blanks and exact-duplicate lines so re-adopting is
+// idempotent and the target's existing entries are preserved.
+func mergeMemoryIndex(src, dst string) error {
+	srcData, err := os.ReadFile(src)
+	if err != nil {
+		return err
+	}
+	dstData, _ := os.ReadFile(dst) // absent target is fine: start empty
+	seen := make(map[string]bool)
+	var lines []string
+	for _, block := range [][]byte{dstData, srcData} {
+		for _, ln := range strings.Split(string(block), "\n") {
+			if strings.TrimSpace(ln) == "" || seen[ln] {
+				continue
+			}
+			seen[ln] = true
+			lines = append(lines, ln)
+		}
+	}
+	return os.WriteFile(dst, []byte(strings.Join(lines, "\n")+"\n"), 0o644)
 }
 
 // relocateDir moves src to dst (when move) or copies it (when not). The move
