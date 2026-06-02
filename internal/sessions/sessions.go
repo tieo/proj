@@ -415,8 +415,11 @@ func relocateSidecars(home, oldID, newID string, move bool) error {
 }
 
 // relocateDir moves src to dst (when move) or copies it (when not). The move
-// path falls back to copy+remove if a plain rename fails, since the transcripts
-// and their sidecars can live on a 9p mount where rename is not always atomic.
+// path prefers a plain rename, which is atomic and never risks the original;
+// only if that fails (e.g. across the 9p mount) does it fall back to copy then
+// remove. copyDir verifies every file byte-for-byte before returning, so the
+// RemoveAll below cannot delete the original on the strength of a silent short
+// write - the same guarantee the transcript copy makes.
 func relocateDir(src, dst string, move bool) error {
 	if move {
 		if err := os.Rename(src, dst); err == nil {
@@ -431,7 +434,7 @@ func relocateDir(src, dst string, move bool) error {
 }
 
 // copyDir recursively copies the directory tree at src into dst, preserving
-// file permission bits.
+// file permission bits and reading each file back to confirm it landed intact.
 func copyDir(src, dst string) error {
 	entries, err := os.ReadDir(src)
 	if err != nil {
@@ -458,6 +461,10 @@ func copyDir(src, dst string) error {
 		}
 		if err := os.WriteFile(d, data, info.Mode().Perm()); err != nil {
 			return err
+		}
+		// Verify the copy landed intact before any caller deletes the original.
+		if got, rerr := os.ReadFile(d); rerr != nil || !bytes.Equal(got, data) {
+			return fmt.Errorf("could not verify copied file %s", d)
 		}
 	}
 	return nil
