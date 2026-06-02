@@ -18,7 +18,7 @@ import (
 // factory rather than a package var (a cobra command cannot have two parents).
 func newAdoptCmd() *cobra.Command {
 	c := &cobra.Command{
-		Use:   "adopt [session-id] [project]",
+		Use:   "adopt [session-id] [project] [tags...]",
 		Short: "move an existing Claude session into a proj project; interactive when args are omitted",
 		Long: `Move a Claude session transcript into a proj project's history, rewriting its
 working directory to the project's so Claude treats it as belonging there. The
@@ -28,8 +28,10 @@ session onto its WSL project path, and pulling a stranded session back onto a
 renamed project. The project's continue pointer is updated, so ` + "`proj <project>`" + ` resumes it.
 
 With no arguments, pick a session and a target project interactively. Pass a
-session id (or prefix) to skip the session picker, and a project to skip both.`,
-		Args: cobra.MaximumNArgs(2),
+session id (or prefix) to skip the session picker, and a project to skip both.
+Arguments after the project are tags: if the project does not exist it is
+created with them (like ` + "`proj new`" + `), and if it does they are merged in.`,
+		Args: cobra.ArbitraryArgs,
 		RunE: runAdopt,
 	}
 	c.Flags().Bool("copy-file", false, "copy the transcript instead of moving it (keep the original in place)")
@@ -58,7 +60,7 @@ func runAdopt(cmd *cobra.Command, args []string) error {
 
 	var p projects.Project
 	if len(args) >= 2 {
-		if p, err = projects.Resolve(cfg.BaseDir, args[1]); err != nil {
+		if p, err = resolveOrCreateProject(cfg, args[1], args[2:]); err != nil {
 			return err
 		}
 	} else if p, err = pickProject(cfg, dirBase(s.Cwd)); err != nil {
@@ -83,6 +85,65 @@ func runAdopt(cmd *cobra.Command, args []string) error {
 	}
 	fmt.Printf("%s %s into %s as new session %s\n  open with: proj %s\n", verb, s.ID[:8], p.Name, newID[:8], p.Name)
 	return nil
+}
+
+// resolveOrCreateProject resolves the project named by `name`, creating it
+// (with `tags`) when it does not exist yet, so `proj adopt <session> <project>
+// <tags...>` can target a brand-new project in one shot, mirroring `proj new`.
+// Tags given for a project that already exists are merged into its tags rather
+// than replacing them.
+func resolveOrCreateProject(cfg config.Config, name string, tags []string) (projects.Project, error) {
+	if err := projects.ValidateName(name); err != nil {
+		return projects.Project{}, err
+	}
+	for _, t := range tags {
+		if err := projects.ValidateTag(t); err != nil {
+			return projects.Project{}, err
+		}
+	}
+	if p, err := projects.Resolve(cfg.BaseDir, name); err == nil {
+		if len(tags) > 0 {
+			if reg, rerr := projects.LoadRegistry(); rerr == nil {
+				_ = reg.SetTags(p.Name, mergeTags(reg.Tags(p.Name), tags))
+			}
+			return projects.FindByName(cfg.BaseDir, p.Name)
+		}
+		return p, nil
+	}
+	dir := filepath.Join(cfg.BaseDir, name)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return projects.Project{}, err
+	}
+	if len(tags) > 0 {
+		reg, err := projects.LoadRegistry()
+		if err != nil {
+			return projects.Project{}, err
+		}
+		if err := reg.SetTags(name, tags); err != nil {
+			return projects.Project{}, err
+		}
+	}
+	return projects.FindByName(cfg.BaseDir, name)
+}
+
+// mergeTags returns the union of two tag lists, preserving the order of `have`
+// and appending any new tags from `add`.
+func mergeTags(have, add []string) []string {
+	seen := make(map[string]bool, len(have))
+	out := make([]string, 0, len(have)+len(add))
+	for _, t := range have {
+		if !seen[t] {
+			seen[t] = true
+			out = append(out, t)
+		}
+	}
+	for _, t := range add {
+		if !seen[t] {
+			seen[t] = true
+			out = append(out, t)
+		}
+	}
+	return out
 }
 
 // pickSession shows the same table as `proj sessions`, with a moving cursor.
