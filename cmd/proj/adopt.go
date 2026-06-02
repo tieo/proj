@@ -87,7 +87,7 @@ func runAdopt(cmd *cobra.Command, args []string) error {
 
 // pickSession shows the same table as `proj sessions`, with a moving cursor.
 func pickSession(cfg config.Config, all []sessions.Session) (sessions.Session, error) {
-	header, lines, shown, _ := sessionLines(cfg, all, "")
+	header, lines, shown, _ := sessionLines(cfg, all)
 	if len(shown) == 0 {
 		return sessions.Session{}, fmt.Errorf("no recent sessions (use --all to include older ones)")
 	}

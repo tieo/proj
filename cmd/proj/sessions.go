@@ -16,12 +16,11 @@ import (
 )
 
 var sessionsCmd = &cobra.Command{
-	Use:   "sessions [project]",
+	Use:   "sessions",
 	Short: "list existing Claude sessions; resume one with `proj sessions resume <id>`",
-	Long: `List the Claude Code sessions on disk, grouped by project and newest first.
-proj only indexes them; viewing is handed off to Claude itself. With a project
-name or prefix, only that project's sessions are shown.`,
-	Args: cobra.MaximumNArgs(1),
+	Long: `List the Claude Code sessions on disk, newest first. proj only indexes them;
+viewing is handed off to Claude itself.`,
+	Args: cobra.NoArgs,
 	RunE: runSessions,
 }
 
@@ -49,16 +48,7 @@ func runSessions(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	var filterCwd string
-	if len(args) == 1 {
-		p, err := projects.Resolve(cfg.BaseDir, args[0])
-		if err != nil {
-			return err
-		}
-		filterCwd = sessions.CwdForDir(p.Dir, all)
-	}
-
-	header, lines, _, hidden := sessionLines(cfg, all, filterCwd)
+	header, lines, _, hidden := sessionLines(cfg, all)
 	if len(lines) == 0 {
 		if hidden > 0 {
 			fmt.Printf("no recent Claude sessions (%d older; --all to show)\n", hidden)
@@ -132,7 +122,7 @@ func sessionRow(s sessions.Session, name string, green bool, now time.Time, msgW
 
 // sessionLines builds the header and rendered rows (recency-filtered unless
 // --all), returning the sessions parallel to lines and the hidden count.
-func sessionLines(cfg config.Config, all []sessions.Session, filterCwd string) (header string, lines []string, shown []sessions.Session, hidden int) {
+func sessionLines(cfg config.Config, all []sessions.Session) (header string, lines []string, shown []sessions.Session, hidden int) {
 	nameByCwd := map[string]string{}
 	for _, p := range projects.All(cfg.BaseDir) {
 		nameByCwd[sessions.CwdForDir(p.Dir, all)] = p.Name
@@ -145,9 +135,6 @@ func sessionLines(cfg config.Config, all []sessions.Session, filterCwd string) (
 	msgW, ansW := sessionTextCols()
 	greened := map[string]bool{} // only the newest session of a managed project is green
 	for _, s := range all {
-		if filterCwd != "" && s.Cwd != filterCwd {
-			continue
-		}
 		if !cutoff.IsZero() && s.Modified.Before(cutoff) {
 			hidden++
 			continue
