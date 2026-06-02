@@ -26,14 +26,15 @@ name or prefix, only that project's sessions are shown.`,
 }
 
 var sessionsResumeCmd = &cobra.Command{
-	Use:   "resume <id>",
-	Short: "open a Claude session by id or prefix (hands off to `claude --resume`)",
-	Args:  cobra.ExactArgs(1),
+	Use:   "resume [id]",
+	Short: "reopen a Claude session by id or prefix, or pick one interactively (hands off to `claude --resume`)",
+	Args:  cobra.MaximumNArgs(1),
 	RunE:  runSessionsResume,
 }
 
 func init() {
 	sessionsCmd.AddCommand(sessionsResumeCmd)
+	sessionsCmd.AddCommand(newAdoptCmd())
 	rootCmd.AddCommand(sessionsCmd)
 }
 
@@ -203,8 +204,16 @@ func runSessionsResume(cmd *cobra.Command, args []string) error {
 		return err
 	}
 	home := sessions.Home(cfg.Claude.Home)
-	s, err := sessions.Find(home, args[0])
+	all, err := sessions.List(home)
 	if err != nil {
+		return err
+	}
+	var s sessions.Session
+	if len(args) == 1 {
+		if s, err = sessions.FindIn(all, args[0]); err != nil {
+			return err
+		}
+	} else if s, err = pickSession(cfg, all); err != nil {
 		return err
 	}
 	dir := sessions.UNCToWSL(s.Cwd)

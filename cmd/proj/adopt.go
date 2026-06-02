@@ -13,24 +13,31 @@ import (
 	"github.com/tieo/proj/internal/sessions"
 )
 
-var adoptCmd = &cobra.Command{
-	Use:   "adopt [session-id] [project]",
-	Short: "copy an existing Claude session into a proj project; interactive when args are omitted",
-	Long: `Copy a Claude session transcript into a proj project's history (the original is
-left in place), rewriting its working directory to the project's so Claude
-treats it as belonging there. This also handles moving a Windows-path session
-onto its WSL project path, and pulling a stranded session back onto a renamed
-project. The project's continue pointer is updated, so ` + "`proj <project>`" + ` resumes it.
+// newAdoptCmd builds a fresh adopt command. It is registered both at the top
+// level (`proj adopt`) and under sessions (`proj sessions adopt`), so it is a
+// factory rather than a package var (a cobra command cannot have two parents).
+func newAdoptCmd() *cobra.Command {
+	c := &cobra.Command{
+		Use:   "adopt [session-id] [project]",
+		Short: "move an existing Claude session into a proj project; interactive when args are omitted",
+		Long: `Move a Claude session transcript into a proj project's history, rewriting its
+working directory to the project's so Claude treats it as belonging there. The
+copy is verified on disk before the original is removed; pass --copy-file to
+keep the original in place instead. This also handles relocating a Windows-path
+session onto its WSL project path, and pulling a stranded session back onto a
+renamed project. The project's continue pointer is updated, so ` + "`proj <project>`" + ` resumes it.
 
 With no arguments, pick a session and a target project interactively. Pass a
 session id (or prefix) to skip the session picker, and a project to skip both.`,
-	Args: cobra.MaximumNArgs(2),
-	RunE: runAdopt,
+		Args: cobra.MaximumNArgs(2),
+		RunE: runAdopt,
+	}
+	c.Flags().Bool("copy-file", false, "copy the transcript instead of moving it (keep the original in place)")
+	return c
 }
 
 func init() {
-	adoptCmd.Flags().Bool("copy-file", false, "copy the transcript instead of moving it (keep the original in place)")
-	rootCmd.AddCommand(adoptCmd)
+	rootCmd.AddCommand(newAdoptCmd())
 }
 
 func runAdopt(cmd *cobra.Command, args []string) error {

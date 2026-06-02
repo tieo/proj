@@ -22,10 +22,17 @@ Each project is a uniquely-named directory under base_dir; open one by its name 
 	Args:          cobra.ArbitraryArgs,
 	SilenceUsage:  true,
 	SilenceErrors: true,
-	RunE:          runOpen,
+	// Flag and argument validation run before any PreRun, so reaching here means
+	// the command actually started: a later error is a runtime one, and main
+	// should not bury it under a usage dump.
+	PersistentPreRun: func(cmd *cobra.Command, args []string) { cmdStarted = true },
+	RunE:             runOpen,
 }
 
-var headless bool
+var (
+	headless   bool
+	cmdStarted bool
+)
 
 func init() {
 	rootCmd.PersistentFlags().BoolVar(&headless, "headless", false, "don't attach to the tmux session after opening")
@@ -33,8 +40,17 @@ func init() {
 }
 
 func main() {
-	if err := rootCmd.Execute(); err != nil {
+	cmd, err := rootCmd.ExecuteC()
+	if err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
+		// A usage error (bad/missing args, unknown subcommand or flag) is reported
+		// before the command starts; follow it with that command's help so the
+		// user can see what it expects. Runtime errors get just the message.
+		if !cmdStarted {
+			fmt.Fprintln(os.Stderr)
+			cmd.SetOut(os.Stderr)
+			_ = cmd.Help()
+		}
 		os.Exit(1)
 	}
 }
