@@ -196,8 +196,9 @@ func TestDecide_BannerPlusSelectorIsResume(t *testing.T) {
 	}
 }
 
-// Real capture from a resume-old-session prompt; the daemon should
-// recognize this as a dismissable picker even with no usage-limit banner.
+// Real capture from a resume-old-session prompt. The daemon must NOT touch
+// this: Escape cancels the resume, and choosing summary vs full is the user's
+// call. Acting on it interrupted the user and cancelled their resume.
 const realResumePicker = `  This session is 2d 21h old and 126.3k tokens.
 
   Resuming the full session will consume a substantial portion of your usage limits. We recommend resuming from a summary.
@@ -208,9 +209,9 @@ const realResumePicker = `  This session is 2d 21h old and 126.3k tokens.
 
   Enter to confirm · Esc to cancel`
 
-func TestHasSelector_ResumePicker(t *testing.T) {
-	if !HasSelector(realResumePicker) {
-		t.Error("resume-from-summary picker must be recognized as a dismissable selector")
+func TestHasSelector_ResumePickerIgnored(t *testing.T) {
+	if HasSelector(realResumePicker) {
+		t.Error("resume-from-summary dialog must not be treated as a dismissable selector")
 	}
 }
 

@@ -104,11 +104,15 @@ var bannerPatterns = []*regexp.Regexp{
 
 var timeRE = regexp.MustCompile(`^(\d{1,2})(?::(\d{2}))?(am|pm)$`)
 
-// Known Claude TUI picker phrases. Recognised pickers we'll dismiss with
-// Escape:
-//   - "What do you want to do?" / "Stop and wait …"; /rate-limit-options
-//   - "Resume from summary" / "Resume the full session"; old-session resume
-var selectorRE = regexp.MustCompile(`(?i)(?:What do you want to do\?|Stop and wait for limit to reset|Resume from summary|Resume the full session)`)
+// Known Claude TUI picker phrases the daemon will dismiss with Escape, limited
+// to the rate-limit picker ("What do you want to do?" / "Stop and wait …"),
+// which is safe to clear before sending "continue".
+//
+// The old-session "Resume from summary / Resume the full session" dialog is
+// deliberately NOT here: Escape there cancels the resume, and choosing between
+// summary and full is a real decision for the user, not one the daemon should
+// answer. Acting on it interrupted the user mid-input and cancelled resumes.
+var selectorRE = regexp.MustCompile(`(?i)(?:What do you want to do\?|Stop and wait for limit to reset)`)
 
 // A "❯ <digit>." line; the highlighted option marker. Distinctive: the
 // regular input prompt is "❯ " with no number after, so this only matches
