@@ -547,6 +547,69 @@ func TestDetectAPIError_MostRecentErrorWins(t *testing.T) {
 	}
 }
 
+func TestDetectAPIError_PastedBelowPromptRejected(t *testing.T) {
+	// The user pastes an API error into the input box; it renders as indented
+	// continuation lines below the live ❯ prompt. It must not be treated as a
+	// real, current error. Arbitrary unrelated lines sit between, so position
+	// (not distance) is what we check.
+	s := "❯ look at what it kept showing me earlier:\n" +
+		strings.Repeat("  some other quoted line\n", 40) +
+		"  ⎿  API Error: 400 {\"type\":\"error\",\"error\":{\"message\":\"Could not process image\"}}\n" +
+		"  and that is the whole problem"
+	if got := DetectAPIError(s); got != nil {
+		t.Errorf("an API error quoted in the input buffer must not match, got %+v", got)
+	}
+}
+
+func TestDetectAPIError_LargeGapAbovePromptStillDetected(t *testing.T) {
+	// A real error far above the prompt (many lines of retry output between)
+	// must still be detected: the boundary is the prompt's position, not a
+	// fixed byte distance.
+	s := "  ⎿  API Error: 400 {\"type\":\"error\",\"error\":{\"message\":\"Could not process image\"}}\n" +
+		strings.Repeat("  ⎿  retrying tool output line\n", 60) +
+		"──── proj ────\n❯ "
+	if got := DetectAPIError(s); got == nil {
+		t.Error("a real error far above the prompt must still be detected")
+	}
+}
+
+func TestDetectAPIError_RealAboveBeatsPastedBelow(t *testing.T) {
+	// A genuine error above the prompt plus a quoted one in the input below:
+	// the real (above-prompt) error must win, not the pasted one.
+	s := "  ⎿  API Error: 500 {\"type\":\"error\",\"error\":{\"message\":\"real one\"}}\n" +
+		"❯ here is what i saw and pasted:\n" +
+		"  ⎿  API Error: 400 {\"type\":\"error\",\"error\":{\"message\":\"pasted\"}}\n"
+	got := DetectAPIError(s)
+	if got == nil || got.StatusCode != 500 {
+		t.Errorf("must detect the real error above the prompt, not the pasted one below; got %+v", got)
+	}
+}
+
+func TestDetectAPIError_EscapedJSONFixtureRejected(t *testing.T) {
+	// The actual incident this guard fixes: the daemon's own test file was on
+	// screen while being edited. Its fixtures embed `⎿  API Error:` lines as Go
+	// string literals, so the rendered JSON is backslash-escaped and does not
+	// parse. Such a line above the live prompt must not trigger a recovery.
+	s := "  ⎿  API Error: 400 {\\\"type\\\":\\\"error\\\",\\\"error\\\":{\\\"message\\\":\\\"old\\\"}}\n" +
+		"──── proj ────\n❯ "
+	if got := DetectAPIError(s); got != nil {
+		t.Errorf("a backslash-escaped JSON literal (source on screen) must not match, got %+v", got)
+	}
+}
+
+func TestDetectAPIError_SkipsMalformedKeepsRealAbove(t *testing.T) {
+	// A malformed match (escaped source literal) nearer the prompt must not mask
+	// a genuine, parseable error further up: the loop keeps scanning past it.
+	s := "  ⎿  API Error: 500 {\"type\":\"error\",\"error\":{\"message\":\"real\"}}\n" +
+		strings.Repeat("  some line\n", 5) +
+		"  ⎿  API Error: 400 {\\\"escaped\\\":\\\"junk\\\"}\n" +
+		"❯ "
+	got := DetectAPIError(s)
+	if got == nil || got.StatusCode != 500 || got.Message != "real" {
+		t.Errorf("malformed match nearer the prompt must not mask the real error above it; got %+v", got)
+	}
+}
+
 func TestDetectAPIError_BannerAndErrorCoexist(t *testing.T) {
 	// Both a usage-limit banner and an API error are visible.
 	// DetectAPIError must still find the error; callers can decide priority.

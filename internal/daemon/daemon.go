@@ -180,45 +180,75 @@ type ErrorState map[string]ErrorTracked
 // DetectAPIError returns a non-nil *APIError if `content` shows a Claude Code
 // session that is stuck at the input prompt after a permanent API error.
 //
-// Two structural guards make this robust without needing a recency window:
+// Structural guards make this robust without needing a recency window:
 //  1. The ⎿ prefix on the error line distinguishes TUI-rendered tool output
 //     from Claude's text, user input, or code blocks that mention API errors.
 //  2. The input-prompt regex (❯ alone on a line) confirms Claude returned
 //     control to the user; it rejects panes with active tool calls or pickers.
+//     The last such prompt also marks the boundary between rendered output and
+//     the user's input buffer, so a match below it (an error pasted/quoted into
+//     the input box) is ignored.
+//  3. The error's JSON payload must parse and carry a non-empty message; source
+//     or fixtures on screen render as backslash-escaped literals that fail this,
+//     so the daemon does not act on its own detection code being displayed.
 //
 // No byte-offset threshold is applied because the wide box-drawing characters
-// used by Claude Code's TUI inflate content size unpredictably, and the two
+// used by Claude Code's TUI inflate content size unpredictably, and these
 // structural guards alone are strong enough to prevent false positives.
 func DetectAPIError(content string) *APIError {
 	matches := apiErrorRE.FindAllStringSubmatchIndex(content, -1)
 	if len(matches) == 0 {
 		return nil
 	}
-	m := matches[len(matches)-1] // most recent occurrence
 	// Require the input prompt to be visible; the session must be idle, not
-	// actively running tools (which would suppress the lone ❯ line).
-	if !inputPromptRE.MatchString(content) {
+	// actively running tools (which would suppress the lone ❯ line). The live
+	// prompt (the last column-0 ❯) is also the boundary between rendered output
+	// above it and the user's input buffer below: an error quoted into the input
+	// (pasted TUI text rendered as indented continuation lines) sits below the
+	// prompt and must be ignored. This is purely positional, so an arbitrary
+	// number of lines between the error and the prompt does not matter.
+	prompts := inputPromptRE.FindAllStringIndex(content, -1)
+	if len(prompts) == 0 {
 		return nil
 	}
-	statusCode, _ := strconv.Atoi(content[m[2]:m[3]])
-	jsonStr := content[m[4]:m[5]]
-	var payload struct {
-		Error struct {
-			Message string `json:"message"`
-		} `json:"error"`
-		RequestID string `json:"request_id"`
+	lastPrompt := prompts[len(prompts)-1][0]
+	// Walk matches newest-first and return the most recent one that is both
+	// above the live prompt AND carries a well-formed payload. A genuine Claude
+	// Code error line renders clean JSON with a non-empty message. Source code
+	// or test fixtures shown in the pane do not: this very codebase embeds
+	// ⎿ "API Error:" literals, and when displayed they appear as Go string
+	// literals with backslash-escaped quotes, so the JSON fails to parse (or has
+	// no message). Skipping those keeps the daemon from clearing a session just
+	// because its own detection code is on screen. A malformed match nearer the
+	// prompt does not mask a real error further up; the loop keeps scanning.
+	for i := len(matches) - 1; i >= 0; i-- {
+		m := matches[i]
+		if m[0] >= lastPrompt {
+			continue // inside the input buffer, not a live error
+		}
+		jsonStr := content[m[4]:m[5]]
+		var payload struct {
+			Error struct {
+				Message string `json:"message"`
+			} `json:"error"`
+			RequestID string `json:"request_id"`
+		}
+		if err := json.Unmarshal([]byte(jsonStr), &payload); err != nil || payload.Error.Message == "" {
+			continue
+		}
+		statusCode, _ := strconv.Atoi(content[m[2]:m[3]])
+		text := strings.TrimSpace(content[m[0]:m[1]])
+		if len(text) > 200 {
+			text = text[:200]
+		}
+		return &APIError{
+			StatusCode: statusCode,
+			Message:    payload.Error.Message,
+			RequestID:  payload.RequestID,
+			Text:       text,
+		}
 	}
-	_ = json.Unmarshal([]byte(jsonStr), &payload)
-	text := strings.TrimSpace(content[m[0]:m[1]])
-	if len(text) > 200 {
-		text = text[:200]
-	}
-	return &APIError{
-		StatusCode: statusCode,
-		Message:    payload.Error.Message,
-		RequestID:  payload.RequestID,
-		Text:       text,
-	}
+	return nil
 }
 
 // DecideCompact reports whether the daemon should send /compact now.
