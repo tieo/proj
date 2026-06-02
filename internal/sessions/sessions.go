@@ -345,6 +345,9 @@ func oneLine(s string, max int) string {
 // id, rewriting every occurrence of the old cwd (and the internal sessionId) so
 // the result is a self-consistent, independent session, then points
 // .claude.json's lastSessionId for targetCwd at it so `claude -c` resumes it.
+// The per-session sidecars Claude Code keys by id (the task list and the
+// file-edit history) are carried over to the new id as well, so the adopted
+// session keeps its tasks and history instead of resuming with an empty list.
 //
 // When move is true the original is deleted, but only after the copy is read
 // back and verified byte-for-byte: the transcripts live on a flaky 9p mount, so
@@ -379,12 +382,85 @@ func Adopt(home string, sess Session, targetCwd string, move bool) (newID string
 	if err := pointLastSession(home, targetCwd, newID); err != nil {
 		return newID, fmt.Errorf("copied transcript but could not update the continue pointer: %w", err)
 	}
+	if err := relocateSidecars(home, sess.ID, newID, move); err != nil {
+		return newID, fmt.Errorf("adopted the session but could not carry over its tasks/history: %w", err)
+	}
 	if move {
 		if err := os.Remove(sess.Path); err != nil {
 			return newID, fmt.Errorf("copied to the new project but could not remove the original %s: %w", sess.ID[:8], err)
 		}
 	}
 	return newID, nil
+}
+
+// relocateSidecars carries the per-session folders Claude Code keys by session
+// id - the task list (tasks/<id>) and the file-edit history (file-history/<id>)
+// - from oldID to newID. Without this an adopted session resumes with an empty
+// task list because its tasks still sit under the old id. Folders that do not
+// exist are skipped; it is best effort and reports (but is not blocked by) the
+// first failure. When move is false the originals are left in place to match
+// the --copy-file transcript behavior.
+func relocateSidecars(home, oldID, newID string, move bool) error {
+	var firstErr error
+	for _, kind := range []string{"tasks", "file-history"} {
+		src := filepath.Join(home, kind, oldID)
+		if _, err := os.Stat(src); err != nil {
+			continue // nothing to carry over for this kind
+		}
+		if err := relocateDir(src, filepath.Join(home, kind, newID), move); err != nil && firstErr == nil {
+			firstErr = fmt.Errorf("%s: %w", kind, err)
+		}
+	}
+	return firstErr
+}
+
+// relocateDir moves src to dst (when move) or copies it (when not). The move
+// path falls back to copy+remove if a plain rename fails, since the transcripts
+// and their sidecars can live on a 9p mount where rename is not always atomic.
+func relocateDir(src, dst string, move bool) error {
+	if move {
+		if err := os.Rename(src, dst); err == nil {
+			return nil
+		}
+		if err := copyDir(src, dst); err != nil {
+			return err
+		}
+		return os.RemoveAll(src)
+	}
+	return copyDir(src, dst)
+}
+
+// copyDir recursively copies the directory tree at src into dst, preserving
+// file permission bits.
+func copyDir(src, dst string) error {
+	entries, err := os.ReadDir(src)
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(dst, 0o755); err != nil {
+		return err
+	}
+	for _, e := range entries {
+		s, d := filepath.Join(src, e.Name()), filepath.Join(dst, e.Name())
+		if e.IsDir() {
+			if err := copyDir(s, d); err != nil {
+				return err
+			}
+			continue
+		}
+		info, err := e.Info()
+		if err != nil {
+			return err
+		}
+		data, err := os.ReadFile(s)
+		if err != nil {
+			return err
+		}
+		if err := os.WriteFile(d, data, info.Mode().Perm()); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // newSessionID returns a random UUIDv4, matching the id format Claude gives

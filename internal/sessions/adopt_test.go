@@ -97,3 +97,68 @@ func TestAdoptCopyFile(t *testing.T) {
 		t.Errorf("copied transcript missing at %s: %v", dst, err)
 	}
 }
+
+// TestAdoptCarriesSidecars checks that the task list and file-history folders,
+// keyed by session id, follow the session to its new id (moved on a move,
+// copied with --copy-file), so an adopted session keeps its tasks.
+func TestAdoptCarriesSidecars(t *testing.T) {
+	setup := func(t *testing.T) (home, src, oldCwd, newCwd string) {
+		base := t.TempDir()
+		home = filepath.Join(base, ".claude")
+		oldCwd = `C:\Users\u\scratch`
+		newCwd = `\\wsl.localhost\Ubuntu-24.04\home\u\projects\code\proj`
+		srcDir := filepath.Join(home, "projects", EncodeCwd(oldCwd))
+		if err := os.MkdirAll(srcDir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		src = filepath.Join(srcDir, "abc123.jsonl")
+		if err := os.WriteFile(src, []byte(`{"sessionId":"abc123"}`+"\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(base, ".claude.json"), []byte(`{"projects":{}}`), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		for _, kind := range []string{"tasks", "file-history"} {
+			d := filepath.Join(home, kind, "abc123")
+			if err := os.MkdirAll(d, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(d, "1.json"), []byte(`{"id":"1"}`), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}
+		return
+	}
+
+	t.Run("move", func(t *testing.T) {
+		home, src, oldCwd, newCwd := setup(t)
+		newID, err := Adopt(home, Session{ID: "abc123", Cwd: oldCwd, Path: src}, newCwd, true)
+		if err != nil {
+			t.Fatalf("Adopt: %v", err)
+		}
+		for _, kind := range []string{"tasks", "file-history"} {
+			if _, err := os.Stat(filepath.Join(home, kind, newID, "1.json")); err != nil {
+				t.Errorf("%s not carried to new id: %v", kind, err)
+			}
+			if _, err := os.Stat(filepath.Join(home, kind, "abc123")); !os.IsNotExist(err) {
+				t.Errorf("%s for old id should be gone after a move", kind)
+			}
+		}
+	})
+
+	t.Run("copy-file keeps originals", func(t *testing.T) {
+		home, src, oldCwd, newCwd := setup(t)
+		newID, err := Adopt(home, Session{ID: "abc123", Cwd: oldCwd, Path: src}, newCwd, false)
+		if err != nil {
+			t.Fatalf("Adopt: %v", err)
+		}
+		for _, kind := range []string{"tasks", "file-history"} {
+			if _, err := os.Stat(filepath.Join(home, kind, newID, "1.json")); err != nil {
+				t.Errorf("%s not copied to new id: %v", kind, err)
+			}
+			if _, err := os.Stat(filepath.Join(home, kind, "abc123", "1.json")); err != nil {
+				t.Errorf("%s for old id should remain with --copy-file: %v", kind, err)
+			}
+		}
+	})
+}
