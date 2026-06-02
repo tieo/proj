@@ -84,7 +84,8 @@ func EncodeCwd(cwd string) string {
 	}, cwd)
 }
 
-// Session is the lightweight metadata for one transcript.
+// Session is the lightweight metadata for one transcript. Title is the last
+// real user message and Answer is the last assistant reply.
 type Session struct {
 	ID       string
 	Cwd      string
@@ -92,6 +93,7 @@ type Session struct {
 	Modified time.Time
 	Messages int
 	Title    string
+	Answer   string
 }
 
 // List returns every session under home, newest first. Transcripts are read
@@ -115,7 +117,7 @@ func List(home string) ([]Session, error) {
 			if err != nil {
 				return
 			}
-			cwd, title, n := readMeta(f)
+			cwd, title, answer, n := readMeta(f)
 			out[i] = Session{
 				ID:       strings.TrimSuffix(filepath.Base(f), ".jsonl"),
 				Cwd:      cwd,
@@ -123,6 +125,7 @@ func List(home string) ([]Session, error) {
 				Modified: info.ModTime(),
 				Messages: n,
 				Title:    title,
+				Answer:   answer,
 			}
 		}(i, f)
 	}
@@ -189,13 +192,13 @@ var (
 // JSON parsing as possible: the count is a substring scan, and only the cwd line
 // and the last few genuine user prompts are unmarshalled. Tool-result lines
 // (which carry no prompt text and are often the largest) are skipped.
-func readMeta(path string) (cwd, title string, messages int) {
+func readMeta(path string) (cwd, title, answer string, messages int) {
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return "", "", 0
+		return "", "", "", 0
 	}
 	messages = bytes.Count(data, userTok) + bytes.Count(data, asstTok)
-	var lastPrompts [][]byte
+	var lastPrompts, lastAnswers [][]byte
 	for rest := data; len(rest) > 0; {
 		var line []byte
 		if nl := bytes.IndexByte(rest, '\n'); nl >= 0 {
@@ -218,8 +221,14 @@ func readMeta(path string) (cwd, title string, messages int) {
 				lastPrompts = lastPrompts[1:]
 			}
 		}
+		if bytes.Contains(line, asstTok) {
+			lastAnswers = append(lastAnswers, line)
+			if len(lastAnswers) > 8 {
+				lastAnswers = lastAnswers[1:]
+			}
+		}
 	}
-	return cwd, oneLine(lastPromptTitle(lastPrompts), 56), messages
+	return cwd, oneLine(lastPromptTitle(lastPrompts), 120), oneLine(lastAnswerText(lastAnswers), 120), messages
 }
 
 // lastPromptTitle parses the kept user lines newest-first and returns the most
@@ -246,6 +255,21 @@ func lastPromptTitle(lines [][]byte) string {
 		return fallback
 	}
 	return "(no prompt)"
+}
+
+// lastAnswerText returns the most recent assistant text reply, skipping turns
+// that are only tool calls or thinking (which carry no displayable text).
+func lastAnswerText(lines [][]byte) string {
+	for i := len(lines) - 1; i >= 0; i-- {
+		var rec record
+		if json.Unmarshal(lines[i], &rec) != nil || rec.Message.Role != "assistant" {
+			continue
+		}
+		if t := cleanText(firstText(rec.Message.Content)); t != "" {
+			return t
+		}
+	}
+	return ""
 }
 
 // firstText returns the plain text of a user message's content (string form or
@@ -317,10 +341,17 @@ func oneLine(s string, max int) string {
 	return s
 }
 
-// Adopt copies sess into the transcript folder for targetCwd, rewriting every
-// occurrence of the old cwd to targetCwd, then points .claude.json's
-// lastSessionId for targetCwd at the session so `claude -c` resumes it.
-func Adopt(home string, sess Session, targetCwd string) (newID string, err error) {
+// Adopt relocates sess into the transcript folder for targetCwd under a fresh
+// id, rewriting every occurrence of the old cwd (and the internal sessionId) so
+// the result is a self-consistent, independent session, then points
+// .claude.json's lastSessionId for targetCwd at it so `claude -c` resumes it.
+//
+// When move is true the original is deleted, but only after the copy is read
+// back and verified byte-for-byte: the transcripts live on a flaky 9p mount, so
+// a silent short write must not cost the only copy. If verification fails the
+// original is left untouched and an error is returned (newID is ""). When move
+// is false the original is kept (the --copy-file behavior).
+func Adopt(home string, sess Session, targetCwd string, move bool) (newID string, err error) {
 	targetDir := filepath.Join(home, "projects", EncodeCwd(targetCwd))
 	if err := os.MkdirAll(targetDir, 0o755); err != nil {
 		return "", err
@@ -329,10 +360,6 @@ func Adopt(home string, sess Session, targetCwd string) (newID string, err error
 	if err != nil {
 		return "", err
 	}
-	// The copy is an independent session: rewrite the cwd to the target project
-	// and give it a fresh id so it does not collide with the original (which
-	// stays put). Claude resumes by the filename id, and rewriting every
-	// internal sessionId to match keeps the transcript self-consistent.
 	if sess.Cwd != "" && sess.Cwd != targetCwd {
 		data = bytes.ReplaceAll(data, []byte(jsonInner(sess.Cwd)), []byte(jsonInner(targetCwd)))
 	}
@@ -344,8 +371,18 @@ func Adopt(home string, sess Session, targetCwd string) (newID string, err error
 	if err := os.WriteFile(dst, data, 0o644); err != nil {
 		return "", err
 	}
+	// Prove the copy is actually on disk and intact before touching the original.
+	if got, rerr := os.ReadFile(dst); rerr != nil || !bytes.Equal(got, data) {
+		_ = os.Remove(dst)
+		return "", fmt.Errorf("could not verify the copied transcript landed at %s; left the original in place", dst)
+	}
 	if err := pointLastSession(home, targetCwd, newID); err != nil {
 		return newID, fmt.Errorf("copied transcript but could not update the continue pointer: %w", err)
+	}
+	if move {
+		if err := os.Remove(sess.Path); err != nil {
+			return newID, fmt.Errorf("copied to the new project but could not remove the original %s: %w", sess.ID[:8], err)
+		}
 	}
 	return newID, nil
 }

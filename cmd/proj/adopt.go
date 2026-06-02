@@ -29,6 +29,7 @@ session id (or prefix) to skip the session picker, and a project to skip both.`,
 }
 
 func init() {
+	adoptCmd.Flags().Bool("copy-file", false, "copy the transcript instead of moving it (keep the original in place)")
 	rootCmd.AddCommand(adoptCmd)
 }
 
@@ -65,11 +66,19 @@ func runAdopt(cmd *cobra.Command, args []string) error {
 	if s.Cwd == targetCwd {
 		return fmt.Errorf("session %s already belongs to %s", s.ID[:8], p.Name)
 	}
-	newID, err := sessions.Adopt(home, s, targetCwd)
+	copyFile, _ := cmd.Flags().GetBool("copy-file")
+	newID, err := sessions.Adopt(home, s, targetCwd, !copyFile)
 	if err != nil {
-		return err
+		if newID == "" {
+			return err // nothing was moved; the original is untouched
+		}
+		fmt.Fprintf(os.Stderr, "warning: %v\n", err) // the copy landed; only cleanup/bookkeeping failed
 	}
-	fmt.Printf("adopted %s into %s as new session %s\n  open with: proj %s\n", s.ID[:8], p.Name, newID[:8], p.Name)
+	verb := "moved"
+	if copyFile {
+		verb = "copied"
+	}
+	fmt.Printf("%s %s into %s as new session %s\n  open with: proj %s\n", verb, s.ID[:8], p.Name, newID[:8], p.Name)
 	return nil
 }
 

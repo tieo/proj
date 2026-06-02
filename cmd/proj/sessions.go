@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"strconv"
 	"strings"
 	"time"
 
@@ -75,25 +76,57 @@ func runSessions(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-// sessionHeader is the shared column header for both the table and the picker.
-func sessionHeader() string {
-	return fmt.Sprintf("\033[90m%-8s %9s %6s  %-16s %s\033[0m", "ID", "AGE", "MSGS", "PROJECT", "TITLE")
+// termWidth reports the controlling terminal's column count, defaulting to 120
+// when stdout is not a terminal (piped or redirected).
+func termWidth() int {
+	c := exec.Command("stty", "size")
+	c.Stdin = os.Stdin
+	out, err := c.Output()
+	if err != nil {
+		return 120
+	}
+	if f := strings.Fields(string(out)); len(f) == 2 {
+		if n, err := strconv.Atoi(f[1]); err == nil && n > 20 {
+			return n
+		}
+	}
+	return 120
 }
 
-// sessionRow renders one session line; the project cell is green when it belongs
-// to a proj project and grey when loose.
-func sessionRow(s sessions.Session, name string, managed bool, now time.Time) string {
-	cell := truncPad(name, 16)
-	if managed {
+// sessionTextCols splits the space left after the fixed columns (and the 2-col
+// indent/cursor) evenly between the last-message and last-answer columns.
+func sessionTextCols() (msgW, ansW int) {
+	avail := termWidth() - 47
+	if avail < 30 {
+		avail = 30
+	}
+	msgW = avail / 2
+	ansW = avail - msgW
+	return
+}
+
+// sessionHeader is the shared column header for both the table and the picker.
+func sessionHeader(msgW, ansW int) string {
+	return fmt.Sprintf("\033[90m%-8s %9s %6s  %-16s %s %s\033[0m",
+		"ID", "AGE", "MSGS", "PROJECT", truncPadRight("LAST MESSAGE", msgW), truncPad("LAST ANSWER", ansW))
+}
+
+// sessionRow renders one session line: the project cell is green for the current
+// session of a proj project and grey otherwise, then the last user message and
+// (dimmed) the last assistant answer.
+func sessionRow(s sessions.Session, name string, green bool, now time.Time, msgW, ansW int) string {
+	cell := truncPad(name, projNameCol)
+	if green {
 		cell = "\033[32m" + cell + "\033[0m"
 	} else {
 		cell = "\033[90m" + cell + "\033[0m"
 	}
-	title := s.Title
-	if title == "(no prompt)" {
-		title = "\033[90m" + name + "\033[0m" // placeholder when the session has no prompt yet
+	msgCell := truncPadRight(s.Title, msgW)
+	if s.Title == "" || s.Title == "(no prompt)" {
+		msgCell = "\033[90m" + truncPadRight("(no messages)", msgW) + "\033[0m"
 	}
-	return fmt.Sprintf("%-8s %9s %6d  %s %s", s.ID[:8], formatAgo(now.Sub(s.Modified)), s.Messages, cell, title)
+	ansCell := "\033[90m" + truncPad(s.Answer, ansW) + "\033[0m" // dim: the assistant's reply
+	return fmt.Sprintf("%-8s %9s %6d  %s %s %s", s.ID[:8], formatAgo(now.Sub(s.Modified)), s.Messages, cell, msgCell, ansCell)
 }
 
 // sessionLines builds the header and rendered rows (recency-filtered unless
@@ -108,6 +141,7 @@ func sessionLines(cfg config.Config, all []sessions.Session, filterCwd string) (
 		cutoff = time.Now().AddDate(0, 0, -cfg.List.MaxAgeDays)
 	}
 	now := time.Now()
+	msgW, ansW := sessionTextCols()
 	greened := map[string]bool{} // only the newest session of a managed project is green
 	for _, s := range all {
 		if filterCwd != "" && s.Cwd != filterCwd {
@@ -127,10 +161,10 @@ func sessionLines(cfg config.Config, all []sessions.Session, filterCwd string) (
 		} else {
 			name = dirBase(s.Cwd)
 		}
-		lines = append(lines, sessionRow(s, name, green, now))
+		lines = append(lines, sessionRow(s, name, green, now, msgW, ansW))
 		shown = append(shown, s)
 	}
-	return sessionHeader(), lines, shown, hidden
+	return sessionHeader(msgW, ansW), lines, shown, hidden
 }
 
 // dirBase is filepath.Base for both / and \ separated paths (the cwd may be a
@@ -151,6 +185,16 @@ func truncPad(s string, w int) string {
 		return string(r[:w-1]) + "…"
 	}
 	return s + strings.Repeat(" ", w-len(r))
+}
+
+// truncPadRight is truncPad but right-aligned: a short string is padded on the
+// left so its text sits flush against the next column.
+func truncPadRight(s string, w int) string {
+	r := []rune(s)
+	if len(r) > w {
+		return string(r[:w-1]) + "…"
+	}
+	return strings.Repeat(" ", w-len(r)) + s
 }
 
 func runSessionsResume(cmd *cobra.Command, args []string) error {
