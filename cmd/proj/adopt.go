@@ -36,10 +36,6 @@ session id (or prefix) to skip the session picker, and a project to skip both.`,
 	return c
 }
 
-func init() {
-	rootCmd.AddCommand(newAdoptCmd())
-}
-
 func runAdopt(cmd *cobra.Command, args []string) error {
 	cfg, err := config.Load()
 	if err != nil {
