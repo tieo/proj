@@ -49,21 +49,29 @@ func selectFromList(header string, lines []string) int {
 		fmt.Printf("\r\033[K  %s\r\n", header)
 	}
 	sel := 0
-	draw := func(redraw bool) {
-		if redraw {
-			fmt.Printf("\033[%dA", len(lines))
+	renderRow := func(i int) string {
+		marker := "  "
+		row := marker + lines[i]
+		if i == sel {
+			marker = "\033[36m❯\033[0m "
+			row = highlightRow(marker + lines[i])
 		}
-		for i, ln := range lines {
-			marker := "  "
-			row := marker + ln
-			if i == sel {
-				marker = "\033[36m❯\033[0m "
-				row = highlightRow(marker + ln)
-			}
-			fmt.Printf("\r\033[K%s\r\n", row)
+		return row
+	}
+	// Initial paint: each row, cursor ends one line below the last row ("home").
+	for i := range lines {
+		fmt.Printf("\r\033[K%s\r\n", renderRow(i))
+	}
+	// repaint one row in place. Repainting only the row losing the cursor and
+	// the row gaining it (instead of redrawing every row on every keypress)
+	// kills the flicker on unrelated lines.
+	repaint := func(i int) {
+		up := len(lines) - i
+		fmt.Printf("\033[%dA\r\033[K%s\r\n", up, renderRow(i))
+		if down := len(lines) - i - 1; down > 0 {
+			fmt.Printf("\033[%dB", down)
 		}
 	}
-	draw(false)
 
 	buf := make([]byte, 8)
 	for {
@@ -78,14 +86,18 @@ func selectFromList(header string, lines []string) int {
 		switch {
 		case up:
 			if sel > 0 {
+				prev := sel
 				sel--
+				repaint(prev)
+				repaint(sel)
 			}
-			draw(true)
 		case down:
 			if sel < len(lines)-1 {
+				prev := sel
 				sel++
+				repaint(prev)
+				repaint(sel)
 			}
-			draw(true)
 		case len(k) == 1 && (k[0] == '\r' || k[0] == '\n'):
 			fmt.Print("\r\n")
 			return sel
