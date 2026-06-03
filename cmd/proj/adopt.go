@@ -110,6 +110,14 @@ func resolveOrCreateProject(cfg config.Config, name string, tags []string) (proj
 		}
 		return p, nil
 	}
+	exists, err := projects.CheckNewName(cfg.BaseDir, name)
+	if err != nil {
+		return projects.Project{}, err
+	}
+	if exists {
+		// Resolve missed it (ambiguity in the broader query). Treat as merge.
+		return projects.FindByName(cfg.BaseDir, name)
+	}
 	dir := filepath.Join(cfg.BaseDir, name)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return projects.Project{}, err
@@ -186,8 +194,12 @@ func pickProject(cfg config.Config, defaultName string) (projects.Project, error
 			return projects.Project{}, err
 		}
 	}
+	exists, err := projects.CheckNewName(cfg.BaseDir, name)
+	if err != nil {
+		return projects.Project{}, err
+	}
 	dir := filepath.Join(cfg.BaseDir, name)
-	if _, err := os.Stat(dir); os.IsNotExist(err) {
+	if !exists {
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			return projects.Project{}, err
 		}

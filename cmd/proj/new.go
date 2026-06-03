@@ -38,10 +38,14 @@ var newCmd = &cobra.Command{
 			}
 		}
 
-		dir := filepath.Join(cfg.BaseDir, name)
-		if _, err := os.Stat(dir); err == nil {
+		exists, err := projects.CheckNewName(cfg.BaseDir, name)
+		if err != nil {
+			return err
+		}
+		if exists {
 			return fmt.Errorf("%q already exists; use `proj tag add %s ...` to add tags", name, name)
 		}
+		dir := filepath.Join(cfg.BaseDir, name)
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			return err
 		}

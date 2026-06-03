@@ -91,10 +91,14 @@ var renameCmd = &cobra.Command{
 		if err := projects.ValidateName(args[1]); err != nil {
 			return err
 		}
-		newDir := filepath.Join(cfg.BaseDir, args[1])
-		if _, err := os.Stat(newDir); err == nil {
-			return fmt.Errorf("%s already exists", newDir)
+		exists, err := projects.CheckNewName(cfg.BaseDir, args[1])
+		if err != nil {
+			return err
 		}
+		if exists {
+			return fmt.Errorf("%q already exists", args[1])
+		}
+		newDir := filepath.Join(cfg.BaseDir, args[1])
 		oldSession := projects.SessionName(p.Name, p.Tags)
 		if err := os.Rename(p.Dir, newDir); err != nil {
 			return err

@@ -128,26 +128,37 @@ func FindByName(baseDir, name string) (Project, error) {
 }
 
 // Resolve maps a query to exactly one existing project under baseDir. An exact
-// name match always wins; otherwise a unique name prefix wins. It errors (naming
-// the candidates) when a prefix is ambiguous, and errors when nothing matches.
-// Because project names are unique, a fully-typed name is never ambiguous;
-// prefixes are purely a typing shortcut.
+// name match wins first; then a unique case-insensitive name match; then a
+// unique case-insensitive prefix. Ambiguity errors name the candidates.
+// EnsureUniqueName keeps case-only collisions out at creation time, so the
+// case-insensitive match is normally unique in practice.
 func Resolve(baseDir, query string) (Project, error) {
 	entries, err := os.ReadDir(baseDir)
 	if err != nil {
 		return Project{}, err
 	}
-	var prefixes []string
+	ql := strings.ToLower(query)
+	var caseEq, prefixes []string
 	for _, e := range entries {
 		if !e.IsDir() {
 			continue
 		}
-		switch n := e.Name(); {
+		n := e.Name()
+		switch {
 		case n == query:
 			return FindByName(baseDir, n) // exact match always wins
-		case strings.HasPrefix(n, query):
+		case strings.EqualFold(n, query):
+			caseEq = append(caseEq, n)
+		case strings.HasPrefix(strings.ToLower(n), ql):
 			prefixes = append(prefixes, n)
 		}
+	}
+	if len(caseEq) == 1 {
+		return FindByName(baseDir, caseEq[0])
+	}
+	if len(caseEq) > 1 {
+		sort.Strings(caseEq)
+		return Project{}, fmt.Errorf("%q is ambiguous: matches %s", query, strings.Join(caseEq, ", "))
 	}
 	switch len(prefixes) {
 	case 1:
@@ -158,6 +169,38 @@ func Resolve(baseDir, query string) (Project, error) {
 		sort.Strings(prefixes)
 		return Project{}, fmt.Errorf("%q is ambiguous: matches %s", query, strings.Join(prefixes, ", "))
 	}
+}
+
+// CheckNewName reports whether name is available to use for a new project
+// under baseDir. exists is true when a project with the exact name already
+// lives there (the caller decides whether that's an error, e.g. `proj new`,
+// or a merge target, e.g. `proj adopt`). err is non-nil when a case-only
+// sibling exists, or when baseDir can't be read. Names are case-sensitive on
+// Linux but not on Windows, macOS, or WSL's UNC bridge, so allowing case-only
+// siblings would break the cross-OS layout and also turn Resolve's
+// case-insensitive lookup into a permanent ambiguity. This is the single
+// existence-and-case-collision check; callers should not duplicate it with
+// their own os.Stat probes.
+func CheckNewName(baseDir, name string) (exists bool, err error) {
+	entries, e := os.ReadDir(baseDir)
+	if e != nil {
+		if os.IsNotExist(e) {
+			return false, nil
+		}
+		return false, e
+	}
+	for _, ent := range entries {
+		if !ent.IsDir() {
+			continue
+		}
+		switch n := ent.Name(); {
+		case n == name:
+			exists = true
+		case strings.EqualFold(n, name):
+			return exists, fmt.Errorf("%q conflicts with existing %q (case-insensitive)", name, n)
+		}
+	}
+	return exists, nil
 }
 
 // All returns every project directly under baseDir, with session status filled
