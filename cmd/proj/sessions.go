@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/mattn/go-runewidth"
 	"github.com/spf13/cobra"
 
 	"github.com/tieo/proj/internal/config"
@@ -165,24 +166,24 @@ func dirBase(p string) string {
 	return p
 }
 
-// truncPad fits s to exactly w runes, padding with spaces or truncating with an
-// ellipsis, so a following colored column still lines up.
+// truncPad fits s to exactly w terminal columns, padding with spaces or
+// truncating with an ellipsis. Uses display width (not rune count) so wide
+// runes - CJK, emoji, box-drawing - don't overflow the column and wrap onto
+// the next line, which would shove later cells out of alignment.
 func truncPad(s string, w int) string {
-	r := []rune(s)
-	if len(r) > w {
-		return string(r[:w-1]) + "…"
+	if runewidth.StringWidth(s) > w {
+		return runewidth.Truncate(s, w, "…")
 	}
-	return s + strings.Repeat(" ", w-len(r))
+	return s + strings.Repeat(" ", w-runewidth.StringWidth(s))
 }
 
 // truncPadRight is truncPad but right-aligned: a short string is padded on the
 // left so its text sits flush against the next column.
 func truncPadRight(s string, w int) string {
-	r := []rune(s)
-	if len(r) > w {
-		return string(r[:w-1]) + "…"
+	if runewidth.StringWidth(s) > w {
+		return runewidth.Truncate(s, w, "…")
 	}
-	return strings.Repeat(" ", w-len(r)) + s
+	return strings.Repeat(" ", w-runewidth.StringWidth(s)) + s
 }
 
 func runSessionsResume(cmd *cobra.Command, args []string) error {
