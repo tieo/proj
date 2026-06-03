@@ -187,8 +187,10 @@ func selectOrCreate(defaultName string, options []string) (name string, tags []s
 		return "\033[90m" + placeholder + "\033[0m", len([]rune(placeholder))
 	}
 
-	draw := func() {
-		fmt.Print("\033[?25l\r")
+	// inputLine renders the editable line (NAME + TAGS) with the current focus
+	// marker, and returns the column width chosen for the NAME field so the
+	// caller can place the real cursor on the TAGS side.
+	inputLine := func() (string, int) {
 		nameText, nameW := seg(nm, defaultName)
 		tagsText, _ := seg(tg, "tags")
 		colW := projNameCol
@@ -200,26 +202,65 @@ func selectOrCreate(defaultName string, options []string) (name string, tags []s
 		if focus < 0 {
 			marker = "\033[36m❯\033[0m "
 		}
-		fmt.Printf("\033[K%s%s  %s\r\n", marker, nameField, tagsText)
-		for i, opt := range options {
-			m := "  "
-			row := m + opt
-			if focus == i {
-				m = "\033[36m❯\033[0m "
-				row = highlightRow(m + opt)
-			}
-			fmt.Printf("\033[K%s\r\n", row)
-		}
-		fmt.Printf("\033[%dA\r", total) // back to the input line, column 0
-		if focus < 0 {
-			col := 2 + len(nm)
-			if focus == fTags {
-				col = 2 + colW + 2 + len(tg)
-			}
-			fmt.Printf("\033[%dC\033[?25h", col) // place the real (blinking) cursor
-		}
+		return fmt.Sprintf("%s%s  %s", marker, nameField, tagsText), colW
 	}
-	draw()
+
+	// optionRow renders option i with current focus highlight.
+	optionRow := func(i int) string {
+		m := "  "
+		row := m + options[i]
+		if focus == i {
+			m = "\033[36m❯\033[0m "
+			row = highlightRow(m + options[i])
+		}
+		return row
+	}
+
+	// repaintInput rewrites just the input line in place; positions the real
+	// (blinking) cursor in the focused field, or hides it if focus moved off.
+	repaintInput := func() {
+		line, colW := inputLine()
+		var b strings.Builder
+		b.WriteString("\033[?25l\r\033[K")
+		b.WriteString(line)
+		b.WriteString("\r")
+		switch focus {
+		case fName:
+			fmt.Fprintf(&b, "\033[%dC\033[?25h", 2+len(nm))
+		case fTags:
+			fmt.Fprintf(&b, "\033[%dC\033[?25h", 2+colW+2+len(tg))
+		}
+		fmt.Print(b.String())
+	}
+
+	// repaintOption rewrites just option row i in place; cursor returns to the
+	// input row's column 0 and stays hidden (focus is on the list).
+	repaintOption := func(i int) {
+		var b strings.Builder
+		fmt.Fprintf(&b, "\033[%dB\r\033[K", i+1)
+		b.WriteString(optionRow(i))
+		fmt.Fprintf(&b, "\033[%dA\r", i+1)
+		fmt.Print(b.String())
+	}
+
+	// Initial paint: input line + every option, then cursor returns to the
+	// input row and the field-cursor (or hide) is applied by repaintInput.
+	{
+		line, _ := inputLine()
+		var b strings.Builder
+		b.WriteString("\033[?25l\r\033[K")
+		b.WriteString(line)
+		b.WriteString("\r\n")
+		for i := range options {
+			b.WriteString("\r\033[K")
+			b.WriteString(optionRow(i))
+			b.WriteString("\r\n")
+		}
+		fmt.Fprintf(&b, "\033[%dA", total)
+		fmt.Print(b.String())
+		repaintInput()
+	}
+
 	// clearWidget wipes the whole combobox (header line down) so the caller's
 	// output replaces it instead of overlapping leftover option text.
 	clearWidget := func() {
@@ -237,25 +278,42 @@ func selectOrCreate(defaultName string, options []string) (name string, tags []s
 		switch {
 		case len(k) >= 3 && k[0] == 27 && k[1] == '[' && k[2] == 'B': // down
 			if len(options) > 0 {
+				prev := focus
 				if focus < 0 {
 					focus = 0
 				} else if focus < len(options)-1 {
 					focus++
 				}
-				draw()
+				if prev != focus {
+					if prev < 0 {
+						repaintInput()
+					} else {
+						repaintOption(prev)
+					}
+					repaintOption(focus)
+				}
 			}
 		case len(k) >= 3 && k[0] == 27 && k[1] == '[' && k[2] == 'A': // up
+			prev := focus
 			if focus == 0 || focus == fTags {
 				focus = fName
-				draw()
 			} else if focus > 0 {
 				focus--
-				draw()
+			}
+			if prev != focus {
+				if prev >= 0 {
+					repaintOption(prev)
+				}
+				if focus < 0 {
+					repaintInput()
+				} else {
+					repaintOption(focus)
+				}
 			}
 		case len(k) >= 3 && k[0] == 27 && k[1] == '[' && k[2] == 'Z': // Shift+Tab
 			if focus == fTags {
 				focus = fName
-				draw()
+				repaintInput()
 			}
 		case len(k) == 1 && (k[0] == 3 || (k[0] == 27 && n == 1)): // Ctrl-C / Esc
 			clearWidget()
@@ -267,15 +325,15 @@ func selectOrCreate(defaultName string, options []string) (name string, tags []s
 			switch {
 			case len(k) == 1 && (k[0] == ' ' || k[0] == '\t' || k[0] == '\r' || k[0] == '\n'):
 				focus = fTags
-				draw()
+				repaintInput()
 			case len(k) == 1 && (k[0] == 127 || k[0] == 8):
 				if len(nm) > 0 {
 					nm = nm[:len(nm)-1]
-					draw()
+					repaintInput()
 				}
 			case len(k) == 1 && k[0] >= 32 && k[0] < 127:
 				nm = append(nm, rune(k[0]))
-				draw()
+				repaintInput()
 			}
 		case focus == fTags:
 			switch {
@@ -295,10 +353,10 @@ func selectOrCreate(defaultName string, options []string) (name string, tags []s
 				} else {
 					focus = fName
 				}
-				draw()
+				repaintInput()
 			case len(k) == 1 && k[0] >= 32 && k[0] < 127:
 				tg = append(tg, rune(k[0]))
-				draw()
+				repaintInput()
 			}
 		}
 	}
