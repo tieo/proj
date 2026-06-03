@@ -13,6 +13,15 @@
         <string>run</string>
     </array>
 
+    <!-- The daemon launches `claude` (and resolves `proj`) when recreating
+         pinned/keep-alive sessions; launchd gives only a minimal PATH, so add
+         the user and Homebrew bin dirs where they are typically installed. -->
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>__HOME__/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+    </dict>
+
     <key>RunAtLoad</key>
     <true/>
 

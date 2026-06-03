@@ -4,6 +4,11 @@ After=default.target
 
 [Service]
 Type=simple
+# The daemon launches `claude` (and resolves `proj`) when it recreates pinned or
+# keep-alive sessions, so its PATH must include the user bin dir where both are
+# installed. A systemd user service otherwise inherits only the system PATH.
+# %h is the user's home, so this stays correct on any Linux (and under WSL).
+Environment=PATH=%h/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 ExecStart=%h/.local/bin/proj daemon run
 Restart=always
 RestartSec=10
