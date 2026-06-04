@@ -487,9 +487,12 @@ func parseReset(dateStr, timeStr, tzStr string, now time.Time) (time.Time, error
 }
 
 // launchSession recreates a tmux session for name at dir, running the Claude
-// launch command as the pane's program (then dropping to a shell on exit) and
-// appending the resume flag when there is prior history. An empty command
-// just starts a plain shell.
+// launch command as the pane's program with the resume flag appended when
+// there is prior history. The pane closes (and the session ends) when claude
+// exits, matching the `proj <name>` open path; previously the daemon trailed
+// `; exec $SHELL` here, which kept the pane alive in a fresh shell and left
+// the user stranded in a tmux pane after closing claude. Keep-alive sessions
+// that should survive a claude exit will be recreated on the next tick.
 func launchSession(cfg Config, name, dir string) {
 	command := ""
 	if cfg.ClaudeCommand != "" {
@@ -497,7 +500,7 @@ func launchSession(cfg Config, name, dir string) {
 		if cfg.ClaudeResumeFlag != "" && HasHistory(dir) {
 			cmdLine += " " + cfg.ClaudeResumeFlag
 		}
-		command = cmdLine + `; exec "${SHELL:-bash}"`
+		command = cmdLine
 	}
 	if _, err := tmux.NewSession(name, dir, command); err != nil {
 		slog.Error("recreate session failed", "session", name, "err", err)
