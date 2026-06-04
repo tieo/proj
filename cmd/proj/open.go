@@ -7,6 +7,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/tieo/proj/internal/config"
+	"github.com/tieo/proj/internal/daemon"
 	"github.com/tieo/proj/internal/projects"
 	"github.com/tieo/proj/internal/shellout"
 	"github.com/tieo/proj/internal/tmux"
@@ -47,13 +48,14 @@ func openInTmux(cfg config.Config, p projects.Project) error {
 		// Already running under the right name; fall through to attach.
 	case "":
 		cmdLine := strings.NewReplacer("{name}", shellout.Quote(p.Name), "{dir}", shellout.Quote(p.Dir)).Replace(cfg.Claude.Command)
-		// Always append the resume flag (e.g. -c / --continue). Claude's
-		// --continue is a no-op when the directory has no prior session, so
-		// there's no need to gate on a HasHistory probe, and that probe was
-		// unreliable anyway: when proj runs in WSL but launches claude.exe via
-		// interop, the two disagree on $HOME and the project-path encoding, so
-		// the probe looked in the wrong ~/.claude and never found the history.
-		if cfg.Claude.ResumeFlag != "" {
+		// Append the resume flag only when there's a transcript to resume.
+		// Claude's --continue is NOT a no-op on an empty history: it exits
+		// with "No deferred tool marker found in the resumed session", which
+		// tears the brand-new pane down before anyone can attach. So gate it
+		// on HasHistory. The WSL probe was unreliable for interop launches,
+		// but Linux native (the common case) is correct, and a missed
+		// resume there is recoverable; a launch failure here is not.
+		if cfg.Claude.ResumeFlag != "" && daemon.HasHistory(p.Dir) {
 			cmdLine += " " + cfg.Claude.ResumeFlag
 		}
 		// Run claude as the pane's program with no trailing shell. When claude

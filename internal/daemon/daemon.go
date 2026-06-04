@@ -494,7 +494,7 @@ func launchSession(cfg Config, name, dir string) {
 	command := ""
 	if cfg.ClaudeCommand != "" {
 		cmdLine := strings.NewReplacer("{name}", shellout.Quote(name), "{dir}", shellout.Quote(dir)).Replace(cfg.ClaudeCommand)
-		if cfg.ClaudeResumeFlag != "" && hasHistory(dir) {
+		if cfg.ClaudeResumeFlag != "" && HasHistory(dir) {
 			cmdLine += " " + cfg.ClaudeResumeFlag
 		}
 		command = cmdLine + `; exec "${SHELL:-bash}"`
@@ -504,8 +504,8 @@ func launchSession(cfg Config, name, dir string) {
 	}
 }
 
-// hasHistory reports whether Claude Code has a prior session transcript for dir.
-func hasHistory(dir string) bool {
+// HasHistory reports whether Claude Code has a prior session transcript for dir.
+func HasHistory(dir string) bool {
 	entries, err := os.ReadDir(claudeProjectDir(dir))
 	if err != nil {
 		return false
