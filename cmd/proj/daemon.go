@@ -290,8 +290,8 @@ func runDaemonStatus(cmd *cobra.Command, args []string) error {
 		fmt.Println("     Loaded: (manage via `launchctl print gui/$UID/com.proj.daemon`)")
 	}
 
-	fmt.Printf("     Config: poll=%s  max_wait=%s  jitter=%s  resume=%q\n",
-		formatDur(cfg.Poll), formatDur(cfg.MaxWait), formatDur(cfg.Jitter), cfg.ResumeText)
+	fmt.Printf("     Config: poll=%s  max_wait=%s  resume=%q\n",
+		formatDur(cfg.Poll), formatDur(cfg.MaxWait), cfg.ResumeText)
 	fmt.Printf("      State: %s\n", cfg.StatePath)
 	if !svc.activeEnter.IsZero() && cfg.Poll > 0 {
 		n := int64(time.Since(svc.activeEnter)/cfg.Poll) + 1
@@ -351,7 +351,6 @@ func daemonConfig() daemon.Config {
 	out := daemon.DefaultConfig()
 	out.Poll = config.Duration(user.Daemon.PollInterval, out.Poll)
 	out.MaxWait = config.Duration(user.Daemon.MaxWait, out.MaxWait)
-	out.Jitter = config.Duration(user.Daemon.Jitter, out.Jitter)
 	if user.Daemon.ResumeText != "" {
 		out.ResumeText = user.Daemon.ResumeText
 	}

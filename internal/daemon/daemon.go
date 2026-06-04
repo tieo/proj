@@ -50,7 +50,6 @@ type State map[string]Tracked
 type Config struct {
 	Poll             time.Duration
 	MaxWait          time.Duration // fallback retry interval when the banner has no parseable time
-	Jitter           time.Duration // max random delay added past the scheduled retry time (uniform in [0, Jitter))
 	DismissGap       time.Duration // pause between Escape and "continue"
 	ResumeText       string
 	CompactText      string // slash command to compact a stuck session
@@ -66,7 +65,6 @@ func DefaultConfig() Config {
 	return Config{
 		Poll:        60 * time.Second,
 		MaxWait:     5 * time.Hour, // fallback retry interval when the banner has no parseable time at all
-		Jitter:      60 * time.Second, // max random delay added past reset, spreads the thundering herd at the reset minute
 		DismissGap:  300 * time.Millisecond,
 		ResumeText:  "continue",
 		CompactText: "/compact",
@@ -921,28 +919,49 @@ func Decide(content string, prev Tracked, now time.Time) Action {
 // MaxWait.
 func nextAttemptAfter(b *Banner, now time.Time, cfg Config) time.Time {
 	if b.Backoff > 0 {
-		return now.Add(b.Backoff + randJitter(cfg.Jitter))
+		return now.Add(b.Backoff + jitterFor(b.Backoff))
 	}
 	if b.Reset.IsZero() {
-		return now.Add(cfg.MaxWait)
+		return now.Add(cfg.MaxWait + jitterFor(cfg.MaxWait))
 	}
 	next := b.Reset
 	for !next.After(now) {
 		next = next.AddDate(0, 0, 1)
 	}
-	return next.Add(randJitter(cfg.Jitter))
+	return next.Add(jitterFor(next.Sub(now)))
 }
 
-// randJitter returns a uniform-random delay in [0, max). The reset minute is
-// the same for every Claude Code client in a given timezone, so every
-// daemon-deferred session firing at reset+constant would all hit the API at
-// the same instant. Spreading them across a window avoids that thundering
-// herd (which itself shows up as "Server is temporarily limiting requests").
-func randJitter(max time.Duration) time.Duration {
-	if max <= 0 {
+// jitterFor returns a random delay in [0, wait/jitterFraction], capped at
+// jitterMax. The jitter scales with the wait so a 24h defer spreads retries
+// across minutes while a 60s backoff only adds a second or so. The reset
+// minute is global to a timezone, so without spreading every deferred client
+// would hit the API at the same instant - exactly the "Server is temporarily
+// limiting requests" burst the transient handler is there to clean up after.
+const (
+	jitterFraction = 60
+	jitterMax      = 5 * time.Minute
+)
+
+func jitterFor(wait time.Duration) time.Duration {
+	bound := jitterBound(wait)
+	if bound <= 0 {
 		return 0
 	}
-	return time.Duration(rand.Int63n(int64(max)))
+	return time.Duration(rand.Int63n(int64(bound)))
+}
+
+// jitterBound returns the upper limit of jitterFor's output for a given wait.
+// Exposed so tests can express expected ranges symbolically rather than
+// invoking jitterFor (which samples).
+func jitterBound(wait time.Duration) time.Duration {
+	if wait <= 0 {
+		return 0
+	}
+	b := wait / jitterFraction
+	if b > jitterMax {
+		b = jitterMax
+	}
+	return b
 }
 
 // mergeRenamedAliases folds the pin and keep-alive flags from stale managed
@@ -1245,7 +1264,7 @@ func recordAction(prev Tracked, p tmux.Pane, b *Banner, now time.Time, cfg Confi
 
 func Run(ctx context.Context, cfg Config) error {
 	slog.Info("started",
-		"poll", cfg.Poll, "max_wait", cfg.MaxWait, "jitter", cfg.Jitter,
+		"poll", cfg.Poll, "max_wait", cfg.MaxWait,
 		"resume_text", cfg.ResumeText, "state", cfg.StatePath)
 	state := LoadState(cfg.StatePath)
 	if len(state) > 0 {

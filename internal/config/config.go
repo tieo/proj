@@ -27,7 +27,6 @@ type ClaudeConfig struct {
 type DaemonConfig struct {
 	PollInterval string `toml:"poll_interval"`
 	MaxWait      string `toml:"max_wait"`
-	Jitter       string `toml:"jitter"`
 	ResumeText   string `toml:"resume_text"`
 	CaptureLines int    `toml:"capture_lines"`
 	KeepAlive    bool   `toml:"keep_alive"`
@@ -48,7 +47,6 @@ func Default() Config {
 		Daemon: DaemonConfig{
 			PollInterval: "60s",
 			MaxWait:      "5h",
-			Jitter:       "1s",
 			ResumeText:   "continue",
 			CaptureLines: 300,
 		},

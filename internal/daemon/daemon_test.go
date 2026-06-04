@@ -310,24 +310,26 @@ func TestNextAttemptAfter_UsesParsedFutureOccurrence(t *testing.T) {
 	now := time.Date(2026, 5, 21, 11, 0, 0, 0, berlin)
 	// Banner says "3am"; nearest-to-now is today's 3am which is in the past.
 	// nextAttemptAfter must advance to tomorrow's 3am, plus a random offset
-	// within [0, Jitter) so deferred clients don't stack on the reset minute.
+	// derived from the wait so deferred clients don't stack on the reset
+	// minute. The jitter ceiling is wait/jitterFraction, capped at jitterMax.
 	reset := time.Date(2026, 5, 21, 3, 0, 0, 0, berlin)
-	jitter := 30 * time.Second
-	cfg := Config{MaxWait: 24 * time.Hour, Jitter: jitter}
+	cfg := Config{MaxWait: 24 * time.Hour}
 	wantBase := time.Date(2026, 5, 22, 3, 0, 0, 0, berlin)
 	got := nextAttemptAfter(&Banner{Reset: reset}, now, cfg)
-	if got.Before(wantBase) || !got.Before(wantBase.Add(jitter)) {
-		t.Errorf("got %v, want in [%v, %v)", got, wantBase, wantBase.Add(jitter))
+	maxJ := jitterBound(wantBase.Sub(now))
+	if got.Before(wantBase) || got.After(wantBase.Add(maxJ)) {
+		t.Errorf("got %v, want in [%v, %v]", got, wantBase, wantBase.Add(maxJ))
 	}
 }
 
 func TestNextAttemptAfter_FallbackWhenUnparseable(t *testing.T) {
 	now := time.Now()
-	cfg := Config{MaxWait: 5 * time.Hour, Jitter: 30 * time.Second}
+	cfg := Config{MaxWait: 5 * time.Hour}
 	got := nextAttemptAfter(&Banner{}, now, cfg) // Reset is zero
-	want := now.Add(5 * time.Hour)
-	if !got.Equal(want) {
-		t.Errorf("got %v, want %v (fallback to now+MaxWait when no parsed time)", got, want)
+	wantBase := now.Add(cfg.MaxWait)
+	maxJ := jitterBound(cfg.MaxWait)
+	if got.Before(wantBase) || got.After(wantBase.Add(maxJ)) {
+		t.Errorf("got %v, want in [%v, %v] (fallback to now+MaxWait+jitter)", got, wantBase, wantBase.Add(maxJ))
 	}
 }
 
@@ -406,27 +408,47 @@ func TestDetect_DatedBanner(t *testing.T) {
 
 func TestNextAttemptAfter_TrustsFutureDate(t *testing.T) {
 	// When the banner says "May 24, 2am" three days from now, schedule
-	// for that reset plus random jitter; trust the parsed reset, no cap.
+	// for that reset plus jitter derived from the wait; trust the parsed
+	// reset, no cap.
 	berlin := mustLoad(t, "Europe/Berlin")
 	now := time.Date(2026, 5, 21, 23, 20, 0, 0, berlin)
 	reset := time.Date(2026, 5, 24, 2, 0, 0, 0, berlin)
-	jitter := 30 * time.Second
-	cfg := Config{MaxWait: 5 * time.Hour, Jitter: jitter}
+	cfg := Config{MaxWait: 5 * time.Hour}
 	got := nextAttemptAfter(&Banner{Reset: reset}, now, cfg)
-	if got.Before(reset) || !got.Before(reset.Add(jitter)) {
-		t.Errorf("got %v, want in [%v, %v) (future date must be trusted, not capped)", got, reset, reset.Add(jitter))
+	maxJ := jitterBound(reset.Sub(now))
+	if got.Before(reset) || got.After(reset.Add(maxJ)) {
+		t.Errorf("got %v, want in [%v, %v] (future date must be trusted, not capped)", got, reset, reset.Add(maxJ))
 	}
 }
 
 func TestNextAttemptAfter_BackoffOverridesReset(t *testing.T) {
 	// Transient banners (Backoff > 0) ignore Reset and schedule a short retry
-	// from now. They override the long usage-reset deferral.
+	// from now + Backoff + jitter. They override the long usage-reset defer.
 	now := time.Date(2026, 5, 21, 11, 0, 0, 0, time.UTC)
-	cfg := Config{MaxWait: 24 * time.Hour, Jitter: 30 * time.Second}
+	cfg := Config{MaxWait: 24 * time.Hour}
 	backoff := 60 * time.Second
 	got := nextAttemptAfter(&Banner{Backoff: backoff}, now, cfg)
-	if got.Before(now.Add(backoff)) || !got.Before(now.Add(backoff+cfg.Jitter)) {
-		t.Errorf("got %v, want in [%v, %v)", got, now.Add(backoff), now.Add(backoff+cfg.Jitter))
+	wantBase := now.Add(backoff)
+	maxJ := jitterBound(backoff)
+	if got.Before(wantBase) || got.After(wantBase.Add(maxJ)) {
+		t.Errorf("got %v, want in [%v, %v]", got, wantBase, wantBase.Add(maxJ))
+	}
+}
+
+func TestJitterFor_ScalesAndCaps(t *testing.T) {
+	// Short wait → small jitter window.
+	if got := jitterFor(60 * time.Second); got < 0 || got >= time.Second {
+		t.Errorf("60s wait: got jitter %v, want < 1s", got)
+	}
+	// Long wait → capped at jitterMax.
+	for i := 0; i < 50; i++ {
+		if got := jitterFor(24 * time.Hour); got < 0 || got >= jitterMax {
+			t.Errorf("24h wait: got jitter %v, want < %v", got, jitterMax)
+		}
+	}
+	// Zero or negative wait → zero jitter.
+	if got := jitterFor(0); got != 0 {
+		t.Errorf("zero wait: got %v, want 0", got)
 	}
 }
 
