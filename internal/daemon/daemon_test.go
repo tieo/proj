@@ -309,13 +309,15 @@ func TestNextAttemptAfter_UsesParsedFutureOccurrence(t *testing.T) {
 	berlin := mustLoad(t, "Europe/Berlin")
 	now := time.Date(2026, 5, 21, 11, 0, 0, 0, berlin)
 	// Banner says "3am"; nearest-to-now is today's 3am which is in the past.
-	// nextAttemptAfter must advance to tomorrow's 3am.
+	// nextAttemptAfter must advance to tomorrow's 3am, plus a random offset
+	// within [0, Jitter) so deferred clients don't stack on the reset minute.
 	reset := time.Date(2026, 5, 21, 3, 0, 0, 0, berlin)
-	cfg := Config{MaxWait: 24 * time.Hour, Jitter: 30 * time.Second}
+	jitter := 30 * time.Second
+	cfg := Config{MaxWait: 24 * time.Hour, Jitter: jitter}
+	wantBase := time.Date(2026, 5, 22, 3, 0, 0, 0, berlin)
 	got := nextAttemptAfter(&Banner{Reset: reset}, now, cfg)
-	want := time.Date(2026, 5, 22, 3, 0, 30, 0, berlin)
-	if !got.Equal(want) {
-		t.Errorf("got %v, want %v", got, want)
+	if got.Before(wantBase) || !got.Before(wantBase.Add(jitter)) {
+		t.Errorf("got %v, want in [%v, %v)", got, wantBase, wantBase.Add(jitter))
 	}
 }
 
@@ -404,15 +406,53 @@ func TestDetect_DatedBanner(t *testing.T) {
 
 func TestNextAttemptAfter_TrustsFutureDate(t *testing.T) {
 	// When the banner says "May 24, 2am" three days from now, schedule
-	// for exactly that time; trust the parsed reset, no cap.
+	// for that reset plus random jitter; trust the parsed reset, no cap.
 	berlin := mustLoad(t, "Europe/Berlin")
 	now := time.Date(2026, 5, 21, 23, 20, 0, 0, berlin)
 	reset := time.Date(2026, 5, 24, 2, 0, 0, 0, berlin)
-	cfg := Config{MaxWait: 5 * time.Hour, Jitter: time.Second}
+	jitter := 30 * time.Second
+	cfg := Config{MaxWait: 5 * time.Hour, Jitter: jitter}
 	got := nextAttemptAfter(&Banner{Reset: reset}, now, cfg)
-	want := reset.Add(time.Second)
-	if !got.Equal(want) {
-		t.Errorf("got %v, want %v (future date must be trusted, not capped)", got, want)
+	if got.Before(reset) || !got.Before(reset.Add(jitter)) {
+		t.Errorf("got %v, want in [%v, %v) (future date must be trusted, not capped)", got, reset, reset.Add(jitter))
+	}
+}
+
+func TestNextAttemptAfter_BackoffOverridesReset(t *testing.T) {
+	// Transient banners (Backoff > 0) ignore Reset and schedule a short retry
+	// from now. They override the long usage-reset deferral.
+	now := time.Date(2026, 5, 21, 11, 0, 0, 0, time.UTC)
+	cfg := Config{MaxWait: 24 * time.Hour, Jitter: 30 * time.Second}
+	backoff := 60 * time.Second
+	got := nextAttemptAfter(&Banner{Backoff: backoff}, now, cfg)
+	if got.Before(now.Add(backoff)) || !got.Before(now.Add(backoff+cfg.Jitter)) {
+		t.Errorf("got %v, want in [%v, %v)", got, now.Add(backoff), now.Add(backoff+cfg.Jitter))
+	}
+}
+
+func TestDetect_TransientPattern(t *testing.T) {
+	content := "  ⎿  API Error: Server is temporarily limiting requests (not your usage limit) · Rate limited"
+	b := Detect(content, time.Now())
+	if b == nil {
+		t.Fatal("expected transient banner, got nil")
+	}
+	if b.Backoff <= 0 {
+		t.Errorf("transient banner must carry a Backoff, got %v", b.Backoff)
+	}
+}
+
+func TestDecide_TransientCooldown(t *testing.T) {
+	content := "  ⎿  API Error: Server is temporarily limiting requests (not your usage limit) · Rate limited"
+	now := time.Now()
+	// Just acted: should wait through the backoff before retrying.
+	prev := Tracked{LastActed: now.Add(-10 * time.Second)}
+	if got := Decide(content, prev, now); got != ActWait {
+		t.Errorf("within backoff: got %v, want ActWait", got)
+	}
+	// Acted longer ago than the backoff window: should retry.
+	prev = Tracked{LastActed: now.Add(-2 * time.Minute)}
+	if got := Decide(content, prev, now); got != ActResume {
+		t.Errorf("past backoff: got %v, want ActResume", got)
 	}
 }
 

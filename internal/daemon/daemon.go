@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"math/rand"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -23,9 +24,13 @@ import (
 )
 
 type Banner struct {
-	// Reset is the parsed reset time from the banner.
+	// Reset is the parsed reset time from a usage-limit banner.
 	Reset time.Time
-	Text  string
+	// Backoff is set for transient errors that should be retried after a short
+	// pause (e.g. "Server is temporarily limiting requests · Rate limited"),
+	// not deferred until a usage reset. When non-zero it overrides Reset.
+	Backoff time.Duration
+	Text    string
 }
 
 type Tracked struct {
@@ -45,7 +50,7 @@ type State map[string]Tracked
 type Config struct {
 	Poll             time.Duration
 	MaxWait          time.Duration // fallback retry interval when the banner has no parseable time
-	Jitter           time.Duration // added to the scheduled retry time
+	Jitter           time.Duration // max random delay added past the scheduled retry time (uniform in [0, Jitter))
 	DismissGap       time.Duration // pause between Escape and "continue"
 	ResumeText       string
 	CompactText      string // slash command to compact a stuck session
@@ -61,7 +66,7 @@ func DefaultConfig() Config {
 	return Config{
 		Poll:        60 * time.Second,
 		MaxWait:     5 * time.Hour, // fallback retry interval when the banner has no parseable time at all
-		Jitter:      time.Second,   // reset times are accurate to the minute; 1s grace is enough
+		Jitter:      60 * time.Second, // max random delay added past reset, spreads the thundering herd at the reset minute
 		DismissGap:  300 * time.Millisecond,
 		ResumeText:  "continue",
 		CompactText: "/compact",
@@ -90,6 +95,22 @@ const recentWindow = 2000
 // real banner (rendered by Claude's TUI) from the same phrase appearing
 // in prose, in a code block, or in user-typed input.
 const toolPrefix = '⎿'
+
+// transientShortBackoff is the retry delay used when Claude Code reports the
+// server-side "temporarily limiting" rate limit. Distinct from a usage-limit
+// banner: the API is reachable but throttled, so a few-minute wait suffices.
+// Combined with randomized jitter in nextAttemptAfter, this also spreads the
+// thundering herd of every deferred client retrying at the same reset minute.
+const transientShortBackoff = 60 * time.Second
+
+// transientPattern matches Claude Code's gateway rate-limit error:
+//
+//	⎿  API Error: Server is temporarily limiting requests (not your usage limit) · Rate limited
+//
+// Distinct from the apiErrorRE (which expects a numeric status and JSON), this
+// is a free-text reply that arrives when many clients hammer the API at the
+// same instant (typically right at a usage-reset minute).
+var transientPattern = regexp.MustCompile(`⎿` + sp + `+API Error:` + sp + `+Server is temporarily limiting requests`)
 
 var bannerPatterns = []*regexp.Regexp{
 	// Verified banner formats from real Claude Code (CLI TUI):
@@ -269,6 +290,18 @@ func Detect(content string, now time.Time) *Banner {
 	threshold := len(content) - recentWindow
 	if threshold < 0 {
 		threshold = 0
+	}
+	// Transient gateway rate-limit takes precedence when present: it's only
+	// rendered after a retry, so a hit here means the previous "continue" was
+	// throttled and another short-delay retry is the right next step - not
+	// deferring to the next usage reset. The regex already includes the ⎿
+	// tool-output marker so no further line-prefix check is needed.
+	if m := transientPattern.FindStringIndex(content); m != nil && m[0] >= threshold {
+		text := strings.Join(strings.Fields(content[m[0]:m[1]]), " ")
+		if len(text) > 160 {
+			text = text[:160]
+		}
+		return &Banner{Backoff: transientShortBackoff, Text: text}
 	}
 	for _, re := range bannerPatterns {
 		matches := re.FindAllStringSubmatchIndex(content, -1)
@@ -861,8 +894,19 @@ const (
 )
 
 func Decide(content string, prev Tracked, now time.Time) Action {
-	if Detect(content, now) == nil {
+	b := Detect(content, now)
+	if b == nil {
 		return ActNone
+	}
+	// Transient errors override any long deferral from a stale usage banner:
+	// the previous defer was scheduled for a usage reset, but the live banner
+	// says we're being throttled and just need to try again soon. Honour the
+	// backoff window since the last attempt to avoid hammering on every poll.
+	if b.Backoff > 0 {
+		if !prev.LastActed.IsZero() && now.Sub(prev.LastActed) < b.Backoff {
+			return ActWait
+		}
+		return ActResume
 	}
 	if !prev.NextAttempt.IsZero() && now.Before(prev.NextAttempt) {
 		return ActWait
@@ -876,6 +920,9 @@ func Decide(content string, prev Tracked, now time.Time) Action {
 // banner had no parseable time at all, fall back to a fixed retry after
 // MaxWait.
 func nextAttemptAfter(b *Banner, now time.Time, cfg Config) time.Time {
+	if b.Backoff > 0 {
+		return now.Add(b.Backoff + randJitter(cfg.Jitter))
+	}
 	if b.Reset.IsZero() {
 		return now.Add(cfg.MaxWait)
 	}
@@ -883,7 +930,19 @@ func nextAttemptAfter(b *Banner, now time.Time, cfg Config) time.Time {
 	for !next.After(now) {
 		next = next.AddDate(0, 0, 1)
 	}
-	return next.Add(cfg.Jitter)
+	return next.Add(randJitter(cfg.Jitter))
+}
+
+// randJitter returns a uniform-random delay in [0, max). The reset minute is
+// the same for every Claude Code client in a given timezone, so every
+// daemon-deferred session firing at reset+constant would all hit the API at
+// the same instant. Spreading them across a window avoids that thundering
+// herd (which itself shows up as "Server is temporarily limiting requests").
+func randJitter(max time.Duration) time.Duration {
+	if max <= 0 {
+		return 0
+	}
+	return time.Duration(rand.Int63n(int64(max)))
 }
 
 // mergeRenamedAliases folds the pin and keep-alive flags from stale managed
