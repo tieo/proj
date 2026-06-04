@@ -316,7 +316,7 @@ func TestNextAttemptAfter_UsesParsedFutureOccurrence(t *testing.T) {
 	cfg := Config{MaxWait: 24 * time.Hour}
 	wantBase := time.Date(2026, 5, 22, 3, 0, 0, 0, berlin)
 	got := nextAttemptAfter(&Banner{Reset: reset}, now, cfg)
-	maxJ := jitterBound(wantBase.Sub(now))
+	maxJ := jitterMax
 	if got.Before(wantBase) || got.After(wantBase.Add(maxJ)) {
 		t.Errorf("got %v, want in [%v, %v]", got, wantBase, wantBase.Add(maxJ))
 	}
@@ -327,7 +327,7 @@ func TestNextAttemptAfter_FallbackWhenUnparseable(t *testing.T) {
 	cfg := Config{MaxWait: 5 * time.Hour}
 	got := nextAttemptAfter(&Banner{}, now, cfg) // Reset is zero
 	wantBase := now.Add(cfg.MaxWait)
-	maxJ := jitterBound(cfg.MaxWait)
+	maxJ := jitterMax
 	if got.Before(wantBase) || got.After(wantBase.Add(maxJ)) {
 		t.Errorf("got %v, want in [%v, %v] (fallback to now+MaxWait+jitter)", got, wantBase, wantBase.Add(maxJ))
 	}
@@ -415,7 +415,7 @@ func TestNextAttemptAfter_TrustsFutureDate(t *testing.T) {
 	reset := time.Date(2026, 5, 24, 2, 0, 0, 0, berlin)
 	cfg := Config{MaxWait: 5 * time.Hour}
 	got := nextAttemptAfter(&Banner{Reset: reset}, now, cfg)
-	maxJ := jitterBound(reset.Sub(now))
+	maxJ := jitterMax
 	if got.Before(reset) || got.After(reset.Add(maxJ)) {
 		t.Errorf("got %v, want in [%v, %v] (future date must be trusted, not capped)", got, reset, reset.Add(maxJ))
 	}
@@ -429,26 +429,17 @@ func TestNextAttemptAfter_BackoffOverridesReset(t *testing.T) {
 	backoff := 60 * time.Second
 	got := nextAttemptAfter(&Banner{Backoff: backoff}, now, cfg)
 	wantBase := now.Add(backoff)
-	maxJ := jitterBound(backoff)
+	maxJ := jitterMax
 	if got.Before(wantBase) || got.After(wantBase.Add(maxJ)) {
 		t.Errorf("got %v, want in [%v, %v]", got, wantBase, wantBase.Add(maxJ))
 	}
 }
 
-func TestJitterFor_ScalesAndCaps(t *testing.T) {
-	// Short wait → small jitter window.
-	if got := jitterFor(60 * time.Second); got < 0 || got >= time.Second {
-		t.Errorf("60s wait: got jitter %v, want < 1s", got)
-	}
-	// Long wait → capped at jitterMax.
-	for i := 0; i < 50; i++ {
-		if got := jitterFor(24 * time.Hour); got < 0 || got >= jitterMax {
-			t.Errorf("24h wait: got jitter %v, want < %v", got, jitterMax)
+func TestJitter_InRange(t *testing.T) {
+	for i := 0; i < 100; i++ {
+		if got := jitter(); got < 0 || got >= jitterMax {
+			t.Fatalf("got %v, want in [0, %v)", got, jitterMax)
 		}
-	}
-	// Zero or negative wait → zero jitter.
-	if got := jitterFor(0); got != 0 {
-		t.Errorf("zero wait: got %v, want 0", got)
 	}
 }
 

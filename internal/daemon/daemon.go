@@ -919,49 +919,29 @@ func Decide(content string, prev Tracked, now time.Time) Action {
 // MaxWait.
 func nextAttemptAfter(b *Banner, now time.Time, cfg Config) time.Time {
 	if b.Backoff > 0 {
-		return now.Add(b.Backoff + jitterFor(b.Backoff))
+		return now.Add(b.Backoff + jitter())
 	}
 	if b.Reset.IsZero() {
-		return now.Add(cfg.MaxWait + jitterFor(cfg.MaxWait))
+		return now.Add(cfg.MaxWait + jitter())
 	}
 	next := b.Reset
 	for !next.After(now) {
 		next = next.AddDate(0, 0, 1)
 	}
-	return next.Add(jitterFor(next.Sub(now)))
+	return next.Add(jitter())
 }
 
-// jitterFor returns a random delay in [0, wait/jitterFraction], capped at
-// jitterMax. The jitter scales with the wait so a 24h defer spreads retries
-// across minutes while a 60s backoff only adds a second or so. The reset
-// minute is global to a timezone, so without spreading every deferred client
-// would hit the API at the same instant - exactly the "Server is temporarily
-// limiting requests" burst the transient handler is there to clean up after.
-const (
-	jitterFraction = 60
-	jitterMax      = 5 * time.Minute
-)
+// jitter returns a random delay in [0, jitterMax). The reset minute is
+// global to a timezone, so without spread every deferred client would hit
+// the API at the same instant - exactly the "Server is temporarily limiting
+// requests" burst the transient handler is there to clean up after. The
+// window doesn't need to scale with the wait; the goal is just to break up
+// the thundering herd at the boundary, which a few tens of seconds does
+// regardless of whether the wait was a minute or a day.
+const jitterMax = 30 * time.Second
 
-func jitterFor(wait time.Duration) time.Duration {
-	bound := jitterBound(wait)
-	if bound <= 0 {
-		return 0
-	}
-	return time.Duration(rand.Int63n(int64(bound)))
-}
-
-// jitterBound returns the upper limit of jitterFor's output for a given wait.
-// Exposed so tests can express expected ranges symbolically rather than
-// invoking jitterFor (which samples).
-func jitterBound(wait time.Duration) time.Duration {
-	if wait <= 0 {
-		return 0
-	}
-	b := wait / jitterFraction
-	if b > jitterMax {
-		b = jitterMax
-	}
-	return b
+func jitter() time.Duration {
+	return time.Duration(rand.Int63n(int64(jitterMax)))
 }
 
 // mergeRenamedAliases folds the pin and keep-alive flags from stale managed
