@@ -19,7 +19,8 @@ type Registry struct {
 }
 
 type ProjectMeta struct {
-	Tags []string `toml:"tags"`
+	Tags   []string `toml:"tags,omitempty"`
+	Skills []string `toml:"skills,omitempty"` // Claude Code slash-skills auto-sent on launch
 }
 
 // RegistryPath returns the location of the registry file.
@@ -83,7 +84,8 @@ func (r Registry) Tags(name string) []string {
 }
 
 // SetTags assigns tags to name, persisting the registry. An empty tag list
-// removes the project's entry entirely.
+// drops the tags but keeps the entry alive when other metadata (Skills) is
+// still set; if there's nothing left, the whole entry is removed.
 func (r Registry) SetTags(name string, tags []string) error {
 	for _, t := range tags {
 		if err := ValidateTag(t); err != nil {
@@ -91,10 +93,61 @@ func (r Registry) SetTags(name string, tags []string) error {
 		}
 	}
 	clean := normalize(tags)
-	if len(clean) == 0 {
+	m := r.Projects[name]
+	m.Tags = clean
+	if len(m.Tags) == 0 && len(m.Skills) == 0 {
 		delete(r.Projects, name)
 	} else {
-		r.Projects[name] = ProjectMeta{Tags: clean}
+		r.Projects[name] = m
+	}
+	return r.Save()
+}
+
+// Skills returns the skills configured for name. nil if none.
+func (r Registry) Skills(name string) []string {
+	m, ok := r.Projects[name]
+	if !ok {
+		return nil
+	}
+	out := make([]string, 0, len(m.Skills))
+	seen := make(map[string]struct{}, len(m.Skills))
+	for _, s := range m.Skills {
+		s = strings.TrimSpace(s)
+		if s == "" {
+			continue
+		}
+		if _, ok := seen[s]; ok {
+			continue
+		}
+		seen[s] = struct{}{}
+		out = append(out, s)
+	}
+	return out
+}
+
+// SetSkills assigns skills to name (preserving any existing tags). An empty
+// skill list drops the skills; if nothing else is set on the entry it's
+// removed entirely.
+func (r Registry) SetSkills(name string, skills []string) error {
+	clean := make([]string, 0, len(skills))
+	seen := make(map[string]struct{})
+	for _, s := range skills {
+		s = strings.TrimSpace(s)
+		if s == "" || strings.HasPrefix(s, "/") {
+			return fmt.Errorf("skill %q must be a bare slash-command name without the leading '/'", s)
+		}
+		if _, dup := seen[s]; dup {
+			continue
+		}
+		seen[s] = struct{}{}
+		clean = append(clean, s)
+	}
+	m := r.Projects[name]
+	m.Skills = clean
+	if len(m.Tags) == 0 && len(m.Skills) == 0 {
+		delete(r.Projects, name)
+	} else {
+		r.Projects[name] = m
 	}
 	return r.Save()
 }

@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -65,8 +66,16 @@ func openInTmux(cfg config.Config, p projects.Project) error {
 		// fresh `claude -c` instead of re-attaching a leftover shell. Surviving a
 		// closed terminal is handled at the server level (see tmux.NewSession /
 		// ensureServer), not by keeping a shell in the pane.
-		if _, err := tmux.NewSession(session, p.Dir, cmdLine); err != nil {
+		pane, err := tmux.NewSession(session, p.Dir, cmdLine)
+		if err != nil {
 			return fmt.Errorf("create tmux session: %w", err)
+		}
+		// Per-project skills (e.g. "caveman") are auto-sent as slash commands
+		// once claude's input box is up. Runs synchronously before attach so
+		// the user lands in a session that's already configured; capped at a
+		// short timeout so a stuck launch can't hold up the foreground.
+		if len(p.Skills) > 0 {
+			tmux.ApplySlashCommands(pane, p.Skills, 10*time.Second)
 		}
 	default:
 		// A session for this dir exists under a stale (old-tag) name; bring its

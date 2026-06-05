@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/tieo/proj/internal/shellout"
 )
@@ -85,6 +86,46 @@ func CapturePane(target string, lines int) string {
 		args = append(args, "-S", fmt.Sprintf("-%d", lines))
 	}
 	return shellout.Run("tmux", args...)
+}
+
+// claudeReadyMarkers are substrings the Claude Code TUI renders only once the
+// input box is live and accepting keystrokes (not during startup, not behind
+// the trust-folder prompt). Matching either is sufficient.
+var claudeReadyMarkers = []string{"bypass permissions", "? for shortcuts"}
+
+// WaitForClaudeReady polls the pane until one of the live-input markers is
+// visible, or timeout elapses. Returns whether the pane became ready.
+func WaitForClaudeReady(target string, timeout time.Duration) bool {
+	deadline := time.Now().Add(timeout)
+	for {
+		c := CapturePane(target, 0)
+		for _, m := range claudeReadyMarkers {
+			if strings.Contains(c, m) {
+				return true
+			}
+		}
+		if time.Now().After(deadline) {
+			return false
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+}
+
+// ApplySlashCommands fires "/cmd"+Enter into the pane for each entry, after
+// waiting for Claude's input box to settle. No-op when slashes is empty or
+// the pane never reaches readiness (e.g. claude is sitting on the trust-folder
+// prompt for a brand-new dir - we don't want slash commands typed during that).
+func ApplySlashCommands(target string, slashes []string, timeout time.Duration) {
+	if len(slashes) == 0 {
+		return
+	}
+	if !WaitForClaudeReady(target, timeout) {
+		return
+	}
+	for _, s := range slashes {
+		_ = SendKeys(target, "/"+s)
+		time.Sleep(200 * time.Millisecond)
+	}
 }
 
 // NewSession creates a detached session in `dir` and returns the new pane id.

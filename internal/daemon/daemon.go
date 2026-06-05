@@ -19,6 +19,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/tieo/proj/internal/projects"
 	"github.com/tieo/proj/internal/shellout"
 	"github.com/tieo/proj/internal/tmux"
 )
@@ -502,8 +503,19 @@ func launchSession(cfg Config, name, dir string) {
 		}
 		command = cmdLine
 	}
-	if _, err := tmux.NewSession(name, dir, command); err != nil {
+	pane, err := tmux.NewSession(name, dir, command)
+	if err != nil {
 		slog.Error("recreate session failed", "session", name, "err", err)
+		return
+	}
+	// Apply the project's configured slash-skills (e.g. "caveman") once claude's
+	// input box is up, same as `proj <name>` does. Project key in the registry
+	// is the dir's basename - the flat layout means every project lives at
+	// baseDir/<name>/.
+	if reg, err := projects.LoadRegistry(); err == nil {
+		if skills := reg.Skills(filepath.Base(dir)); len(skills) > 0 {
+			tmux.ApplySlashCommands(pane, skills, 10*time.Second)
+		}
 	}
 }
 
