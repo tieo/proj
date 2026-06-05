@@ -46,7 +46,7 @@ func openInTmux(cfg config.Config, p projects.Project) error {
 	// one for the same dir.
 	switch existing := tmux.SessionForPath(p.Dir); existing {
 	case session:
-		// Already running under the right name; fall through to attach.
+		// Already running under the right name; re-apply skills below.
 	case "":
 		cmdLine := strings.NewReplacer("{name}", shellout.Quote(p.Name), "{dir}", shellout.Quote(p.Dir)).Replace(cfg.Claude.Command)
 		// Append the resume flag only when there's a transcript to resume.
@@ -66,21 +66,21 @@ func openInTmux(cfg config.Config, p projects.Project) error {
 		// fresh `claude -c` instead of re-attaching a leftover shell. Surviving a
 		// closed terminal is handled at the server level (see tmux.NewSession /
 		// ensureServer), not by keeping a shell in the pane.
-		pane, err := tmux.NewSession(session, p.Dir, cmdLine)
-		if err != nil {
+		if _, err := tmux.NewSession(session, p.Dir, cmdLine); err != nil {
 			return fmt.Errorf("create tmux session: %w", err)
-		}
-		// Per-project skills (e.g. "caveman") are auto-sent as slash commands
-		// once claude's input box is up. Runs synchronously before attach so
-		// the user lands in a session that's already configured; capped at a
-		// short timeout so a stuck launch can't hold up the foreground.
-		if len(p.Skills) > 0 {
-			tmux.ApplySlashCommands(pane, p.Skills, 10*time.Second)
 		}
 	default:
 		// A session for this dir exists under a stale (old-tag) name; bring its
 		// name in line with the current tags before attaching.
 		_ = tmux.RenameSession(existing, session)
+	}
+	// Per-project skills (e.g. "caveman") fire on every open, including
+	// re-attach to a live session - that way "this project always runs in
+	// caveman mode" stays consistent without the user typing it each time.
+	// Waits for claude's input box to settle so commands don't land mid-init
+	// (or on the trust-folder prompt for a brand-new dir).
+	if len(p.Skills) > 0 {
+		tmux.ApplySlashCommands(session, p.Skills, 10*time.Second)
 	}
 	if headless {
 		return nil
