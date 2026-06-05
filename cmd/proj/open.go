@@ -80,7 +80,7 @@ func openInTmux(cfg config.Config, p projects.Project) error {
 	// Waits for claude's input box to settle so commands don't land mid-init
 	// (or on the trust-folder prompt for a brand-new dir).
 	if len(p.Skills) > 0 {
-		tmux.ApplySlashCommands(session, p.Skills, 10*time.Second)
+		tmux.ApplySlashCommands(session, p.Skills, 30*time.Second)
 	}
 	if headless {
 		return nil

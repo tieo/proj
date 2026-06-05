@@ -514,7 +514,7 @@ func launchSession(cfg Config, name, dir string) {
 	// baseDir/<name>/.
 	if reg, err := projects.LoadRegistry(); err == nil {
 		if skills := reg.Skills(filepath.Base(dir)); len(skills) > 0 {
-			tmux.ApplySlashCommands(pane, skills, 10*time.Second)
+			tmux.ApplySlashCommands(pane, skills, 30*time.Second)
 		}
 	}
 }
