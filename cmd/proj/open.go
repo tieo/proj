@@ -53,10 +53,9 @@ func openInTmux(cfg config.Config, p projects.Project) error {
 		// Claude's --continue is NOT a no-op on an empty history: it exits
 		// with "No deferred tool marker found in the resumed session", which
 		// tears the brand-new pane down before anyone can attach. So gate it
-		// on HasHistory. The WSL probe was unreliable for interop launches,
-		// but Linux native (the common case) is correct, and a missed
-		// resume there is recoverable; a launch failure here is not.
-		if cfg.Claude.ResumeFlag != "" && daemon.HasHistory(p.Dir) {
+		// on HasHistory, which resolves the real transcript location (the
+		// Windows home under WSL, where claude.exe runs via interop).
+		if cfg.Claude.ResumeFlag != "" && daemon.HasHistory(cfg.Claude.Home, p.Dir) {
 			cmdLine += " " + cfg.Claude.ResumeFlag
 		}
 		// Run claude as the pane's program with no trailing shell. When claude

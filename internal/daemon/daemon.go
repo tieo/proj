@@ -60,6 +60,7 @@ type Config struct {
 	KeepAlive        bool // recreate vanished sessions that weren't cleanly closed
 	ClaudeCommand    string
 	ClaudeResumeFlag string
+	ClaudeHome       string // [claude] home override; where Claude Code keeps transcripts (the Windows home under WSL)
 }
 
 func DefaultConfig() Config {
@@ -498,7 +499,7 @@ func launchSession(cfg Config, name, dir string) {
 	command := ""
 	if cfg.ClaudeCommand != "" {
 		cmdLine := strings.NewReplacer("{name}", shellout.Quote(name), "{dir}", shellout.Quote(dir)).Replace(cfg.ClaudeCommand)
-		if cfg.ClaudeResumeFlag != "" && HasHistory(dir) {
+		if cfg.ClaudeResumeFlag != "" && HasHistory(cfg.ClaudeHome, dir) {
 			cmdLine += " " + cfg.ClaudeResumeFlag
 		}
 		command = cmdLine
@@ -520,8 +521,15 @@ func launchSession(cfg Config, name, dir string) {
 }
 
 // HasHistory reports whether Claude Code has a prior session transcript for dir.
-func HasHistory(dir string) bool {
-	entries, err := os.ReadDir(claudeProjectDir(dir))
+// homeOverride is the [claude] home setting (may be ""); claudeRoot uses it to
+// find the right .claude, which is what makes this correct under WSL, where
+// transcripts live in the Windows home rather than $HOME.
+func HasHistory(homeOverride, dir string) bool {
+	pd := locateProjectDir(claudeRoot(homeOverride), dir, tmux.IsWSL())
+	if pd == "" {
+		return false
+	}
+	entries, err := os.ReadDir(pd)
 	if err != nil {
 		return false
 	}
@@ -533,18 +541,83 @@ func HasHistory(dir string) bool {
 	return false
 }
 
+// claudeRoot returns the .claude directory Claude Code actually uses for a
+// working directory's transcripts. On bare Linux that is $HOME/.claude. Under
+// WSL proj runs in Linux but launches claude.exe via interop, which writes to
+// the *Windows* user's home, so probing $HOME/.claude always comes up empty -
+// the bug that made keep-alive recreate sessions with no history. homeOverride
+// ([claude] home) wins when set; otherwise under WSL we look under
+// /mnt/c/Users/<user>, taking the Windows username to match the WSL one (the
+// common setup) and falling back to the sole Users profile that has a .claude.
+func claudeRoot(homeOverride string) string {
+	if homeOverride != "" {
+		return homeOverride
+	}
+	if tmux.IsWSL() {
+		if home, err := os.UserHomeDir(); err == nil {
+			if cand := filepath.Join("/mnt/c/Users", filepath.Base(home), ".claude"); isDir(cand) {
+				return cand
+			}
+		}
+		if m, _ := filepath.Glob("/mnt/c/Users/*/.claude"); len(m) == 1 {
+			return m[0]
+		}
+	}
+	home, _ := os.UserHomeDir()
+	return filepath.Join(home, ".claude")
+}
+
+// locateProjectDir returns the existing Claude Code project directory for
+// workDir under root, or "" if none exists. On bare Linux the directory name is
+// a direct encoding of workDir. Under WSL, claude.exe keys history on the
+// \\wsl.localhost\<distro>\... UNC path; the daemon can't see the distro name
+// (it is absent from the systemd service environment), but the encoded UNC name
+// always ends with the encoding of workDir, so match by that suffix instead.
+func locateProjectDir(root, workDir string, wsl bool) string {
+	projectsDir := filepath.Join(root, "projects")
+	if !wsl {
+		if d := filepath.Join(projectsDir, encodeClaudePath(workDir)); isDir(d) {
+			return d
+		}
+		return ""
+	}
+	suffix := encodeClaudePath(workDir)
+	entries, err := os.ReadDir(projectsDir)
+	if err != nil {
+		return ""
+	}
+	for _, e := range entries {
+		if e.IsDir() && strings.HasSuffix(e.Name(), suffix) {
+			return filepath.Join(projectsDir, e.Name())
+		}
+	}
+	return ""
+}
+
+func isDir(p string) bool {
+	fi, err := os.Stat(p)
+	return err == nil && fi.IsDir()
+}
+
 // claudeProjectDir derives the Claude Code project directory for a given
-// working directory. Claude Code encodes the path by replacing every
-// non-alphanumeric rune with '-' (so '/', '.', '_', ' ' all become '-').
+// working directory on the local home. NOTE: this assumes $HOME/.claude and the
+// plain workDir encoding, so it is correct on bare Linux but not under WSL
+// (where claude.exe writes to the Windows home under a UNC-encoded name). For
+// history detection use HasHistory, which resolves the real location.
 func claudeProjectDir(workDir string) string {
 	home, _ := os.UserHomeDir()
-	encoded := strings.Map(func(r rune) rune {
+	return filepath.Join(home, ".claude", "projects", encodeClaudePath(workDir))
+}
+
+// encodeClaudePath applies Claude Code's project-dir encoding: every
+// non-alphanumeric rune becomes '-' (so '/', '.', '_', ' ', '\' all collapse).
+func encodeClaudePath(p string) string {
+	return strings.Map(func(r rune) rune {
 		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') {
 			return r
 		}
 		return '-'
-	}, workDir)
-	return filepath.Join(home, ".claude", "projects", encoded)
+	}, p)
 }
 
 // claudeMemoryPath derives the Claude Code project memory directory for a

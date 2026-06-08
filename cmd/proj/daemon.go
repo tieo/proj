@@ -360,6 +360,7 @@ func daemonConfig() daemon.Config {
 	out.KeepAlive = user.Daemon.KeepAlive
 	out.ClaudeCommand = user.Claude.Command
 	out.ClaudeResumeFlag = user.Claude.ResumeFlag
+	out.ClaudeHome = user.Claude.Home
 	return out
 }
 
