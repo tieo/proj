@@ -65,6 +65,16 @@ func openInTmux(cfg config.Config, p projects.Project) error {
 		// fresh `claude -c` instead of re-attaching a leftover shell. Surviving a
 		// closed terminal is handled at the server level (see tmux.NewSession /
 		// ensureServer), not by keeping a shell in the pane.
+		//
+		// Mark the session cleanly closed when claude itself exits (Ctrl-D,
+		// /exit): then the daemon's keep-alive leaves it closed instead of
+		// resurrecting it. This runs only on a normal exit of the pane program;
+		// if the pane is killed out from under claude (terminal close, VM
+		// restart, server death) it never runs, so keep-alive still recreates
+		// the session - exactly its purpose. Since claude is the pane program
+		// (no wrapping shell), the shell exit trap in shells/proj.* can't fire,
+		// so the mark has to ride on the launch command itself.
+		cmdLine += "; proj daemon mark-closed " + shellout.Quote(session)
 		if _, err := tmux.NewSession(session, p.Dir, cmdLine); err != nil {
 			return fmt.Errorf("create tmux session: %w", err)
 		}

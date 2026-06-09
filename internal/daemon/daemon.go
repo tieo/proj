@@ -493,8 +493,15 @@ func parseReset(dateStr, timeStr, tzStr string, now time.Time) (time.Time, error
 // there is prior history. The pane closes (and the session ends) when claude
 // exits, matching the `proj <name>` open path; previously the daemon trailed
 // `; exec $SHELL` here, which kept the pane alive in a fresh shell and left
-// the user stranded in a tmux pane after closing claude. Keep-alive sessions
-// that should survive a claude exit will be recreated on the next tick.
+// the user stranded in a tmux pane after closing claude.
+//
+// The launch command marks the session cleanly closed when claude itself
+// exits, so a recreated keep-alive session that the user then quits (Ctrl-D)
+// stays closed instead of being resurrected again. If the pane is killed out
+// from under claude (server death, VM restart) the mark never runs, so
+// keep-alive recreates it on the next tick - which is the point. Mirrors the
+// suffix in cmd/proj/open.go; both are needed because claude is the pane
+// program with no wrapping shell to carry the shells/proj.* exit trap.
 func launchSession(cfg Config, name, dir string) {
 	command := ""
 	if cfg.ClaudeCommand != "" {
@@ -502,7 +509,7 @@ func launchSession(cfg Config, name, dir string) {
 		if cfg.ClaudeResumeFlag != "" && HasHistory(cfg.ClaudeHome, dir) {
 			cmdLine += " " + cfg.ClaudeResumeFlag
 		}
-		command = cmdLine
+		command = cmdLine + "; proj daemon mark-closed " + shellout.Quote(name)
 	}
 	pane, err := tmux.NewSession(name, dir, command)
 	if err != nil {
