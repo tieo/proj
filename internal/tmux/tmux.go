@@ -246,6 +246,12 @@ func applySessionOptions(name string) {
 	// finished claude as a finished session: the dir is left clean and the next
 	// open starts fresh rather than re-attaching a dead pane.
 	_, _ = shellout.RunErr("tmux", "set-option", "-t", name, "remain-on-exit", "off")
+	// Stop the status bar from truncating the session name. tmux's default
+	// status-left-length is 10, but proj's names carry tags ("name@tag+tag")
+	// and routinely exceed that, so they'd render clipped ("[proj@go+t"). The
+	// status-left format is "[#{session_name}] ", so size the field to the name
+	// plus that "[ ] " decoration; the value only caps the field, never pads it.
+	_, _ = shellout.RunErr("tmux", "set-option", "-t", name, "status-left-length", strconv.Itoa(len(name)+4))
 	setScrollStep()
 }
 
