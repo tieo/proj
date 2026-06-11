@@ -126,7 +126,7 @@ func runList(cmd *cobra.Command, args []string) error {
 			indicator: buildIndicator(alive, ms.Pinned, label),
 			name:      p.Name,
 			tags:      strings.Join(p.Tags, " "),
-			model:     daemon.ModelFromDir(p.Dir),
+			model:     daemon.ModelFromDir(cfg.Claude.Home, p.Dir),
 			ts:        sessionTS(p, alive),
 			note:      buildNote(label, ms, tracked, alive, unrCfg.KeepAlive),
 			noteColor: noteColor(label, alive),

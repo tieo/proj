@@ -636,8 +636,8 @@ func claudeMemoryPath(workDir string) string {
 
 // ModelFromDir reads the model name from the most recent JSONL session for
 // the given working directory. Returns "" if the project has no session files.
-func ModelFromDir(workDir string) string {
-	f := recentSessionFile(workDir)
+func ModelFromDir(homeOverride, workDir string) string {
+	f := recentSessionFile(homeOverride, workDir)
 	if f == "" {
 		return ""
 	}
@@ -672,8 +672,13 @@ func ModelFromDir(workDir string) string {
 // if none is found. Call this before sending /clear; /clear causes Claude
 // Code to start a new session file, so the pre-clear file is the most recent
 // one at the time of the call.
-func recentSessionFile(workDir string) string {
-	dir := claudeProjectDir(workDir)
+func recentSessionFile(homeOverride, workDir string) string {
+	// Resolve the real transcript dir, which under WSL is the Windows-home,
+	// UNC-encoded one (see locateProjectDir/claudeRoot), not $HOME/.claude.
+	dir := locateProjectDir(claudeRoot(homeOverride), workDir, tmux.IsWSL())
+	if dir == "" {
+		return ""
+	}
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return ""
@@ -1180,7 +1185,7 @@ func Tick(cfg Config, state State, errorState ErrorState, managed ManagedState, 
 				workDir := tmux.PaneCurrentPath(p.ID)
 				// Extract context BEFORE /clear; /clear causes Claude Code to
 				// start a new session file, so the pre-clear file has the history.
-				sessFile := recentSessionFile(workDir)
+				sessFile := recentSessionFile(cfg.ClaudeHome, workDir)
 				sessContext := extractSessionContext(sessFile)
 				slog.Info("compact failed, clearing conversation",
 					"session", p.Session, "pane", p.ID,
