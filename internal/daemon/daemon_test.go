@@ -788,3 +788,40 @@ func TestSaveLoadState_Roundtrip(t *testing.T) {
 		t.Errorf("roundtrip mismatch: %+v", got)
 	}
 }
+
+func TestRCWatchdog_Detection(t *testing.T) {
+	live := "❯ \n  bypass permissions on (shift+tab to cycle)\n  Remote Control active"
+	if !rcActiveRE.MatchString(live) {
+		t.Error("should detect active RC marker")
+	}
+	dropped := "❯ \n  bypass permissions on (shift+tab to cycle)\n  99% context used"
+	if rcActiveRE.MatchString(dropped) {
+		t.Error("must NOT match RC marker when it's absent")
+	}
+	if !inputBoxRE.MatchString(dropped) {
+		t.Error("dropped pane is still a live claude TUI (input box present)")
+	}
+	// Watchdog should fire only on a live claude pane with RC absent.
+	wouldNudge := inputBoxRE.MatchString(dropped) && !rcActiveRE.MatchString(dropped)
+	if !wouldNudge {
+		t.Error("watchdog should nudge a live pane missing RC")
+	}
+	wouldNudgeLive := inputBoxRE.MatchString(live) && !rcActiveRE.MatchString(live)
+	if wouldNudgeLive {
+		t.Error("watchdog must NOT nudge a pane that already has RC")
+	}
+	if rcFailedRE.MatchString("  /rc failed") == false {
+		t.Error("should detect /rc failed")
+	}
+}
+
+func TestRCEnabled(t *testing.T) {
+	on := Config{ClaudeCommand: "claude --dangerously-skip-permissions --remote-control --remote-control-session-name-prefix {name} -n {name}"}
+	if !rcEnabled(on) {
+		t.Error("rcEnabled should be true when --remote-control present")
+	}
+	off := Config{ClaudeCommand: "claude --dangerously-skip-permissions -n {name}"}
+	if rcEnabled(off) {
+		t.Error("rcEnabled should be false without --remote-control")
+	}
+}

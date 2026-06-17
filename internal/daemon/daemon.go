@@ -148,6 +148,29 @@ var pickerOptionRE = regexp.MustCompile(`(?m)^\s*❯\s+\d+\.\s`)
 // must not be dismissed.
 var inputBoxRE = regexp.MustCompile(`(?i)shift\+tab|\? for shortcuts|bypass permissions|accept edits|plan mode on`)
 
+// rcActiveRE matches Claude Code's status-bar marker shown while Remote Control
+// is bound ("Remote Control active" or "/rc active"). Its ABSENCE on a live
+// claude pane means RC has dropped - claude has no auto-reconnect, so the
+// session silently vanishes from claude.ai/code until someone runs /rc.
+var rcActiveRE = regexp.MustCompile(`(?i)remote control active|/rc active`)
+
+// rcFailedRE matches the failed-bind indicator so the watchdog re-tries it too.
+var rcFailedRE = regexp.MustCompile(`(?i)/rc failed|remote control failed`)
+
+// rcNudgeCooldown bounds how often the watchdog re-sends /rc to one pane, so a
+// session that genuinely can't bind (or one mid-restart) isn't spammed.
+const rcNudgeCooldown = 5 * time.Minute
+
+// rcNudgedAt tracks the last /rc nudge per pane id. Tick runs single-threaded
+// from Run, so no mutex is needed. Pruned alongside dead panes each tick.
+var rcNudgedAt = map[string]time.Time{}
+
+// rcEnabled reports whether the configured launch command opts into Remote
+// Control, so the watchdog only nudges sessions that are supposed to have it.
+func rcEnabled(cfg Config) bool {
+	return strings.Contains(cfg.ClaudeCommand, "--remote-control")
+}
+
 // sp matches any mix of regular spaces and the non-breaking spaces (U+00A0)
 // that Claude Code's TUI uses for padding between its ⎿/❯ markers and text.
 // Go's \s covers only ASCII whitespace, so NBSP must be included explicitly.
@@ -1153,6 +1176,11 @@ func Tick(cfg Config, state State, errorState ErrorState, managed ManagedState, 
 			delete(errorState, id)
 		}
 	}
+	for id := range rcNudgedAt {
+		if _, ok := live[id]; !ok {
+			delete(rcNudgedAt, id)
+		}
+	}
 
 	for _, p := range panes {
 		content := tmux.CapturePane(p.ID, cfg.Capture)
@@ -1167,6 +1195,24 @@ func Tick(cfg Config, state State, errorState ErrorState, managed ManagedState, 
 			} else {
 				time.Sleep(cfg.DismissGap)
 				content = tmux.CapturePane(p.ID, cfg.Capture) // re-read post-dismiss
+			}
+		}
+
+		// 1b) Remote-Control watchdog. Claude Code's RC has no auto-reconnect:
+		//     after a >10min network gap or a stale poll, the binding drops and
+		//     the session disappears from claude.ai/code, even though the
+		//     process is alive. The only recovery is the /rc slash command. If
+		//     this is a live claude pane (input box present) whose RC marker is
+		//     gone, re-send /rc. Cooldown-gated so a session that can't bind
+		//     isn't hammered. Only acts when the launch command opted into RC.
+		if rcEnabled(cfg) && inputBoxRE.MatchString(content) &&
+			!rcActiveRE.MatchString(content) && !HasSelector(content) {
+			if rcFailedRE.MatchString(content) || now.Sub(rcNudgedAt[p.ID]) >= rcNudgeCooldown {
+				slog.Info("remote-control inactive, re-binding", "session", p.Session, "pane", p.ID)
+				if err := tmux.SendKeys(p.ID, "/rc"); err != nil {
+					slog.Error("send /rc failed", "session", p.Session, "err", err)
+				}
+				rcNudgedAt[p.ID] = now
 			}
 		}
 
