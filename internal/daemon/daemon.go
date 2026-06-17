@@ -152,10 +152,35 @@ var inputBoxRE = regexp.MustCompile(`(?i)shift\+tab|\? for shortcuts|bypass perm
 // is bound ("Remote Control active" or "/rc active"). Its ABSENCE on a live
 // claude pane means RC has dropped - claude has no auto-reconnect, so the
 // session silently vanishes from claude.ai/code until someone runs /rc.
+// MUST be matched only against the status line (see rcStatusLine), never the
+// raw capture: the bare phrase appears in conversation output and user input
+// (e.g. someone typing "/rc active") and would otherwise spoof the watchdog.
 var rcActiveRE = regexp.MustCompile(`(?i)remote control active|/rc active`)
 
 // rcFailedRE matches the failed-bind indicator so the watchdog re-tries it too.
+// Like rcActiveRE, status-line-only: "/rc failed" in prose must not fire a nudge.
 var rcFailedRE = regexp.MustCompile(`(?i)/rc failed|remote control failed`)
+
+// statusLineRE isolates Claude Code's bottom status/affordance line - the one
+// carrying the ⏵⏵ permission-mode cycler (U+23F5×2) or, in default mode, the
+// "? for shortcuts" hint. The RC marker is right-aligned on this same line.
+// Both anchors are TUI chrome: never emitted in Claude's prose, never present
+// in user-typed input. Restricting RC detection to this line is what makes the
+// watchdog robust - conversation text elsewhere in the capture cannot spoof it,
+// the same discipline apiErrorRE uses with its ⎿ anchor.
+var statusLineRE = regexp.MustCompile(`(?m)^.*(?:⏵⏵|\? for shortcuts).*$`)
+
+// rcStatusLine returns Claude Code's bottom status line and whether one was
+// found. Absence means the pane is not a live, idle Claude TUI (startup,
+// trust-folder prompt, a plain shell), so the watchdog must leave it alone.
+// The last match wins: the live status bar is the bottom-most such line.
+func rcStatusLine(content string) (string, bool) {
+	ms := statusLineRE.FindAllString(content, -1)
+	if len(ms) == 0 {
+		return "", false
+	}
+	return ms[len(ms)-1], true
+}
 
 // rcNudgeCooldown bounds how often the watchdog re-sends /rc to one pane, so a
 // session that genuinely can't bind (or one mid-restart) isn't spammed.
@@ -1205,9 +1230,11 @@ func Tick(cfg Config, state State, errorState ErrorState, managed ManagedState, 
 		//     this is a live claude pane (input box present) whose RC marker is
 		//     gone, re-send /rc. Cooldown-gated so a session that can't bind
 		//     isn't hammered. Only acts when the launch command opted into RC.
-		if rcEnabled(cfg) && inputBoxRE.MatchString(content) &&
-			!rcActiveRE.MatchString(content) && !HasSelector(content) {
-			if rcFailedRE.MatchString(content) || now.Sub(rcNudgedAt[p.ID]) >= rcNudgeCooldown {
+		//     RC markers are matched against the status line ALONE (rcStatusLine)
+		//     so prose/input mentioning "/rc active" or "/rc failed" can't spoof it.
+		if status, ok := rcStatusLine(content); rcEnabled(cfg) && ok &&
+			!rcActiveRE.MatchString(status) && !HasSelector(content) {
+			if rcFailedRE.MatchString(status) || now.Sub(rcNudgedAt[p.ID]) >= rcNudgeCooldown {
 				slog.Info("remote-control inactive, re-binding", "session", p.Session, "pane", p.ID)
 				if err := tmux.SendKeys(p.ID, "/rc"); err != nil {
 					slog.Error("send /rc failed", "session", p.Session, "err", err)
