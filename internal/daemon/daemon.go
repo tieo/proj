@@ -182,6 +182,16 @@ func rcStatusLine(content string) (string, bool) {
 	return ms[len(ms)-1], true
 }
 
+// rcPickerRE matches the Remote Control management overlay that `/rc` opens when
+// RC is ALREADY bound (header "Remote Control", options "Disconnect this
+// session" / "Show QR code" / "Continue"). It is not a usage-limit picker, so
+// HasSelector misses it (its options have no "❯ <digit>." form), and it would
+// sit forever unless dismissed. Its presence also PROVES RC is active, so the
+// watchdog must treat it as bound and never re-send /rc (which would just
+// reopen it). Anchored on the two option labels together - unique to this
+// overlay - so prose mentioning "Disconnect" can't trip it.
+var rcPickerRE = regexp.MustCompile(`(?s)Disconnect this session.*Show QR code`)
+
 // rcNudgeCooldown bounds how often the watchdog re-sends /rc to one pane, so a
 // session that genuinely can't bind (or one mid-restart) isn't spammed.
 const rcNudgeCooldown = 5 * time.Minute
@@ -1213,7 +1223,10 @@ func Tick(cfg Config, state State, errorState ErrorState, managed ManagedState, 
 		// 1) Dismiss any known Claude interactive picker. Independent of
 		//    banner state; a stuck prompt is itself something to resolve.
 		//    Esc is idempotent; if already gone next tick, nothing happens.
-		if HasSelector(content) {
+		//    The /rc management overlay (rcPickerRE) is handled here too: it
+		//    has no "❯ <digit>." option so HasSelector misses it, and "Esc to
+		//    continue" is its documented dismiss.
+		if HasSelector(content) || rcPickerRE.MatchString(content) {
 			slog.Info("dismiss selector", "session", p.Session, "pane", p.ID)
 			if err := tmux.SendKey(p.ID, "Escape"); err != nil {
 				slog.Error("send Escape failed", "session", p.Session, "err", err)
@@ -1232,8 +1245,12 @@ func Tick(cfg Config, state State, errorState ErrorState, managed ManagedState, 
 		//     isn't hammered. Only acts when the launch command opted into RC.
 		//     RC markers are matched against the status line ALONE (rcStatusLine)
 		//     so prose/input mentioning "/rc active" or "/rc failed" can't spoof it.
+		//     rcPickerRE guards against re-sending /rc when the management overlay
+		//     is up: that overlay only appears when RC is already bound, and a
+		//     second /rc would just reopen it (the loop that stuck the Arbay pane).
 		if status, ok := rcStatusLine(content); rcEnabled(cfg) && ok &&
-			!rcActiveRE.MatchString(status) && !HasSelector(content) {
+			!rcActiveRE.MatchString(status) && !HasSelector(content) &&
+			!rcPickerRE.MatchString(content) {
 			if rcFailedRE.MatchString(status) || now.Sub(rcNudgedAt[p.ID]) >= rcNudgeCooldown {
 				slog.Info("remote-control inactive, re-binding", "session", p.Session, "pane", p.ID)
 				if err := tmux.SendKeys(p.ID, "/rc"); err != nil {

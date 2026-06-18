@@ -862,6 +862,34 @@ func TestRCWatchdog_Detection(t *testing.T) {
 	}
 }
 
+func TestRCPicker(t *testing.T) {
+	// The /rc management overlay, as captured from a stuck pane.
+	picker := "  Remote Control\n\n  This session is available via Remote Control at\n" +
+		"  https://claude.ai/code/session_01P5\n\n    Disconnect this session\n" +
+		"    Show QR code\n  ❯ Continue\n\n  Enter to select · Esc to continue"
+
+	if !rcPickerRE.MatchString(picker) {
+		t.Error("should recognize the /rc management overlay")
+	}
+	// HasSelector cannot see it (no "❯ <digit>." option), which is exactly why
+	// it needs its own dismissal path.
+	if HasSelector(picker) {
+		t.Error("HasSelector must not match the RC overlay (it has no numbered option)")
+	}
+	// Watchdog must NOT nudge while the overlay is up: RC is bound, and a second
+	// /rc would just reopen it. Replays the full gate.
+	status, ok := rcStatusLine(picker)
+	wouldNudge := ok && !rcActiveRE.MatchString(status) &&
+		!HasSelector(picker) && !rcPickerRE.MatchString(picker)
+	if wouldNudge {
+		t.Error("watchdog must not re-send /rc while the RC overlay is open")
+	}
+	// Prose mentioning one label alone must not trip the picker matcher.
+	if rcPickerRE.MatchString("you can Disconnect this session whenever you like") {
+		t.Error("a single label in prose must not match the RC overlay")
+	}
+}
+
 func TestRCEnabled(t *testing.T) {
 	on := Config{ClaudeCommand: "claude --dangerously-skip-permissions --remote-control --remote-control-session-name-prefix {name} -n {name}"}
 	if !rcEnabled(on) {
