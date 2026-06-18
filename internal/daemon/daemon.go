@@ -182,14 +182,14 @@ func rcStatusLine(content string) (string, bool) {
 	return ms[len(ms)-1], true
 }
 
-// rcPickerRE matches the Remote Control management overlay that `/rc` opens when
-// RC is ALREADY bound (header "Remote Control", options "Disconnect this
-// session" / "Show QR code" / "Continue"). It is not a usage-limit picker, so
-// HasSelector misses it (its options have no "❯ <digit>." form), and it would
-// sit forever unless dismissed. Its presence also PROVES RC is active, so the
-// watchdog must treat it as bound and never re-send /rc (which would just
-// reopen it). Anchored on the two option labels together - unique to this
-// overlay - so prose mentioning "Disconnect" can't trip it.
+// rcPickerRE matches the Remote Control dialog that `/rc` opens regardless of
+// whether RC is currently bound (header "Remote Control", options "Disconnect
+// this session" / "Show QR code" / "Continue"). It is not a usage-limit picker,
+// so HasSelector misses it (its options have no "❯ <digit>." form). The correct
+// response is Enter (selects ❯ Continue): completes the binding if RC was
+// dropped, or confirms/dismisses if already active. Escape cancels the binding.
+// Anchored on the two option labels together - unique to this dialog - so prose
+// mentioning "Disconnect" alone can't trip it.
 var rcPickerRE = regexp.MustCompile(`(?s)Disconnect this session.*Show QR code`)
 
 // rcNudgeCooldown bounds how often the watchdog re-sends /rc to one pane, so a
@@ -1223,16 +1223,32 @@ func Tick(cfg Config, state State, errorState ErrorState, managed ManagedState, 
 		// 1) Dismiss any known Claude interactive picker. Independent of
 		//    banner state; a stuck prompt is itself something to resolve.
 		//    Esc is idempotent; if already gone next tick, nothing happens.
-		//    The /rc management overlay (rcPickerRE) is handled here too: it
-		//    has no "❯ <digit>." option so HasSelector misses it, and "Esc to
-		//    continue" is its documented dismiss.
-		if HasSelector(content) || rcPickerRE.MatchString(content) {
+		if HasSelector(content) {
 			slog.Info("dismiss selector", "session", p.Session, "pane", p.ID)
 			if err := tmux.SendKey(p.ID, "Escape"); err != nil {
 				slog.Error("send Escape failed", "session", p.Session, "err", err)
 			} else {
 				time.Sleep(cfg.DismissGap)
 				content = tmux.CapturePane(p.ID, cfg.Capture) // re-read post-dismiss
+			}
+		}
+
+		// 1b-pre) The /rc binding dialog (rcPickerRE) needs Enter, not Escape.
+		//     The dialog appears whenever /rc is typed - whether RC is already
+		//     bound or not - with ❯ Continue highlighted. Enter selects Continue:
+		//     completes the binding if RC was dropped, or simply confirms if it
+		//     was already active. Escape cancels the binding, which is exactly
+		//     wrong and caused the TagHistory loop (daemon sent /rc, then Escaped
+		//     every tick, so RC never bound, cooldown expired, repeat forever).
+		//     HasSelector misses this picker (no "❯ <digit>." option), so it gets
+		//     its own branch here with the correct key.
+		if rcPickerRE.MatchString(content) {
+			slog.Info("confirm RC binding dialog", "session", p.Session, "pane", p.ID)
+			if err := tmux.SendKey(p.ID, "Enter"); err != nil {
+				slog.Error("send Enter failed", "session", p.Session, "err", err)
+			} else {
+				time.Sleep(cfg.DismissGap)
+				content = tmux.CapturePane(p.ID, cfg.Capture) // re-read post-confirm
 			}
 		}
 
@@ -1245,9 +1261,8 @@ func Tick(cfg Config, state State, errorState ErrorState, managed ManagedState, 
 		//     isn't hammered. Only acts when the launch command opted into RC.
 		//     RC markers are matched against the status line ALONE (rcStatusLine)
 		//     so prose/input mentioning "/rc active" or "/rc failed" can't spoof it.
-		//     rcPickerRE guards against re-sending /rc when the management overlay
-		//     is up: that overlay only appears when RC is already bound, and a
-		//     second /rc would just reopen it (the loop that stuck the Arbay pane).
+		//     rcPickerRE guards against re-sending /rc while the binding dialog is
+		//     already open (the 1b-pre block above is handling it with Enter).
 		if status, ok := rcStatusLine(content); rcEnabled(cfg) && ok &&
 			!rcActiveRE.MatchString(status) && !HasSelector(content) &&
 			!rcPickerRE.MatchString(content) {
