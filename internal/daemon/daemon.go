@@ -196,9 +196,22 @@ var rcPickerRE = regexp.MustCompile(`(?s)Disconnect this session.*Show QR code`)
 // session that genuinely can't bind (or one mid-restart) isn't spammed.
 const rcNudgeCooldown = 5 * time.Minute
 
+// rcStartupGrace is how long after a pane is first seen that the RC watchdog
+// holds off. Claude Code with --remote-control auto-binds RC during startup;
+// the binding is an async network round-trip that completes a few seconds after
+// the input box first appears. Firing the watchdog immediately on the first
+// tick after Claude is ready sends /rc into an already-binding session, opening
+// a spurious picker on top of the auto-bind. Two minutes is conservative but
+// well inside the 5-minute cooldown and far longer than any real bind latency.
+const rcStartupGrace = 2 * time.Minute
+
 // rcNudgedAt tracks the last /rc nudge per pane id. Tick runs single-threaded
 // from Run, so no mutex is needed. Pruned alongside dead panes each tick.
 var rcNudgedAt = map[string]time.Time{}
+
+// rcPaneFirstSeen tracks when each pane was first observed by the watchdog.
+// Used to enforce rcStartupGrace. Pruned alongside dead panes each tick.
+var rcPaneFirstSeen = map[string]time.Time{}
 
 // rcEnabled reports whether the configured launch command opts into Remote
 // Control, so the watchdog only nudges sessions that are supposed to have it.
@@ -1216,6 +1229,11 @@ func Tick(cfg Config, state State, errorState ErrorState, managed ManagedState, 
 			delete(rcNudgedAt, id)
 		}
 	}
+	for id := range rcPaneFirstSeen {
+		if _, ok := live[id]; !ok {
+			delete(rcPaneFirstSeen, id)
+		}
+	}
 
 	for _, p := range panes {
 		content := tmux.CapturePane(p.ID, cfg.Capture)
@@ -1263,10 +1281,18 @@ func Tick(cfg Config, state State, errorState ErrorState, managed ManagedState, 
 		//     so prose/input mentioning "/rc active" or "/rc failed" can't spoof it.
 		//     rcPickerRE guards against re-sending /rc while the binding dialog is
 		//     already open (the 1b-pre block above is handling it with Enter).
+		//     rcStartupGrace holds off on freshly-seen panes: --remote-control
+		//     auto-binds RC during startup; the binding completes a few seconds
+		//     after the input box appears, so the first tick after Claude is ready
+		//     must not fire /rc into an already-binding session.
 		if status, ok := rcStatusLine(content); rcEnabled(cfg) && ok &&
 			!rcActiveRE.MatchString(status) && !HasSelector(content) &&
 			!rcPickerRE.MatchString(content) {
-			if rcFailedRE.MatchString(status) || now.Sub(rcNudgedAt[p.ID]) >= rcNudgeCooldown {
+			if _, known := rcPaneFirstSeen[p.ID]; !known {
+				rcPaneFirstSeen[p.ID] = now
+			}
+			pastGrace := now.Sub(rcPaneFirstSeen[p.ID]) >= rcStartupGrace
+			if pastGrace && (rcFailedRE.MatchString(status) || now.Sub(rcNudgedAt[p.ID]) >= rcNudgeCooldown) {
 				slog.Info("remote-control inactive, re-binding", "session", p.Session, "pane", p.ID)
 				if err := tmux.SendKeys(p.ID, "/rc"); err != nil {
 					slog.Error("send /rc failed", "session", p.Session, "err", err)
