@@ -152,9 +152,9 @@ var inputBoxRE = regexp.MustCompile(`(?i)shift\+tab|\? for shortcuts|bypass perm
 // is bound ("Remote Control active" or "/rc active"). Its ABSENCE on a live
 // claude pane means RC has dropped - claude has no auto-reconnect, so the
 // session silently vanishes from claude.ai/code until someone runs /rc.
-// MUST be matched only against the status line (see rcStatusLine), never the
-// raw capture: the bare phrase appears in conversation output and user input
-// (e.g. someone typing "/rc active") and would otherwise spoof the watchdog.
+// Matched against the TUI chrome zone (see rcTUIZone): the ⏵⏵ status line
+// plus the session-context line above it. Both are below the conversation
+// separator, so they cannot be spoofed by prose or user input.
 var rcActiveRE = regexp.MustCompile(`(?i)remote control active|/rc active`)
 
 // rcFailedRE matches the failed-bind indicator so the watchdog re-tries it too.
@@ -163,11 +163,8 @@ var rcFailedRE = regexp.MustCompile(`(?i)/rc failed|remote control failed`)
 
 // statusLineRE isolates Claude Code's bottom status/affordance line - the one
 // carrying the ⏵⏵ permission-mode cycler (U+23F5×2) or, in default mode, the
-// "? for shortcuts" hint. The RC marker is right-aligned on this same line.
-// Both anchors are TUI chrome: never emitted in Claude's prose, never present
-// in user-typed input. Restricting RC detection to this line is what makes the
-// watchdog robust - conversation text elsewhere in the capture cannot spoof it,
-// the same discipline apiErrorRE uses with its ⎿ anchor.
+// "? for shortcuts" hint. Both anchors are TUI chrome: never emitted in
+// Claude's prose or user-typed input.
 var statusLineRE = regexp.MustCompile(`(?m)^.*(?:⏵⏵|\? for shortcuts).*$`)
 
 // rcStatusLine returns Claude Code's bottom status line and whether one was
@@ -180,6 +177,37 @@ func rcStatusLine(content string) (string, bool) {
 		return "", false
 	}
 	return ms[len(ms)-1], true
+}
+
+// rcTUIZone returns the two-line TUI chrome zone at the bottom of the pane
+// and whether a status line was found. The zone is the ⏵⏵ status line plus
+// the session-context line immediately above it. RC state spans both lines:
+//
+//   [CAVEMAN] …  /rc active        ← auto-bind in progress (connecting state)
+//   ⏵⏵ …        Remote Control active  ← fully bound
+//
+// The session-context line is below the conversation separator (────) and
+// above ⏵⏵, so it is always TUI chrome - never user-typed input, never prose.
+// Checking both lines makes the watchdog resilient to the intermediate
+// connecting state that appears after --remote-control launches.
+func rcTUIZone(content string) (zone string, ok bool) {
+	ms := statusLineRE.FindAllStringIndex(content, -1)
+	if len(ms) == 0 {
+		return "", false
+	}
+	last := ms[len(ms)-1]
+	// Walk back one line to include the session-context line above ⏵⏵.
+	// content[:last[0]] ends with the \n that terminates the context line;
+	// strip it before searching so LastIndex finds the newline that starts it.
+	prefix := content[:last[0]]
+	if len(prefix) > 0 && prefix[len(prefix)-1] == '\n' {
+		prefix = prefix[:len(prefix)-1]
+	}
+	start := 0
+	if prev := strings.LastIndex(prefix, "\n"); prev >= 0 {
+		start = prev + 1
+	}
+	return content[start:last[1]], true
 }
 
 // rcPickerRE matches the Remote Control dialog that `/rc` opens regardless of
@@ -1277,22 +1305,28 @@ func Tick(cfg Config, state State, errorState ErrorState, managed ManagedState, 
 		//     this is a live claude pane (input box present) whose RC marker is
 		//     gone, re-send /rc. Cooldown-gated so a session that can't bind
 		//     isn't hammered. Only acts when the launch command opted into RC.
-		//     RC markers are matched against the status line ALONE (rcStatusLine)
-		//     so prose/input mentioning "/rc active" or "/rc failed" can't spoof it.
+		//     RC state is checked against the two-line TUI chrome zone (rcTUIZone):
+		//     the ⏵⏵ status line and the session-context line above it. Both are
+		//     below the conversation separator and are never user input or prose.
+		//     This catches the intermediate connecting state (/rc active on the
+		//     context line) that appears during --remote-control auto-bind, and
+		//     Remote Control active on the status line when fully bound. rcFailedRE
+		//     is checked against the status line only (failure is always on ⏵⏵).
 		//     rcPickerRE guards against re-sending /rc while the binding dialog is
 		//     already open (the 1b-pre block above is handling it with Enter).
 		//     rcStartupGrace holds off on freshly-seen panes: --remote-control
 		//     auto-binds RC during startup; the binding completes a few seconds
 		//     after the input box appears, so the first tick after Claude is ready
 		//     must not fire /rc into an already-binding session.
-		if status, ok := rcStatusLine(content); rcEnabled(cfg) && ok &&
-			!rcActiveRE.MatchString(status) && !HasSelector(content) &&
+		if zone, ok := rcTUIZone(content); rcEnabled(cfg) && ok &&
+			!rcActiveRE.MatchString(zone) && !HasSelector(content) &&
 			!rcPickerRE.MatchString(content) {
+			statusLine, _ := rcStatusLine(content)
 			if _, known := rcPaneFirstSeen[p.ID]; !known {
 				rcPaneFirstSeen[p.ID] = now
 			}
 			pastGrace := now.Sub(rcPaneFirstSeen[p.ID]) >= rcStartupGrace
-			if pastGrace && (rcFailedRE.MatchString(status) || now.Sub(rcNudgedAt[p.ID]) >= rcNudgeCooldown) {
+			if pastGrace && (rcFailedRE.MatchString(statusLine) || now.Sub(rcNudgedAt[p.ID]) >= rcNudgeCooldown) {
 				slog.Info("remote-control inactive, re-binding", "session", p.Session, "pane", p.ID)
 				if err := tmux.SendKeys(p.ID, "/rc"); err != nil {
 					slog.Error("send /rc failed", "session", p.Session, "err", err)

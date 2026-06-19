@@ -790,29 +790,37 @@ func TestSaveLoadState_Roundtrip(t *testing.T) {
 }
 
 func TestRCWatchdog_Detection(t *testing.T) {
-	// wouldNudge replays the watchdog gate: fire only on a live claude pane
-	// (status line present) whose status line lacks the RC-active marker.
+	// wouldNudge replays the watchdog gate using the TUI zone (⏵⏵ line + context
+	// line above it): fire only when the zone is present and lacks an RC marker.
 	wouldNudge := func(content string) bool {
-		status, ok := rcStatusLine(content)
-		return ok && !rcActiveRE.MatchString(status)
+		zone, ok := rcTUIZone(content)
+		return ok && !rcActiveRE.MatchString(zone)
 	}
 
-	// Real capture: the RC marker is right-aligned on the same ⏵⏵ status line.
-	live := "❯ \n  ⏵⏵ bypass permissions on (shift+tab to cycle)          Remote Control active"
-	status, ok := rcStatusLine(live)
+	// Fully bound: "Remote Control active" on the ⏵⏵ status line.
+	live := "❯ \n  [CAVEMAN]\n  ⏵⏵ bypass permissions on (shift+tab to cycle)          Remote Control active"
+	zone, ok := rcTUIZone(live)
 	if !ok {
-		t.Fatal("status line not found on a live pane")
+		t.Fatal("TUI zone not found on a live pane")
 	}
-	if !rcActiveRE.MatchString(status) {
-		t.Error("should detect active RC marker on the status line")
+	if !rcActiveRE.MatchString(zone) {
+		t.Error("should detect active RC marker in the TUI zone")
 	}
 	if wouldNudge(live) {
 		t.Error("watchdog must NOT nudge a pane that already has RC")
 	}
 
-	// RC dropped: same status line, marker gone.
-	dropped := "❯ \n  ⏵⏵ bypass permissions on (shift+tab to cycle)"
-	if _, ok := rcStatusLine(dropped); !ok {
+	// Connecting state: "/rc active" on the session-context (CAVEMAN) line above
+	// ⏵⏵. This is the intermediate state during --remote-control auto-bind.
+	// The watchdog must treat it as "RC in progress" and not nudge.
+	connecting := "❯ \n  [CAVEMAN]                                    /rc active\n  ⏵⏵ bypass permissions on (shift+tab to cycle)"
+	if wouldNudge(connecting) {
+		t.Error("watchdog must NOT nudge a pane with /rc active on the context line (connecting state)")
+	}
+
+	// RC dropped: status line present, no marker anywhere in the TUI zone.
+	dropped := "❯ \n  [CAVEMAN]\n  ⏵⏵ bypass permissions on (shift+tab to cycle)"
+	if _, ok := rcTUIZone(dropped); !ok {
 		t.Error("dropped pane is still a live claude TUI (status line present)")
 	}
 	if !wouldNudge(dropped) {
@@ -820,23 +828,23 @@ func TestRCWatchdog_Detection(t *testing.T) {
 	}
 
 	// Spoof guard (false negative): user typed "/rc active?" into the input box
-	// but RC is genuinely dropped. The phrase sits on the ❯ line, not the status
-	// line, so the watchdog must still nudge.
-	spoofInput := "❯ is /rc active?\n  ⏵⏵ bypass permissions on (shift+tab to cycle)"
+	// but RC is genuinely dropped. ❯ line is above the TUI zone, so the phrase
+	// must not suppress the nudge.
+	spoofInput := "❯ is /rc active?\n  [CAVEMAN]\n  ⏵⏵ bypass permissions on (shift+tab to cycle)"
 	if !wouldNudge(spoofInput) {
 		t.Error("phrase in the input box must not suppress a needed nudge")
 	}
 
 	// Spoof guard (false negative): tool output mentions the marker while RC is
-	// dropped. Output line lacks ⏵⏵, so it is excluded from the status line.
-	spoofOutput := "⎿ logs: Remote Control active earlier\n  ⏵⏵ bypass permissions on (shift+tab to cycle)"
+	// dropped. Output is above the zone and must not suppress the nudge.
+	spoofOutput := "⎿ logs: Remote Control active earlier\n  [CAVEMAN]\n  ⏵⏵ bypass permissions on (shift+tab to cycle)"
 	if !wouldNudge(spoofOutput) {
 		t.Error("phrase in tool output must not suppress a needed nudge")
 	}
 
-	// Spoof guard (false positive): output mentions "/rc failed" while RC is
-	// actually bound. rcFailedRE must be tested against the status line only.
-	failedInProse := "⎿ note: /rc failed last week\n  ⏵⏵ bypass permissions on (shift+tab to cycle)          Remote Control active"
+	// Spoof guard (false positive): "/rc failed" in prose above the zone while
+	// RC is actually bound. rcFailedRE must only fire from the ⏵⏵ status line.
+	failedInProse := "⎿ note: /rc failed last week\n  [CAVEMAN]\n  ⏵⏵ bypass permissions on (shift+tab to cycle)          Remote Control active"
 	st, _ := rcStatusLine(failedInProse)
 	if rcFailedRE.MatchString(st) {
 		t.Error("'/rc failed' in prose must not be read off the status line")
@@ -852,12 +860,12 @@ func TestRCWatchdog_Detection(t *testing.T) {
 
 	// Default-mode pane (no ⏵⏵, "? for shortcuts" instead) is a live TUI too.
 	def := "❯ \n  ? for shortcuts"
-	if _, ok := rcStatusLine(def); !ok {
+	if _, ok := rcTUIZone(def); !ok {
 		t.Error("default-mode status line should be recognized")
 	}
 
 	// A plain shell (no status line) is not a live claude pane: never nudge.
-	if _, ok := rcStatusLine("user@host:~$ ls\nfile.txt"); ok {
+	if _, ok := rcTUIZone("user@host:~$ ls\nfile.txt"); ok {
 		t.Error("a plain shell must not be treated as a live claude pane")
 	}
 }
