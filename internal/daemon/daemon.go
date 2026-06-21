@@ -1279,6 +1279,9 @@ func Tick(cfg Config, state State, errorState ErrorState, managed ManagedState, 
 			}
 		}
 
+		// Compute TUI zone once; reused in both the picker-confirm and watchdog.
+		zone, zoneOk := rcTUIZone(content)
+
 		// 1b-pre) The /rc binding dialog (rcPickerRE) needs Enter, not Escape.
 		//     The dialog appears whenever /rc is typed - whether RC is already
 		//     bound or not - with ❯ Continue highlighted. Enter selects Continue:
@@ -1288,13 +1291,18 @@ func Tick(cfg Config, state State, errorState ErrorState, managed ManagedState, 
 		//     every tick, so RC never bound, cooldown expired, repeat forever).
 		//     HasSelector misses this picker (no "❯ <digit>." option), so it gets
 		//     its own branch here with the correct key.
-		if rcPickerRE.MatchString(content) {
+		//     Spoof guard: if the TUI zone already shows RC is connecting or
+		//     active, the picker text is conversation prose (e.g. Claude described
+		//     the picker UI in a response), not the real modal. Skip Enter so we
+		//     don't keystroke into the live input.
+		if rcPickerRE.MatchString(content) && !(zoneOk && rcActiveRE.MatchString(zone)) {
 			slog.Info("confirm RC binding dialog", "session", p.Session, "pane", p.ID)
 			if err := tmux.SendKey(p.ID, "Enter"); err != nil {
 				slog.Error("send Enter failed", "session", p.Session, "err", err)
 			} else {
 				time.Sleep(cfg.DismissGap)
 				content = tmux.CapturePane(p.ID, cfg.Capture) // re-read post-confirm
+				zone, zoneOk = rcTUIZone(content)              // refresh zone
 			}
 		}
 
@@ -1318,7 +1326,7 @@ func Tick(cfg Config, state State, errorState ErrorState, managed ManagedState, 
 		//     auto-binds RC during startup; the binding completes a few seconds
 		//     after the input box appears, so the first tick after Claude is ready
 		//     must not fire /rc into an already-binding session.
-		if zone, ok := rcTUIZone(content); rcEnabled(cfg) && ok &&
+		if rcEnabled(cfg) && zoneOk &&
 			!rcActiveRE.MatchString(zone) && !HasSelector(content) &&
 			!rcPickerRE.MatchString(content) {
 			statusLine, _ := rcStatusLine(content)
