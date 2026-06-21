@@ -179,17 +179,18 @@ func rcStatusLine(content string) (string, bool) {
 	return ms[len(ms)-1], true
 }
 
-// rcTUIZone returns the two-line TUI chrome zone at the bottom of the pane
-// and whether a status line was found. The zone is the ⏵⏵ status line plus
-// the session-context line immediately above it. RC state spans both lines:
+// rcTUIZone returns the TUI chrome zone at the bottom of the pane and whether
+// a status line was found. The zone starts at the session-context line above ⏵⏵
+// and extends to the end of the pane content, capturing all lines that follow
+// the ⏵⏵ line. RC state can appear on any of these lines:
 //
-//   [CAVEMAN] …  /rc active        ← auto-bind in progress (connecting state)
-//   ⏵⏵ …        Remote Control active  ← fully bound
+//	[CAVEMAN] …  /rc active         ← above ⏵⏵ (most sessions)
+//	⏵⏵ …        Remote Control active  ← on ⏵⏵ itself
+//	             10% until auto-compact
+//	             /rc active          ← below ⏵⏵ (e.g. when auto-compact % shown)
 //
-// The session-context line is below the conversation separator (────) and
-// above ⏵⏵, so it is always TUI chrome - never user-typed input, never prose.
-// Checking both lines makes the watchdog resilient to the intermediate
-// connecting state that appears after --remote-control launches.
+// Everything from the context line downward is TUI chrome — below the
+// conversation separator (────) — and is never user-typed input or prose.
 func rcTUIZone(content string) (zone string, ok bool) {
 	ms := statusLineRE.FindAllStringIndex(content, -1)
 	if len(ms) == 0 {
@@ -207,28 +208,28 @@ func rcTUIZone(content string) (zone string, ok bool) {
 	if prev := strings.LastIndex(prefix, "\n"); prev >= 0 {
 		start = prev + 1
 	}
-	return content[start:last[1]], true
+	// Extend to end of content to include any extra status lines below ⏵⏵
+	// (e.g. auto-compact percentage, /rc active on a separate line).
+	return content[start:], true
 }
 
 // RCStatus returns the Remote Control state visible in a captured pane.
+// Uses the same rcActiveRE the watchdog uses: "/rc active" on the context line
+// is the persistent active indicator (not a transient). "Remote Control active"
+// on the ⏵⏵ line is an alternative form. Either means RC is live.
 //
-//	"active"      — fully bound (Remote Control active on ⏵⏵ line)
-//	"connecting"  — auto-bind in progress (/rc active on context line)
-//	"dropped"     — TUI zone present but no active/connecting marker
-//	""            — no TUI zone (splash, trust prompt, plain shell)
+//	"active"   — rcActiveRE matches the TUI chrome zone
+//	"offline"  — zone present but no active marker (dropped or never bound)
+//	""         — no TUI zone (splash, trust prompt, plain shell)
 func RCStatus(content string) string {
 	zone, ok := rcTUIZone(content)
 	if !ok {
 		return ""
 	}
 	if rcActiveRE.MatchString(zone) {
-		// Distinguish fully bound vs connecting.
-		if strings.Contains(strings.ToLower(zone), "remote control active") {
-			return "active"
-		}
-		return "connecting"
+		return "active"
 	}
-	return "dropped"
+	return "offline"
 }
 
 // rcPickerRE matches the Remote Control dialog that `/rc` opens regardless of

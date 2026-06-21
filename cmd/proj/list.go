@@ -70,13 +70,11 @@ func runList(cmd *cobra.Command, args []string) error {
 		if existing == "" || (label != "idle" && existing == "idle") {
 			labelBySession[n] = label
 		}
-		// Merge RC status: active > connecting > dropped > "" (no zone).
+		// Merge RC status across panes: active wins over offline wins over "".
 		rc := s.RC
 		existRC := rcBySession[n]
-		if existRC != "active" && rc != "" {
-			if existRC == "" || rc == "active" || (rc == "connecting" && existRC == "dropped") {
-				rcBySession[n] = rc
-			}
+		if rc == "active" || (rc == "offline" && existRC == "") {
+			rcBySession[n] = rc
 		}
 	}
 
@@ -229,13 +227,10 @@ func buildIndicator(alive, pinned bool, label, rc string) string {
 	case "selector":
 		return ansiYellow + "●" + ansiReset + " "
 	}
-	switch rc {
-	case "dropped":
-		return ansiRed + "●" + ansiReset + " "
-	case "connecting":
+	if rc == "offline" {
 		return ansiYellow + "●" + ansiReset + " "
 	}
-	return ansiGreen + "●" + ansiReset + " " // "active" or "" (no zone yet)
+	return ansiGreen + "●" + ansiReset + " " // "active" or "" (no zone yet — starting up)
 }
 
 func buildNote(label, rc string, ms daemon.ManagedSession, tracked, alive, globalKeepAlive bool) string {
@@ -252,11 +247,8 @@ func buildNote(label, rc string, ms daemon.ManagedSession, tracked, alive, globa
 	case "selector":
 		return "waiting for input"
 	}
-	switch rc {
-	case "dropped":
-		return "RC dropped"
-	case "connecting":
-		return "RC connecting"
+	if rc == "offline" {
+		return "RC offline"
 	}
 	return ""
 }
@@ -271,10 +263,7 @@ func noteColor(label, rc string, alive bool) string {
 	case "selector":
 		return ansiYellow
 	}
-	switch rc {
-	case "dropped":
-		return ansiRed
-	case "connecting":
+	if rc == "offline" {
 		return ansiYellow
 	}
 	return ansiDim
