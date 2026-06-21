@@ -210,6 +210,27 @@ func rcTUIZone(content string) (zone string, ok bool) {
 	return content[start:last[1]], true
 }
 
+// RCStatus returns the Remote Control state visible in a captured pane.
+//
+//	"active"      — fully bound (Remote Control active on ⏵⏵ line)
+//	"connecting"  — auto-bind in progress (/rc active on context line)
+//	"dropped"     — TUI zone present but no active/connecting marker
+//	""            — no TUI zone (splash, trust prompt, plain shell)
+func RCStatus(content string) string {
+	zone, ok := rcTUIZone(content)
+	if !ok {
+		return ""
+	}
+	if rcActiveRE.MatchString(zone) {
+		// Distinguish fully bound vs connecting.
+		if strings.Contains(strings.ToLower(zone), "remote control active") {
+			return "active"
+		}
+		return "connecting"
+	}
+	return "dropped"
+}
+
 // rcPickerRE matches the Remote Control dialog that `/rc` opens regardless of
 // whether RC is currently bound (header "Remote Control", options "Disconnect
 // this session" / "Show QR code" / "Continue"). It is not a usage-limit picker,
@@ -496,6 +517,7 @@ type PaneState struct {
 	Selector bool      // a dismissable interactive picker is visible
 	APIError *APIError // non-nil if stuck after a permanent API error
 	Model    string    // Claude model ID extracted from TUI status bar, empty if not visible
+	RC       string    // RCStatus: "active", "connecting", "dropped", or "" (no zone)
 }
 
 // Label returns a short human-readable status word for the pane.
@@ -527,6 +549,7 @@ func ScanPanes(captureLines int) []PaneState {
 			Selector: HasSelector(content),
 			APIError: DetectAPIError(content),
 			Model:    modelRE.FindString(content),
+			RC:       RCStatus(content),
 		})
 	}
 	return out

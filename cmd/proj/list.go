@@ -58,16 +58,25 @@ func runList(cmd *cobra.Command, args []string) error {
 	unrCfg := daemonConfig()
 	managed := daemon.LoadManagedState(unrCfg.StatePath)
 
-	// Scan panes for label (banner/error/selector state) per session.
+	// Scan panes for label (banner/error/selector state) and RC status per session.
 	// Model is read from JSONL session files instead; more reliable.
 	scan := daemon.ScanPanes(unrCfg.Capture)
 	labelBySession := make(map[string]string, len(scan))
+	rcBySession := make(map[string]string, len(scan))
 	for _, s := range scan {
 		n := s.Pane.Session
 		label := s.Label()
 		existing := labelBySession[n]
 		if existing == "" || (label != "idle" && existing == "idle") {
 			labelBySession[n] = label
+		}
+		// Merge RC status: active > connecting > dropped > "" (no zone).
+		rc := s.RC
+		existRC := rcBySession[n]
+		if existRC != "active" && rc != "" {
+			if existRC == "" || rc == "active" || (rc == "connecting" && existRC == "dropped") {
+				rcBySession[n] = rc
+			}
 		}
 	}
 
@@ -114,6 +123,7 @@ func runList(cmd *cobra.Command, args []string) error {
 		sessName := projects.SessionName(p.Name, p.Tags)
 		ms, tracked := managed[sessName]
 		label := labelBySession[sessName]
+		rc := rcBySession[sessName]
 		alive := p.SessionTS > 0
 
 		// Hide inactive projects older than the cutoff (active and pinned always shown).
@@ -123,13 +133,13 @@ func runList(cmd *cobra.Command, args []string) error {
 		}
 
 		rows = append(rows, listRow{
-			indicator: buildIndicator(alive, ms.Pinned, label),
+			indicator: buildIndicator(alive, ms.Pinned, label, rc),
 			name:      p.Name,
 			tags:      strings.Join(p.Tags, " "),
 			model:     daemon.ModelFromDir(cfg.Claude.Home, p.Dir),
 			ts:        sessionTS(p, alive),
-			note:      buildNote(label, ms, tracked, alive, unrCfg.KeepAlive),
-			noteColor: noteColor(label, alive),
+			note:      buildNote(label, rc, ms, tracked, alive, unrCfg.KeepAlive),
+			noteColor: noteColor(label, rc, alive),
 		})
 	}
 
@@ -138,15 +148,16 @@ func runList(cmd *cobra.Command, args []string) error {
 		for _, s := range projects.OrphanSessions(cfg.BaseDir) {
 			ms, tracked := managed[s.Name]
 			label := labelBySession[s.Name]
+			rc := rcBySession[s.Name]
 			path := strings.Replace(s.Path, home, "~", 1)
 			rows = append(rows, listRow{
-				indicator: buildIndicator(true, ms.Pinned, label),
+				indicator: buildIndicator(true, ms.Pinned, label, rc),
 				name:      s.Name,
 				tags:      path,
 				model:     "", // orphan: no known project dir for JSONL lookup
 				ts:        s.Activity,
-				note:      buildNote(label, ms, tracked, true, unrCfg.KeepAlive),
-				noteColor: noteColor(label, true),
+				note:      buildNote(label, rc, ms, tracked, true, unrCfg.KeepAlive),
+				noteColor: noteColor(label, rc, true),
 			})
 		}
 	}
@@ -205,7 +216,7 @@ func hasTag(tags []string, want string) bool {
 //	📌   pinned (alive or dead, emoji, 2 cols)
 //	● ·  alive; colored dot + space (1+1 cols)
 //	○ ·  dead ; grey circle + space (1+1 cols)
-func buildIndicator(alive, pinned bool, label string) string {
+func buildIndicator(alive, pinned bool, label, rc string) string {
 	if pinned {
 		return "📌"
 	}
@@ -217,12 +228,17 @@ func buildIndicator(alive, pinned bool, label string) string {
 		return ansiRed + "●" + ansiReset + " "
 	case "selector":
 		return ansiYellow + "●" + ansiReset + " "
-	default:
-		return ansiGreen + "●" + ansiReset + " "
 	}
+	switch rc {
+	case "dropped":
+		return ansiRed + "●" + ansiReset + " "
+	case "connecting":
+		return ansiYellow + "●" + ansiReset + " "
+	}
+	return ansiGreen + "●" + ansiReset + " " // "active" or "" (no zone yet)
 }
 
-func buildNote(label string, ms daemon.ManagedSession, tracked, alive, globalKeepAlive bool) string {
+func buildNote(label, rc string, ms daemon.ManagedSession, tracked, alive, globalKeepAlive bool) string {
 	// Only the daemon's tracked sessions get recreated. globalKeepAlive on its
 	// own must not paint every dead project as "restarting".
 	if !alive && tracked && (ms.Pinned || ms.KeepAlive || globalKeepAlive) && !ms.ExitedCleanly {
@@ -236,10 +252,16 @@ func buildNote(label string, ms daemon.ManagedSession, tracked, alive, globalKee
 	case "selector":
 		return "waiting for input"
 	}
+	switch rc {
+	case "dropped":
+		return "RC dropped"
+	case "connecting":
+		return "RC connecting"
+	}
 	return ""
 }
 
-func noteColor(label string, alive bool) string {
+func noteColor(label, rc string, alive bool) string {
 	if !alive {
 		return ansiDim
 	}
@@ -247,6 +269,12 @@ func noteColor(label string, alive bool) string {
 	case "error", "banner", "banner + selector":
 		return ansiRed
 	case "selector":
+		return ansiYellow
+	}
+	switch rc {
+	case "dropped":
+		return ansiRed
+	case "connecting":
 		return ansiYellow
 	}
 	return ansiDim
