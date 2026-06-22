@@ -263,6 +263,13 @@ var rcNudgedAt = map[string]time.Time{}
 // Used to enforce rcStartupGrace. Pruned alongside dead panes each tick.
 var rcPaneFirstSeen = map[string]time.Time{}
 
+// rcEverActive records whether RC was ever observed bound for a pane during its
+// current life. The watchdog only re-binds a pane that was once active and then
+// lost it (a silent drop), never one that has never bound - --remote-control
+// auto-binds at startup, so an unbound-so-far pane is still connecting and a /rc
+// nudge would only open the picker into live input. Pruned with dead panes.
+var rcEverActive = map[string]bool{}
+
 // rcEnabled reports whether the configured launch command opts into Remote
 // Control, so the watchdog only nudges sessions that are supposed to have it.
 func rcEnabled(cfg Config) bool {
@@ -1287,6 +1294,11 @@ func Tick(cfg Config, state State, errorState ErrorState, managed ManagedState, 
 			delete(rcPaneFirstSeen, id)
 		}
 	}
+	for id := range rcEverActive {
+		if _, ok := live[id]; !ok {
+			delete(rcEverActive, id)
+		}
+	}
 
 	for _, p := range panes {
 		content := tmux.CapturePane(p.ID, cfg.Capture)
@@ -1306,6 +1318,11 @@ func Tick(cfg Config, state State, errorState ErrorState, managed ManagedState, 
 
 		// Compute TUI zone once; reused in both the picker-confirm and watchdog.
 		zone, zoneOk := rcTUIZone(content)
+		// Latch "ever active" the moment RC binds, so the watchdog can later tell
+		// a silent drop (was active, now blank) from a pane still auto-binding.
+		if zoneOk && rcActiveRE.MatchString(zone) {
+			rcEverActive[p.ID] = true
+		}
 
 		// 1b-pre) The /rc binding dialog (rcPickerRE) needs Enter, not Escape.
 		//     The dialog appears whenever /rc is typed - whether RC is already
@@ -1359,8 +1376,19 @@ func Tick(cfg Config, state State, errorState ErrorState, managed ManagedState, 
 				rcPaneFirstSeen[p.ID] = now
 			}
 			pastGrace := now.Sub(rcPaneFirstSeen[p.ID]) >= rcStartupGrace
-			if pastGrace && (rcFailedRE.MatchString(statusLine) || now.Sub(rcNudgedAt[p.ID]) >= rcNudgeCooldown) {
-				slog.Info("remote-control inactive, re-binding", "session", p.Session, "pane", p.ID)
+			failed := rcFailedRE.MatchString(statusLine)
+			// Recover only a drop or an explicit failure. A pane that has never
+			// bound is still connecting (--remote-control auto-binds at startup);
+			// nudging it just opens the picker into live input - the bug that
+			// typed /rc into freshly-recreated sessions.
+			trigger := failed || (rcEverActive[p.ID] && now.Sub(rcNudgedAt[p.ID]) >= rcNudgeCooldown)
+			if pastGrace && trigger {
+				slog.Info("remote-control inactive, re-binding",
+					"session", p.Session, "pane", p.ID,
+					"reason", map[bool]string{true: "failed", false: "drop"}[failed],
+					"ever_active", rcEverActive[p.ID],
+					"status_line", strconv.Quote(statusLine),
+					"zone", strconv.Quote(zone))
 				if err := tmux.SendKeys(p.ID, "/rc"); err != nil {
 					slog.Error("send /rc failed", "session", p.Session, "err", err)
 				}
