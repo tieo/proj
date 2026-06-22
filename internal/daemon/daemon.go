@@ -1350,11 +1350,15 @@ func Tick(cfg Config, state State, errorState ErrorState, managed ManagedState, 
 		//     every tick, so RC never bound, cooldown expired, repeat forever).
 		//     HasSelector misses this picker (no "❯ <digit>." option), so it gets
 		//     its own branch here with the correct key.
-		//     Spoof guard: if the TUI zone already shows RC is connecting or
-		//     active, the picker text is conversation prose (e.g. Claude described
-		//     the picker UI in a response), not the real modal. Skip Enter so we
-		//     don't keystroke into the live input.
-		if rcPickerRE.MatchString(rcChromeTail(content)) && !(zoneOk && rcActiveRE.MatchString(zone)) {
+		//     Spoof guard: a real /rc modal REPLACES the input box - it renders
+		//     "Disconnect this session ... Continue / Esc to continue" with no
+		//     ⏵⏵ status line. So if the ⏵⏵ line is present (zoneOk), the normal
+		//     input UI is up and any picker text is conversation prose (Claude
+		//     quoting the menu, which renders right above the input every turn) -
+		//     NOT a modal. Only confirm when ⏵⏵ is absent, i.e. the modal took
+		//     over. Tail-matching alone is not enough: the quoted prose lands in
+		//     the tail too, since it's the latest message above the prompt.
+		if !zoneOk && rcPickerRE.MatchString(rcChromeTail(content)) {
 			slog.Info("confirm RC binding dialog", "session", p.Session, "pane", p.ID)
 			if err := tmux.SendKey(p.ID, "Enter"); err != nil {
 				slog.Error("send Enter failed", "session", p.Session, "err", err)
