@@ -50,7 +50,7 @@ func openInTmux(cfg config.Config, p projects.Project) error {
 		// Already running under the right name; re-apply skills below.
 	case "":
 		host, _ := os.Hostname()
-		cmdLine := strings.NewReplacer("{name}", shellout.Quote(p.Name), "{dir}", shellout.Quote(p.Dir), "{host}", host).Replace(cfg.Claude.Command)
+		cmdLine := strings.NewReplacer("{name}", shellout.Quote(p.Name), "{dir}", shellout.Quote(p.Dir), "{host}", host, "{rc}", shellout.Quote(daemon.RCName(session, host))).Replace(cfg.Claude.Command)
 		// Append the resume flag only when there's a transcript to resume.
 		// Claude's --continue is NOT a no-op on an empty history: it exits
 		// with "No deferred tool marker found in the resumed session", which

@@ -293,6 +293,23 @@ func rcEnabled(cfg Config) bool {
 	return strings.Contains(cfg.ClaudeCommand, "--remote-control")
 }
 
+// RCName formats the Remote Control session title shown on claude.ai. A proj
+// session name is "name@tag1+tag2" (no tags: just "name"); the RC title renders
+// it as "name[tag1,tag2]@host", with the brackets dropped when there are no
+// tags. The host trails as a suffix. ':' is avoided as a separator because it is
+// not a legal Windows path char (claude.exe runs via WSL interop); '@' and the
+// brackets are legal on both Linux and Windows.
+func RCName(session, host string) string {
+	name, tags := session, ""
+	if i := strings.IndexByte(session, '@'); i >= 0 {
+		name, tags = session[:i], session[i+1:]
+	}
+	if tags != "" {
+		name += "[" + strings.ReplaceAll(tags, "+", ",") + "]"
+	}
+	return name + "@" + host
+}
+
 // sp matches any mix of regular spaces and the non-breaking spaces (U+00A0)
 // that Claude Code's TUI uses for padding between its ⎿/❯ markers and text.
 // Go's \s covers only ASCII whitespace, so NBSP must be included explicitly.
@@ -653,7 +670,7 @@ func launchSession(cfg Config, name, dir string) {
 	command := ""
 	if cfg.ClaudeCommand != "" {
 		host, _ := os.Hostname()
-		cmdLine := strings.NewReplacer("{name}", shellout.Quote(name), "{dir}", shellout.Quote(dir), "{host}", host).Replace(cfg.ClaudeCommand)
+		cmdLine := strings.NewReplacer("{name}", shellout.Quote(name), "{dir}", shellout.Quote(dir), "{host}", host, "{rc}", shellout.Quote(RCName(name, host))).Replace(cfg.ClaudeCommand)
 		if cfg.ClaudeResumeFlag != "" && HasHistory(cfg.ClaudeHome, dir) {
 			cmdLine += " " + cfg.ClaudeResumeFlag
 		}
