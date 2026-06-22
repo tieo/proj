@@ -628,7 +628,8 @@ func parseReset(dateStr, timeStr, tzStr string, now time.Time) (time.Time, error
 func launchSession(cfg Config, name, dir string) {
 	command := ""
 	if cfg.ClaudeCommand != "" {
-		cmdLine := strings.NewReplacer("{name}", shellout.Quote(name), "{dir}", shellout.Quote(dir)).Replace(cfg.ClaudeCommand)
+		host, _ := os.Hostname()
+		cmdLine := strings.NewReplacer("{name}", shellout.Quote(name), "{dir}", shellout.Quote(dir), "{host}", host).Replace(cfg.ClaudeCommand)
 		if cfg.ClaudeResumeFlag != "" && HasHistory(cfg.ClaudeHome, dir) {
 			cmdLine += " " + cfg.ClaudeResumeFlag
 		}
