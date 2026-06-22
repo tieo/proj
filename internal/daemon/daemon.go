@@ -242,6 +242,23 @@ func RCStatus(content string) string {
 // mentioning "Disconnect" alone can't trip it.
 var rcPickerRE = regexp.MustCompile(`(?s)Disconnect this session.*Show QR code`)
 
+// rcChromeTail returns the last rcTailLines of a pane capture - the region
+// where live TUI overlays render (the /rc picker, the status line). RC dialog
+// matching runs against this tail, never the full capture: the daemon captures
+// hundreds of scrollback lines, and a conversation that quotes the picker text
+// ("Disconnect this session ... Show QR code" - e.g. Claude pasting the menu)
+// would otherwise look like a real open modal and get an Enter keystroke every
+// tick. A genuine picker always renders at the bottom; quoted prose scrolls up.
+const rcTailLines = 25
+
+func rcChromeTail(content string) string {
+	lines := strings.Split(content, "\n")
+	if len(lines) > rcTailLines {
+		lines = lines[len(lines)-rcTailLines:]
+	}
+	return strings.Join(lines, "\n")
+}
+
 // rcNudgeCooldown bounds how often the watchdog re-sends /rc to one pane, so a
 // session that genuinely can't bind (or one mid-restart) isn't spammed.
 const rcNudgeCooldown = 5 * time.Minute
@@ -1337,7 +1354,7 @@ func Tick(cfg Config, state State, errorState ErrorState, managed ManagedState, 
 		//     active, the picker text is conversation prose (e.g. Claude described
 		//     the picker UI in a response), not the real modal. Skip Enter so we
 		//     don't keystroke into the live input.
-		if rcPickerRE.MatchString(content) && !(zoneOk && rcActiveRE.MatchString(zone)) {
+		if rcPickerRE.MatchString(rcChromeTail(content)) && !(zoneOk && rcActiveRE.MatchString(zone)) {
 			slog.Info("confirm RC binding dialog", "session", p.Session, "pane", p.ID)
 			if err := tmux.SendKey(p.ID, "Enter"); err != nil {
 				slog.Error("send Enter failed", "session", p.Session, "err", err)
@@ -1370,7 +1387,7 @@ func Tick(cfg Config, state State, errorState ErrorState, managed ManagedState, 
 		//     must not fire /rc into an already-binding session.
 		if rcEnabled(cfg) && zoneOk &&
 			!rcActiveRE.MatchString(zone) && !HasSelector(content) &&
-			!rcPickerRE.MatchString(content) {
+			!rcPickerRE.MatchString(rcChromeTail(content)) {
 			statusLine, _ := rcStatusLine(content)
 			if _, known := rcPaneFirstSeen[p.ID]; !known {
 				rcPaneFirstSeen[p.ID] = now
