@@ -566,6 +566,16 @@ func Detect(content string, now time.Time) *Banner {
 			if strings.Contains(tail, "continuing with") || strings.Contains(tail, "now using extra") {
 				continue
 			}
+			// Stale-banner guard: a real usage-limit banner is the last thing on
+			// screen - Claude hit the limit and stopped. If newer assistant (●)
+			// or tool (⎿) output follows it, the banner is scrollback, not a live
+			// stall: either a quoted/fixture banner (this repo's own tests embed
+			// ⎿ banner fixtures, which is exactly how the proj pane self-flagged
+			// "out of tokens") or one Claude already resumed past. Acting on it
+			// would be a false positive.
+			if connDropNewerRE.MatchString(content[end:]) {
+				continue
+			}
 			dateStr := ""
 			if m[2] >= 0 {
 				dateStr = content[m[2]:m[3]]

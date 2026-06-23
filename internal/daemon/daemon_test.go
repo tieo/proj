@@ -512,6 +512,25 @@ func TestDetect_ConnDropProseIgnored(t *testing.T) {
 	}
 }
 
+func TestDetect_BannerWithNewerOutputIgnored(t *testing.T) {
+	// Real ⎿ banner, but newer ● assistant output follows it: scrollback / a
+	// quoted fixture (how the proj pane self-flagged "out of tokens"), not a
+	// live stall. Must not match.
+	content := realBannerInline + "\n\n" +
+		"● Got it, continuing the refactor.\n\n" + prompt
+	if b := Detect(content, time.Now()); b != nil {
+		t.Errorf("banner with newer output must not match, got %+v", b)
+	}
+}
+
+func TestDetect_BannerAsLatestStillMatches(t *testing.T) {
+	// Same banner, nothing newer after it → still a live stall → detected.
+	content := "● Working on it.\n\n" + realBannerInline + "\n\n" + prompt
+	if Detect(content, time.Now()) == nil {
+		t.Fatal("banner as the latest output must still be detected")
+	}
+}
+
 func TestDecide_TransientCooldown(t *testing.T) {
 	content := "  ⎿  API Error: Server is temporarily limiting requests (not your usage limit) · Rate limited"
 	now := time.Now()
