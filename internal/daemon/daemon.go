@@ -305,6 +305,10 @@ var rcPaneFirstSeen = map[string]time.Time{}
 // lost it (a silent drop), never one that has never bound - --remote-control
 // auto-binds at startup, so an unbound-so-far pane is still connecting and a /rc
 // nudge would only open the picker into live input. Pruned with dead panes.
+//
+// This is per-pane and wiped on daemon restart; ManagedSession.RCEverActive
+// mirrors it durably (keyed by session) so a restart doesn't orphan a session
+// that bound before it. The watchdog ORs the two.
 var rcEverActive = map[string]bool{}
 
 // rcEnabled reports whether the configured launch command opts into Remote
@@ -1163,6 +1167,7 @@ type ManagedSession struct {
 	KeepAlive     bool      `json:"keep_alive"`     // recreate if not cleanly closed
 	ExitedCleanly bool      `json:"exited_cleanly"` // got a clean goodbye (proj close / shell trap)
 	SeenAt        time.Time `json:"seen_at"`        // last time daemon observed session alive
+	RCEverActive  bool      `json:"rc_ever_active"` // Remote Control was observed bound at least once
 }
 
 // ManagedState is the persisted map of all sessions proj daemon knows about.
@@ -1443,8 +1448,16 @@ func Tick(cfg Config, state State, errorState ErrorState, managed ManagedState, 
 		zone, zoneOk := rcTUIZone(content)
 		// Latch "ever active" the moment RC binds, so the watchdog can later tell
 		// a silent drop (was active, now blank) from a pane still auto-binding.
+		// Mirror it into the persisted managed state, keyed by session name: the
+		// in-memory map is per-pane and wiped on every daemon restart, so without
+		// this a session whose RC dropped while the daemon was down (or restarted)
+		// would be treated as never-bound forever and never recovered.
 		if zoneOk && rcActiveRE.MatchString(zone) {
 			rcEverActive[p.ID] = true
+			if ms, ok := managed[p.Session]; ok && !ms.RCEverActive {
+				ms.RCEverActive = true
+				managed[p.Session] = ms
+			}
 		}
 
 		// 1b-pre) The /rc binding dialog (rcPickerRE) needs Enter, not Escape.
@@ -1508,7 +1521,10 @@ func Tick(cfg Config, state State, errorState ErrorState, managed ManagedState, 
 			// bound is still connecting (--remote-control auto-binds at startup);
 			// nudging it just opens the picker into live input - the bug that
 			// typed /rc into freshly-recreated sessions.
-			trigger := failed || (rcEverActive[p.ID] && now.Sub(rcNudgedAt[p.ID]) >= rcNudgeCooldown)
+			// "ever active" comes from the in-memory latch OR the persisted flag,
+			// so a daemon restart doesn't orphan a session that bound before it.
+			everActive := rcEverActive[p.ID] || managed[p.Session].RCEverActive
+			trigger := failed || (everActive && now.Sub(rcNudgedAt[p.ID]) >= rcNudgeCooldown)
 			if pastGrace && trigger {
 				slog.Info("remote-control inactive, re-binding",
 					"session", p.Session, "pane", p.ID,

@@ -876,6 +876,27 @@ func TestSaveLoadState_Roundtrip(t *testing.T) {
 	}
 }
 
+func TestSaveLoadManagedState_RCEverActivePersists(t *testing.T) {
+	// The RC watchdog's in-memory rcEverActive is wiped on restart; the
+	// persisted mirror must survive so a session that bound before a restart
+	// is still recoverable after it.
+	path := t.TempDir() + "/daemon.json"
+	in := ManagedState{
+		"virtmc@big_projects+qemu": {Name: "virtmc@big_projects+qemu", RCEverActive: true},
+		"proj@go+tools":            {Name: "proj@go+tools", RCEverActive: false},
+	}
+	if err := SaveManagedState(path, in); err != nil {
+		t.Fatal(err)
+	}
+	out := LoadManagedState(path)
+	if !out["virtmc@big_projects+qemu"].RCEverActive {
+		t.Error("RCEverActive=true must survive the roundtrip")
+	}
+	if out["proj@go+tools"].RCEverActive {
+		t.Error("RCEverActive=false must stay false")
+	}
+}
+
 func TestRCWatchdog_Detection(t *testing.T) {
 	// wouldNudge replays the watchdog gate using the TUI zone (⏵⏵ line + context
 	// line above it): fire only when the zone is present and lacks an RC marker.
