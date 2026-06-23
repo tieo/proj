@@ -835,6 +835,16 @@ func TestDetectAPIError_NonBreakingSpaces(t *testing.T) {
 	}
 }
 
+func TestDetectAPIError_CurrentPromptGlyph(t *testing.T) {
+	// The live input prompt is "> " with a non-breaking space (U+00A0), not the
+	// old "❯". The idle gate must accept it, or DetectAPIError returns nil in
+	// production and the compact/clear recovery path never fires.
+	s := "⎿ API Error: 500 {\"type\":\"error\",\"error\":{\"type\":\"api_error\",\"message\":\"overloaded\"}}\n> \n"
+	if got := DetectAPIError(s); got == nil {
+		t.Error("must detect API error with the current \"> \" (NBSP) prompt glyph")
+	}
+}
+
 func TestDetectAPIError_RealCapture(t *testing.T) {
 	// realAPIErrorCapture uses regular spaces (test fixture); the NBSP test
 	// above covers the real tmux encoding. Both must pass.

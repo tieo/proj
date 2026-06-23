@@ -121,14 +121,6 @@ var transientPattern = regexp.MustCompile(`⎿` + sp + `+API Error:` + sp + `+Se
 // same phrase appearing in tool output, a code block, prose, or this source.
 var connDropPattern = regexp.MustCompile(`(?m)^` + sp + `*●` + sp + `+API Error:` + sp + `+(?:Connection closed mid-response|Connection error|stream (?:closed|disconnected|error)|fetch failed|socket hang ?up|terminated|premature close|network (?:error|connection lost)|ECONNRESET)`)
 
-// connDropPromptRE matches Claude Code's live input prompt at column 0: the
-// current TUI uses "> " where the space is a non-breaking space (U+00A0);
-// older builds used "❯". Its presence means Claude returned control to the
-// user (idle), and the last match marks the boundary between rendered output
-// above and the user's input buffer below. The NBSP is what keeps this from
-// matching ordinary "> " shell/diff/quote lines.
-var connDropPromptRE = regexp.MustCompile(`(?m)^(?:❯|>\x{00a0})`)
-
 // connDropNewerRE matches a newer assistant (●) or tool (⎿) line. If one sits
 // between the error and the live prompt, Claude already produced fresh output
 // (resumed), so the error is stale scrollback, not a live stall.
@@ -354,13 +346,19 @@ var apiErrorRE = regexp.MustCompile(`⎿` + sp + `+API Error:` + sp + `*(\d{3})`
 // (the broken content is in history and will keep failing until /clear or restart).
 var compactFailedRE = regexp.MustCompile(`⎿` + sp + `+Error: Error during compaction:`)
 
-// inputPromptRE matches the Claude Code input prompt: ❯ at the start of a
-// line (after a newline or at the beginning of the string). In Claude Code's
-// TUI, picker option lines (e.g. "❯ 1. Stop and wait") always have leading
-// spaces, so they cannot start at column 0 and ^❯ never matches them. Text
-// in the input buffer ("❯ commit this") is intentionally matched; a session
-// with unsent text AND a recent API error is still idle and should be recovered.
-var inputPromptRE = regexp.MustCompile(`(?m)^❯`)
+// inputPromptRE matches the Claude Code input prompt at the start of a line.
+// Current builds render it as "> " where the space is a non-breaking space
+// (U+00A0); older builds used "❯". Both are matched. Picker option lines
+// (e.g. "❯ 1. Stop and wait") always have leading spaces, so they cannot start
+// at column 0 and never match. The NBSP after ">" is what keeps this from
+// matching ordinary "> " shell/diff/quote lines. Text in the input buffer
+// ("> commit this") is intentionally matched; a session with unsent text AND a
+// recent API error is still idle and should be recovered.
+//
+// NOTE: matching the live prompt is required for DetectAPIError's idle gate and
+// for connDropResumable. When Claude Code last changed this glyph (❯ → "> "),
+// the old ^❯-only form silently disabled both - hence both alternatives here.
+var inputPromptRE = regexp.MustCompile(`(?m)^(?:❯|>\x{00a0})`)
 
 // modelRE matches the Claude model ID as rendered in the Claude Code TUI status
 // bar (e.g. "claude-sonnet-4-6", "claude-opus-4-7", "claude-haiku-4-5-20251001").
@@ -491,7 +489,7 @@ func connDropResumable(content string) (string, bool) {
 	if len(locs) == 0 {
 		return "", false
 	}
-	prompts := connDropPromptRE.FindAllStringIndex(content, -1)
+	prompts := inputPromptRE.FindAllStringIndex(content, -1)
 	if len(prompts) == 0 {
 		return "", false
 	}
