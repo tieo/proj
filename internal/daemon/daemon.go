@@ -112,14 +112,17 @@ const transientShortBackoff = 60 * time.Second
 // same instant (typically right at a usage-reset minute).
 var transientPattern = regexp.MustCompile(`⎿` + sp + `+API Error:` + sp + `+Server is temporarily limiting requests`)
 
-// connDropPattern matches API errors from a dropped/interrupted connection
-// (e.g. "API Error: Connection closed mid-response"). These carry no HTTP
-// status + JSON, so apiErrorRE misses them, and they are not rate limits, so
-// transientPattern misses them too. Unlike those (rendered as ⎿ tool output)
-// they render as an assistant bullet ("● API Error: ..."), so the leading ●
-// is required - that is what tells a live, TUI-rendered error apart from the
-// same phrase appearing in tool output, a code block, prose, or this source.
-var connDropPattern = regexp.MustCompile(`(?m)^` + sp + `*●` + sp + `+API Error:` + sp + `+(?:Connection closed mid-response|Connection error|stream (?:closed|disconnected|error)|fetch failed|socket hang ?up|terminated|premature close|network (?:error|connection lost)|ECONNRESET)`)
+// bulletErrorRE matches recoverable API errors that Claude Code renders as an
+// assistant bullet ("● API Error: ...") rather than ⎿ tool output: dropped or
+// interrupted connections AND the transient gateway rate limit. The ⎿-anchored
+// apiErrorRE (HTTP status + JSON) and transientPattern miss the bullet form, so
+// without this the session sits stalled (the observed case: a 1-hour stall on
+// "● API Error: Server is temporarily limiting requests"). The leading ● is
+// required - it tells a live, TUI-rendered error apart from the same phrase in
+// tool output, a code block, prose, or this source. A "continue" recovers all
+// of them; bulletErrorResumable adds the idle guards (the ● line persists in
+// scrollback, so a bare match would otherwise re-fire every poll).
+var bulletErrorRE = regexp.MustCompile(`(?m)^` + sp + `*●` + sp + `+API Error:` + sp + `+(?:Connection closed mid-response|Connection error|stream (?:closed|disconnected|error)|fetch failed|socket hang ?up|terminated|premature close|network (?:error|connection lost)|ECONNRESET|Server is temporarily limiting requests)`)
 
 // connDropNewerRE matches a newer assistant (●) or tool (⎿) line. If one sits
 // between the error and the live prompt, Claude already produced fresh output
@@ -360,7 +363,7 @@ var compactFailedRE = regexp.MustCompile(`⎿` + sp + `+Error: Error during comp
 // recent API error is still idle and should be recovered.
 //
 // NOTE: matching the live prompt is required for DetectAPIError's idle gate and
-// for connDropResumable. When Claude Code last changed this glyph (❯ → "> "),
+// for bulletErrorResumable. When Claude Code last changed this glyph (❯ → "> "),
 // the old ^❯-only form silently disabled both - hence both alternatives here.
 var inputPromptRE = regexp.MustCompile(`(?m)^(?:❯|>\x{00a0})`)
 
@@ -474,13 +477,14 @@ func DecideCompact(apiErr *APIError, prev ErrorTracked, now time.Time, minAge ti
 	return now.Sub(prev.FirstSeen) >= minAge
 }
 
-// connDropResumable reports whether `content` shows a Claude session stalled at
-// the prompt by a dropped-connection API error that a "continue" would recover,
-// and returns the matched error text. It is deliberately strict to avoid
-// re-firing on the same error every poll (the ● line stays in scrollback):
+// bulletErrorResumable reports whether `content` shows a Claude session stalled
+// at the prompt by a ●-rendered recoverable API error (see bulletErrorRE) that a
+// "continue" would recover, and returns the matched error text. It is
+// deliberately strict to avoid re-firing on the same error every poll (the ●
+// line stays in scrollback):
 //
-//  1. The error must be a live ●-rendered "API Error: <conn-drop phrase>".
-//  2. The session must be idle - a live input prompt (connDropPromptRE) present,
+//  1. The error must be a live ●-rendered "API Error: <recoverable phrase>".
+//  2. The session must be idle - a live input prompt (inputPromptRE) present,
 //     with the error ABOVE the last prompt (not pasted into the input buffer).
 //  3. The error must be the latest output - no newer ●/⎿ line between it and the
 //     prompt (otherwise Claude already resumed; the error is stale scrollback).
@@ -488,8 +492,8 @@ func DecideCompact(apiErr *APIError, prev ErrorTracked, now time.Time, minAge ti
 //
 // Found false → leave it alone (manual nudge); a false "continue" injected into
 // a working session is worse than a missed auto-resume.
-func connDropResumable(content string) (string, bool) {
-	locs := connDropPattern.FindAllStringIndex(content, -1)
+func bulletErrorResumable(content string) (string, bool) {
+	locs := bulletErrorRE.FindAllStringIndex(content, -1)
 	if len(locs) == 0 {
 		return "", false
 	}
@@ -540,12 +544,13 @@ func Detect(content string, now time.Time) *Banner {
 		}
 		return &Banner{Backoff: transientShortBackoff, Text: text}
 	}
-	// Connection-drop errors: same short-backoff "continue" as the rate limit,
-	// but only when the session is genuinely stalled at the prompt (see
-	// connDropResumable for the idle guards). Checked after the rate-limit
-	// pattern so a real throttle still wins; the idle guards reject stale
-	// scrollback, so it does not need to precede the usage-limit banners.
-	if text, ok := connDropResumable(content); ok {
+	// ●-rendered recoverable API errors (dropped connection, or the transient
+	// rate limit when it renders as a bullet instead of ⎿): same short-backoff
+	// "continue", but only when the session is genuinely stalled at the prompt
+	// (see bulletErrorResumable for the idle guards). Checked after the ⎿
+	// rate-limit pattern; the idle guards reject stale scrollback, so it does
+	// not need to precede the usage-limit banners.
+	if text, ok := bulletErrorResumable(content); ok {
 		return &Banner{Backoff: transientShortBackoff, Text: text}
 	}
 	for _, re := range bannerPatterns {
