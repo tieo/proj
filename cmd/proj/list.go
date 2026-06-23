@@ -160,27 +160,24 @@ func runList(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	// Adaptive column widths: max content width + 2, with minimums.
-	nameW, tagsW, modelW := 8, 5, 0
+	// Adaptive column widths: max content width + 2, with minimums. Tags are
+	// rendered last (unaligned trailing metadata), so they need no width.
+	nameW, modelW := 8, 0
 	for _, r := range rows {
 		if len(r.name) > nameW {
 			nameW = len(r.name)
-		}
-		if len(r.tags) > tagsW {
-			tagsW = len(r.tags)
 		}
 		if len(r.model) > modelW {
 			modelW = len(r.model)
 		}
 	}
 	nameW += 2
-	tagsW += 2
 	if modelW > 0 {
 		modelW += 2
 	}
 
 	for _, r := range rows {
-		line := fmt.Sprintf("  %s %-*s %-*s", r.indicator, nameW, r.name, tagsW, r.tags)
+		line := fmt.Sprintf("  %s %-*s", r.indicator, nameW, r.name)
 		if modelW > 0 {
 			line += fmt.Sprintf("%-*s", modelW, r.model)
 		}
@@ -191,6 +188,10 @@ func runList(cmd *cobra.Command, args []string) error {
 				nc = ansiDim
 			}
 			line += "  " + nc + r.note + ansiReset
+		}
+		// Tags (or, for orphan sessions, the path) trail everything else.
+		if r.tags != "" {
+			line += "  " + ansiDim + r.tags + ansiReset
 		}
 		fmt.Println(line)
 	}
