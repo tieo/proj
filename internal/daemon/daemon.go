@@ -322,19 +322,20 @@ func rcEnabled(cfg Config) bool {
 
 // RCName formats the Remote Control session title shown on claude.ai. A proj
 // session name is "name@tag1+tag2" (no tags: just "name"); the RC title renders
-// it as "name[tag1,tag2]@host", with the brackets dropped when there are no
-// tags. The host trails as a suffix. ':' is avoided as a separator because it is
-// not a legal Windows path char (claude.exe runs via WSL interop); '@' and the
-// brackets are legal on both Linux and Windows.
+// it as "name@host[tag1,tag2]" - tags trail behind everything, dropped entirely
+// when there are none. ':' is avoided as a separator because it is not a legal
+// Windows path char (claude.exe runs via WSL interop); '@' and the brackets are
+// legal on both Linux and Windows.
 func RCName(session, host string) string {
 	name, tags := session, ""
 	if i := strings.IndexByte(session, '@'); i >= 0 {
 		name, tags = session[:i], session[i+1:]
 	}
+	out := name + "@" + host
 	if tags != "" {
-		name += "[" + strings.ReplaceAll(tags, "+", ",") + "]"
+		out += "[" + strings.ReplaceAll(tags, "+", ",") + "]"
 	}
-	return name + "@" + host
+	return out
 }
 
 // sp matches any mix of regular spaces and the non-breaking spaces (U+00A0)
