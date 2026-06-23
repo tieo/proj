@@ -112,6 +112,34 @@ const transientShortBackoff = 60 * time.Second
 // same instant (typically right at a usage-reset minute).
 var transientPattern = regexp.MustCompile(`⎿` + sp + `+API Error:` + sp + `+Server is temporarily limiting requests`)
 
+// connDropPattern matches API errors from a dropped/interrupted connection
+// (e.g. "API Error: Connection closed mid-response"). These carry no HTTP
+// status + JSON, so apiErrorRE misses them, and they are not rate limits, so
+// transientPattern misses them too. Unlike those (rendered as ⎿ tool output)
+// they render as an assistant bullet ("● API Error: ..."), so the leading ●
+// is required - that is what tells a live, TUI-rendered error apart from the
+// same phrase appearing in tool output, a code block, prose, or this source.
+var connDropPattern = regexp.MustCompile(`(?m)^` + sp + `*●` + sp + `+API Error:` + sp + `+(?:Connection closed mid-response|Connection error|stream (?:closed|disconnected|error)|fetch failed|socket hang ?up|terminated|premature close|network (?:error|connection lost)|ECONNRESET)`)
+
+// connDropPromptRE matches Claude Code's live input prompt at column 0: the
+// current TUI uses "> " where the space is a non-breaking space (U+00A0);
+// older builds used "❯". Its presence means Claude returned control to the
+// user (idle), and the last match marks the boundary between rendered output
+// above and the user's input buffer below. The NBSP is what keeps this from
+// matching ordinary "> " shell/diff/quote lines.
+var connDropPromptRE = regexp.MustCompile(`(?m)^(?:❯|>\x{00a0})`)
+
+// connDropNewerRE matches a newer assistant (●) or tool (⎿) line. If one sits
+// between the error and the live prompt, Claude already produced fresh output
+// (resumed), so the error is stale scrollback, not a live stall.
+var connDropNewerRE = regexp.MustCompile(`(?m)^` + sp + `*[●⎿]`)
+
+// connDropBusyRE matches an active-generation signal: the interrupt hint, or a
+// running spinner line ("Whisking… (2m 42s · …"). The "… (" timer signature is
+// present only while generating; a finished status ("Cogitated for 2m 27s")
+// has no ellipsis. If busy, the session is not stalled - do not inject.
+var connDropBusyRE = regexp.MustCompile(`esc to interrupt|…` + sp + `*\(`)
+
 var bannerPatterns = []*regexp.Regexp{
 	// Verified banner formats from real Claude Code (CLI TUI):
 	//   ⎿  You're out of extra usage · resets 3am (Europe/Berlin)
@@ -444,6 +472,51 @@ func DecideCompact(apiErr *APIError, prev ErrorTracked, now time.Time, minAge ti
 	return now.Sub(prev.FirstSeen) >= minAge
 }
 
+// connDropResumable reports whether `content` shows a Claude session stalled at
+// the prompt by a dropped-connection API error that a "continue" would recover,
+// and returns the matched error text. It is deliberately strict to avoid
+// re-firing on the same error every poll (the ● line stays in scrollback):
+//
+//  1. The error must be a live ●-rendered "API Error: <conn-drop phrase>".
+//  2. The session must be idle - a live input prompt (connDropPromptRE) present,
+//     with the error ABOVE the last prompt (not pasted into the input buffer).
+//  3. The error must be the latest output - no newer ●/⎿ line between it and the
+//     prompt (otherwise Claude already resumed; the error is stale scrollback).
+//  4. Not mid-generation - no interrupt hint or running spinner after the error.
+//
+// Found false → leave it alone (manual nudge); a false "continue" injected into
+// a working session is worse than a missed auto-resume.
+func connDropResumable(content string) (string, bool) {
+	locs := connDropPattern.FindAllStringIndex(content, -1)
+	if len(locs) == 0 {
+		return "", false
+	}
+	prompts := connDropPromptRE.FindAllStringIndex(content, -1)
+	if len(prompts) == 0 {
+		return "", false
+	}
+	lastPrompt := prompts[len(prompts)-1][0]
+	for i := len(locs) - 1; i >= 0; i-- {
+		m := locs[i]
+		if m[0] >= lastPrompt {
+			continue // below the live prompt: quoted/pasted into the input buffer
+		}
+		region := content[m[1]:lastPrompt]
+		if connDropNewerRE.MatchString(region) {
+			continue // newer ●/⎿ output → already resumed; stale error
+		}
+		if connDropBusyRE.MatchString(region) {
+			continue // still generating → not stalled
+		}
+		text := strings.Join(strings.Fields(content[m[0]:m[1]]), " ")
+		if len(text) > 160 {
+			text = text[:160]
+		}
+		return text, true
+	}
+	return "", false
+}
+
 // Detect returns the parsed banner if `content` shows a blocked Claude
 // session. Returns nil if no banner, the session is still proceeding via
 // extra-usage credits, the only match is buried in old scrollback, or
@@ -463,6 +536,14 @@ func Detect(content string, now time.Time) *Banner {
 		if len(text) > 160 {
 			text = text[:160]
 		}
+		return &Banner{Backoff: transientShortBackoff, Text: text}
+	}
+	// Connection-drop errors: same short-backoff "continue" as the rate limit,
+	// but only when the session is genuinely stalled at the prompt (see
+	// connDropResumable for the idle guards). Checked after the rate-limit
+	// pattern so a real throttle still wins; the idle guards reject stale
+	// scrollback, so it does not need to precede the usage-limit banners.
+	if text, ok := connDropResumable(content); ok {
 		return &Banner{Backoff: transientShortBackoff, Text: text}
 	}
 	for _, re := range bannerPatterns {

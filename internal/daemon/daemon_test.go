@@ -454,6 +454,64 @@ func TestDetect_TransientPattern(t *testing.T) {
 	}
 }
 
+// prompt is Claude Code's live input line: "> " where the space is U+00A0.
+const prompt = "> \n  ⏵⏵ bypass permissions on (shift+tab to cycle)\n"
+
+func TestDetect_ConnDropStalledResumes(t *testing.T) {
+	content := "● Now rewrite cli.py: run, ps, down. Writing locally.\n\n" +
+		"● API Error: Connection closed mid-response. The response above may be incomplete.\n\n" +
+		"✻ Cogitated for 2m 27s\n\n" + prompt
+	b := Detect(content, time.Now())
+	if b == nil {
+		t.Fatal("stalled conn-drop should be detected")
+	}
+	if b.Backoff <= 0 {
+		t.Errorf("conn-drop must carry a Backoff, got %v", b.Backoff)
+	}
+}
+
+func TestDetect_ConnDropAlreadyResumedIgnored(t *testing.T) {
+	// Newer ● output below the error → Claude resumed; must not re-fire.
+	content := "● API Error: Connection closed mid-response.\n\n" +
+		"● Bringing up BTG router + appl stack on virtmc.\n\n" + prompt
+	if b := Detect(content, time.Now()); b != nil {
+		t.Errorf("resumed session must not match, got %+v", b)
+	}
+}
+
+func TestDetect_ConnDropBusyIgnored(t *testing.T) {
+	// Active spinner ("… (timer") after the error → still generating.
+	content := "● API Error: Connection closed mid-response.\n\n" +
+		"· Whisking… (2m 42s · ↓ 9.5k tokens)\n\n" + prompt
+	if b := Detect(content, time.Now()); b != nil {
+		t.Errorf("busy session must not match, got %+v", b)
+	}
+}
+
+func TestDetect_ConnDropNoPromptIgnored(t *testing.T) {
+	// No live input prompt → cannot confirm idle.
+	content := "● API Error: Connection closed mid-response.\n✻ Cogitated for 1m\n"
+	if b := Detect(content, time.Now()); b != nil {
+		t.Errorf("without a prompt must not match, got %+v", b)
+	}
+}
+
+func TestDetect_ConnDropBelowPromptIgnored(t *testing.T) {
+	// Error pasted into the input buffer (below the live prompt).
+	content := prompt + "● API Error: Connection closed mid-response.\n"
+	if b := Detect(content, time.Now()); b != nil {
+		t.Errorf("error below the prompt must not match, got %+v", b)
+	}
+}
+
+func TestDetect_ConnDropProseIgnored(t *testing.T) {
+	// Phrase without the ● assistant bullet (prose / tool output / source).
+	content := "the API Error: Connection closed mid-response happened earlier\n" + prompt
+	if b := Detect(content, time.Now()); b != nil {
+		t.Errorf("prose mention must not match, got %+v", b)
+	}
+}
+
 func TestDecide_TransientCooldown(t *testing.T) {
 	content := "  ⎿  API Error: Server is temporarily limiting requests (not your usage limit) · Rate limited"
 	now := time.Now()
