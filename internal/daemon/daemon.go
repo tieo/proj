@@ -333,7 +333,7 @@ func RCName(session, host string) string {
 	}
 	out := name + "@" + host
 	if tags != "" {
-		out += "[" + strings.ReplaceAll(tags, "+", ",") + "]"
+		out += " [" + strings.ToLower(strings.ReplaceAll(tags, "+", ",")) + "]"
 	}
 	return out
 }
