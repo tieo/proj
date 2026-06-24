@@ -485,6 +485,19 @@ func TestDetect_BulletRateLimitStalledResumes(t *testing.T) {
 	}
 }
 
+func TestDetect_BulletOverloadedStalledResumes(t *testing.T) {
+	// 529 server overload, ● bullet, no JSON → apiErrorRE/transientPattern miss
+	// it. The real virtmc stall. bulletErrorRE must catch it.
+	content := "● API Error: 529 Overloaded. This is a server-side issue, usually temporary — try again in a moment.\n\n" + prompt
+	b := Detect(content, time.Now())
+	if b == nil {
+		t.Fatal("● -rendered 529 Overloaded should be detected")
+	}
+	if b.Backoff <= 0 {
+		t.Errorf("must carry a Backoff, got %v", b.Backoff)
+	}
+}
+
 func TestDetect_ConnDropAlreadyResumedIgnored(t *testing.T) {
 	// Newer ● output below the error → Claude resumed; must not re-fire.
 	content := "● API Error: Connection closed mid-response.\n\n" +

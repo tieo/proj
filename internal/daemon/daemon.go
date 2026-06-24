@@ -114,7 +114,9 @@ var transientPattern = regexp.MustCompile(`⎿` + sp + `+API Error:` + sp + `+Se
 
 // bulletErrorRE matches recoverable API errors that Claude Code renders as an
 // assistant bullet ("● API Error: ...") rather than ⎿ tool output: dropped or
-// interrupted connections AND the transient gateway rate limit. The ⎿-anchored
+// interrupted connections, the transient gateway rate limit, and server
+// overload ("529 Overloaded", which carries no JSON so apiErrorRE misses it
+// too). The ⎿-anchored
 // apiErrorRE (HTTP status + JSON) and transientPattern miss the bullet form, so
 // without this the session sits stalled (the observed case: a 1-hour stall on
 // "● API Error: Server is temporarily limiting requests"). The leading ● is
@@ -122,7 +124,7 @@ var transientPattern = regexp.MustCompile(`⎿` + sp + `+API Error:` + sp + `+Se
 // tool output, a code block, prose, or this source. A "continue" recovers all
 // of them; bulletErrorResumable adds the idle guards (the ● line persists in
 // scrollback, so a bare match would otherwise re-fire every poll).
-var bulletErrorRE = regexp.MustCompile(`(?m)^` + sp + `*●` + sp + `+API Error:` + sp + `+(?:Connection closed mid-response|Connection error|stream (?:closed|disconnected|error)|fetch failed|socket hang ?up|terminated|premature close|network (?:error|connection lost)|ECONNRESET|Server is temporarily limiting requests)`)
+var bulletErrorRE = regexp.MustCompile(`(?m)^` + sp + `*●` + sp + `+API Error:` + sp + `+(?:Connection closed mid-response|Connection error|stream (?:closed|disconnected|error)|fetch failed|socket hang ?up|terminated|premature close|network (?:error|connection lost)|ECONNRESET|Server is temporarily limiting requests|\d{3}` + sp + `+Overloaded)`)
 
 // connDropNewerRE matches a newer assistant (●) or tool (⎿) line. If one sits
 // between the error and the live prompt, Claude already produced fresh output
