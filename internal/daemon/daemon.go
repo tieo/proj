@@ -1492,6 +1492,16 @@ func Tick(cfg Config, state State, errorState ErrorState, managed ManagedState, 
 		}
 	}
 
+	// Authoritative RC connection state from the sessions API, fetched once per
+	// tick. The TUI chrome marker is unreliable - it rotates with slash-hints
+	// (/effort, /rc) and shows "connecting…", so a live, connected session often
+	// reads as "inactive" in the pane and the watchdog would keystroke /rc into
+	// it, opening the picker over live input. Trust the API: if it says a session
+	// is connected, never nudge it. Best-effort - nil when offline or
+	// unauthenticated, in which case the watchdog falls back to the chrome marker.
+	rcConn := RCConnections()
+	rcHost, _ := os.Hostname()
+
 	for _, p := range panes {
 		content := tmux.CapturePane(p.ID, cfg.Capture)
 
@@ -1588,12 +1598,17 @@ func Tick(cfg Config, state State, errorState ErrorState, managed ManagedState, 
 			// "ever active" comes from the in-memory latch OR the persisted flag,
 			// so a daemon restart doesn't orphan a session that bound before it.
 			everActive := rcEverActive[p.ID] || managed[p.Session].RCEverActive
-			trigger := failed || (everActive && now.Sub(rcNudgedAt[p.ID]) >= rcNudgeCooldown)
+			// API is the source of truth: if it reports this session connected,
+			// the pane just shows a hint instead of "/rc active" - do not nudge.
+			// When the API is unreachable (rcConn nil) fall back to the chrome.
+			apiConnected := rcConn != nil && rcConn[RCName(p.Session, rcHost)]
+			trigger := !apiConnected && (failed || (everActive && now.Sub(rcNudgedAt[p.ID]) >= rcNudgeCooldown))
 			if pastGrace && trigger {
 				slog.Info("remote-control inactive, re-binding",
 					"session", p.Session, "pane", p.ID,
 					"reason", map[bool]string{true: "failed", false: "drop"}[failed],
-					"ever_active", rcEverActive[p.ID],
+					"ever_active", everActive,
+					"api_known", rcConn != nil,
 					"status_line", strconv.Quote(statusLine),
 					"zone", strconv.Quote(zone))
 				if err := tmux.SendKeys(p.ID, "/rc"); err != nil {
