@@ -78,6 +78,13 @@ func runList(cmd *cobra.Command, args []string) error {
 		}
 	}
 
+	// Authoritative RC status from the sessions API (the pane marker is
+	// unreliable - it shows false "offline" on live, connected sessions). Best
+	// effort: nil when offline or unauthenticated, in which case we fall back to
+	// the pane-derived rcBySession above.
+	rcConn := daemon.RCConnections()
+	host, _ := os.Hostname()
+
 	all := projects.All(cfg.BaseDir)
 	if listTagF != "" {
 		filtered := all[:0]
@@ -121,8 +128,17 @@ func runList(cmd *cobra.Command, args []string) error {
 		sessName := projects.SessionName(p.Name, p.Tags)
 		ms, tracked := managed[sessName]
 		label := labelBySession[sessName]
-		rc := rcBySession[sessName]
 		alive := p.SessionTS > 0
+		rc := rcBySession[sessName]
+		// Prefer the API's connection truth for live sessions; the pane marker
+		// (rcBySession) is only the fallback when the API is unreachable.
+		if alive && rcConn != nil {
+			if rcConn[daemon.RCName(sessName, host)] {
+				rc = "active"
+			} else {
+				rc = "offline"
+			}
+		}
 
 		// Hide inactive projects older than the cutoff (active and pinned always shown).
 		if cutoff > 0 && !alive && !ms.Pinned && p.DirMTime < cutoff {
@@ -147,6 +163,13 @@ func runList(cmd *cobra.Command, args []string) error {
 			ms, tracked := managed[s.Name]
 			label := labelBySession[s.Name]
 			rc := rcBySession[s.Name]
+			if rcConn != nil { // orphans are always alive
+				if rcConn[daemon.RCName(s.Name, host)] {
+					rc = "active"
+				} else {
+					rc = "offline"
+				}
+			}
 			path := strings.Replace(s.Path, home, "~", 1)
 			rows = append(rows, listRow{
 				indicator: buildIndicator(true, ms.Pinned, label, rc),

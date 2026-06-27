@@ -12,6 +12,7 @@ import (
 	"io"
 	"log/slog"
 	"math/rand"
+	"net/http"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -338,6 +339,61 @@ func RCName(session, host string) string {
 		out += " [" + strings.ToLower(strings.ReplaceAll(tags, "+", ",")) + "]"
 	}
 	return out
+}
+
+// RCConnections returns a best-effort map of Remote Control session title to
+// whether its bridge is currently connected, read from the Anthropic sessions
+// API. That API is the authoritative source: the TUI status-line marker is
+// unreliable (it rotates with slash-hints and shows "connecting…"), so reading
+// RC state from the pane gives false "offline" on live, connected sessions.
+// Returns nil on any failure (no creds, offline, bad response, non-200) so
+// callers degrade quietly to no RC info rather than wrong info.
+func RCConnections() map[string]bool {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return nil
+	}
+	raw, err := os.ReadFile(filepath.Join(home, ".claude", ".credentials.json"))
+	if err != nil {
+		return nil
+	}
+	var creds struct {
+		ClaudeAiOauth struct {
+			AccessToken string `json:"accessToken"`
+		} `json:"claudeAiOauth"`
+	}
+	if json.Unmarshal(raw, &creds) != nil || creds.ClaudeAiOauth.AccessToken == "" {
+		return nil
+	}
+	req, err := http.NewRequest("GET", "https://api.anthropic.com/v1/sessions?limit=100", nil)
+	if err != nil {
+		return nil
+	}
+	req.Header.Set("Authorization", "Bearer "+creds.ClaudeAiOauth.AccessToken)
+	req.Header.Set("anthropic-version", "2023-06-01")
+	req.Header.Set("anthropic-beta", "ccr-byoc-2025-07-29")
+	resp, err := (&http.Client{Timeout: 4 * time.Second}).Do(req)
+	if err != nil {
+		return nil
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil
+	}
+	var out struct {
+		Data []struct {
+			Title            string `json:"title"`
+			ConnectionStatus string `json:"connection_status"`
+		} `json:"data"`
+	}
+	if json.NewDecoder(resp.Body).Decode(&out) != nil {
+		return nil
+	}
+	m := make(map[string]bool, len(out.Data))
+	for _, s := range out.Data {
+		m[s.Title] = s.ConnectionStatus == "connected"
+	}
+	return m
 }
 
 // sp matches any mix of regular spaces and the non-breaking spaces (U+00A0)
