@@ -927,11 +927,11 @@ func TestSaveLoadManagedState_RCEverActivePersists(t *testing.T) {
 
 func TestRCName(t *testing.T) {
 	cases := map[string]string{
-		"proj@go+tools":            "proj@myhost [go,tools]",
-		"virtmc@big_projects+qemu": "virtmc@myhost [big_projects,qemu]",
-		"TagHistory@Android":       "TagHistory@myhost [android]",
-		"proj@Go":                  "proj@myhost [go]",
-		"solo":                     "solo@myhost",
+		"proj@go+tools":            "proj @myhost [go,tools]",
+		"virtmc@big_projects+qemu": "virtmc @myhost [big_projects,qemu]",
+		"TagHistory@Android":       "TagHistory @myhost [android]",
+		"proj@Go":                  "proj @myhost [go]",
+		"solo":                     "solo @myhost",
 	}
 	for in, want := range cases {
 		if got := RCName(in, "myhost"); got != want {
