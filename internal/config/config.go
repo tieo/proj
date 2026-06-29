@@ -41,7 +41,7 @@ func Default() Config {
 	return Config{
 		BaseDir: filepath.Join(home, "projects", "code"),
 		Claude: ClaudeConfig{
-			Command:    "claude --dangerously-skip-permissions --remote-control {rc} -n {name}",
+			Command:    "claude --dangerously-skip-permissions --remote-control {rc} -n {rc}",
 			ResumeFlag: "-c",
 		},
 		Daemon: DaemonConfig{
