@@ -348,12 +348,12 @@ func RCName(session, host string) string {
 // RC state from the pane gives false "offline" on live, connected sessions.
 // Returns nil on any failure (no creds, offline, bad response, non-200) so
 // callers degrade quietly to no RC info rather than wrong info.
-func RCConnections() map[string]bool {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return nil
-	}
-	raw, err := os.ReadFile(filepath.Join(home, ".claude", ".credentials.json"))
+func RCConnections(homeOverride string) map[string]bool {
+	// Resolve .claude the WSL-aware way: under WSL claude.exe writes creds to the
+	// Windows home, so os.UserHomeDir() (Linux $HOME) points at a .claude that
+	// does not exist - which silently disabled this whole API path, falling back
+	// to the unreliable TUI marker (every session showed "RC offline").
+	raw, err := os.ReadFile(filepath.Join(claudeRoot(homeOverride), ".credentials.json"))
 	if err != nil {
 		return nil
 	}
@@ -1499,7 +1499,7 @@ func Tick(cfg Config, state State, errorState ErrorState, managed ManagedState, 
 	// it, opening the picker over live input. Trust the API: if it says a session
 	// is connected, never nudge it. Best-effort - nil when offline or
 	// unauthenticated, in which case the watchdog falls back to the chrome marker.
-	rcConn := RCConnections()
+	rcConn := RCConnections(cfg.ClaudeHome)
 	rcHost, _ := os.Hostname()
 
 	for _, p := range panes {

@@ -82,7 +82,7 @@ func runList(cmd *cobra.Command, args []string) error {
 	// unreliable - it shows false "offline" on live, connected sessions). Best
 	// effort: nil when offline or unauthenticated, in which case we fall back to
 	// the pane-derived rcBySession above.
-	rcConn := daemon.RCConnections()
+	rcConn := daemon.RCConnections(cfg.Claude.Home)
 	host, _ := os.Hostname()
 
 	all := projects.All(cfg.BaseDir)
