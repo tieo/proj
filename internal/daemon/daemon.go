@@ -317,6 +317,25 @@ var rcPaneFirstSeen = map[string]time.Time{}
 // that bound before it. The watchdog ORs the two.
 var rcEverActive = map[string]bool{}
 
+// rcConnLastGood holds the last successful RCConnections result and when it was
+// fetched. RCConnections returns nil on any transient failure (a 4s timeout, a
+// momentary network blip), and a nil result makes the watchdog fall back to the
+// unreliable chrome marker and nudge - popping the /rc picker over live input on
+// a session that is actually connected. Trusting the last good API snapshot for
+// a short window absorbs those blips: a genuine drop is still recovered once the
+// snapshot ages past rcConnCacheTTL and the chrome fallback takes over. Tick is
+// single-threaded, so no mutex.
+var (
+	rcConnLastGood   map[string]bool
+	rcConnLastGoodAt time.Time
+)
+
+// rcConnCacheTTL bounds how long a transient RCConnections failure keeps
+// trusting the last good snapshot before the watchdog falls back to the chrome
+// marker. Long enough to ride out a network blip, short enough that a real drop
+// during a sustained API outage still recovers.
+const rcConnCacheTTL = 3 * time.Minute
+
 // rcEnabled reports whether the configured launch command opts into Remote
 // Control, so the watchdog only nudges sessions that are supposed to have it.
 func rcEnabled(cfg Config) bool {
@@ -347,39 +366,47 @@ func RCName(session, host string) string {
 // API. That API is the authoritative source: the TUI status-line marker is
 // unreliable (it rotates with slash-hints and shows "connecting…"), so reading
 // RC state from the pane gives false "offline" on live, connected sessions.
-// Returns nil on any failure (no creds, offline, bad response, non-200) so
-// callers degrade quietly to no RC info rather than wrong info.
-func RCConnections(homeOverride string) map[string]bool {
+// Returns a nil map on any failure (no creds, offline, bad response, non-200)
+// so callers degrade quietly to no RC info rather than wrong info. The error
+// names which of those failures occurred: the watchdog logs it when it falls
+// back to the chrome marker and nudges, so a spurious /rc popup on a live
+// session can be traced to its cause (expired token vs network vs 401) instead
+// of a bare "api_known=false".
+func RCConnections(homeOverride string) (map[string]bool, error) {
 	// Resolve .claude the WSL-aware way: under WSL claude.exe writes creds to the
 	// Windows home, so os.UserHomeDir() (Linux $HOME) points at a .claude that
 	// does not exist - which silently disabled this whole API path, falling back
 	// to the unreliable TUI marker (every session showed "RC offline").
-	raw, err := os.ReadFile(filepath.Join(claudeRoot(homeOverride), ".credentials.json"))
+	credPath := filepath.Join(claudeRoot(homeOverride), ".credentials.json")
+	raw, err := os.ReadFile(credPath)
 	if err != nil {
-		return nil
+		return nil, fmt.Errorf("read creds %s: %w", credPath, err)
 	}
 	var creds struct {
 		ClaudeAiOauth struct {
 			AccessToken string `json:"accessToken"`
 		} `json:"claudeAiOauth"`
 	}
-	if json.Unmarshal(raw, &creds) != nil || creds.ClaudeAiOauth.AccessToken == "" {
-		return nil
+	if err := json.Unmarshal(raw, &creds); err != nil {
+		return nil, fmt.Errorf("parse creds: %w", err)
+	}
+	if creds.ClaudeAiOauth.AccessToken == "" {
+		return nil, fmt.Errorf("creds have empty accessToken")
 	}
 	req, err := http.NewRequest("GET", "https://api.anthropic.com/v1/sessions?limit=100", nil)
 	if err != nil {
-		return nil
+		return nil, fmt.Errorf("build request: %w", err)
 	}
 	req.Header.Set("Authorization", "Bearer "+creds.ClaudeAiOauth.AccessToken)
 	req.Header.Set("anthropic-version", "2023-06-01")
 	req.Header.Set("anthropic-beta", "ccr-byoc-2025-07-29")
 	resp, err := (&http.Client{Timeout: 4 * time.Second}).Do(req)
 	if err != nil {
-		return nil
+		return nil, fmt.Errorf("GET /v1/sessions: %w", err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return nil
+		return nil, fmt.Errorf("GET /v1/sessions: HTTP %d", resp.StatusCode)
 	}
 	var out struct {
 		Data []struct {
@@ -387,14 +414,24 @@ func RCConnections(homeOverride string) map[string]bool {
 			ConnectionStatus string `json:"connection_status"`
 		} `json:"data"`
 	}
-	if json.NewDecoder(resp.Body).Decode(&out) != nil {
-		return nil
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return nil, fmt.Errorf("decode /v1/sessions: %w", err)
 	}
 	m := make(map[string]bool, len(out.Data))
 	for _, s := range out.Data {
 		m[s.Title] = s.ConnectionStatus == "connected"
 	}
-	return m
+	return m, nil
+}
+
+// rcErrString renders an RCConnections error for a log attr, empty when the
+// call succeeded (so a nudge that fired because the API genuinely reported the
+// session disconnected logs api_err="" rather than "<nil>").
+func rcErrString(err error) string {
+	if err == nil {
+		return ""
+	}
+	return err.Error()
 }
 
 // sp matches any mix of regular spaces and the non-breaking spaces (U+00A0)
@@ -1500,8 +1537,18 @@ func Tick(cfg Config, state State, errorState ErrorState, managed ManagedState, 
 	// it, opening the picker over live input. Trust the API: if it says a session
 	// is connected, never nudge it. Best-effort - nil when offline or
 	// unauthenticated, in which case the watchdog falls back to the chrome marker.
-	rcConn := RCConnections(cfg.ClaudeHome)
+	rcConn, rcErr := RCConnections(cfg.ClaudeHome)
 	rcHost, _ := os.Hostname()
+	// Absorb a transient API failure: on success refresh the snapshot; on failure
+	// keep trusting the last good one until it ages out, so a single blip doesn't
+	// nudge live sessions via the chrome fallback. rcConnStale marks the snapshot
+	// as cached (past-tense) so a nudge that fires anyway records it.
+	rcConnStale := false
+	if rcConn != nil {
+		rcConnLastGood, rcConnLastGoodAt = rcConn, now
+	} else if rcConnLastGood != nil && now.Sub(rcConnLastGoodAt) < rcConnCacheTTL {
+		rcConn, rcConnStale = rcConnLastGood, true
+	}
 
 	for _, p := range panes {
 		content := tmux.CapturePane(p.ID, cfg.Capture)
@@ -1610,6 +1657,8 @@ func Tick(cfg Config, state State, errorState ErrorState, managed ManagedState, 
 					"reason", map[bool]string{true: "failed", false: "drop"}[failed],
 					"ever_active", everActive,
 					"api_known", rcConn != nil,
+					"api_stale", rcConnStale,
+					"api_err", rcErrString(rcErr),
 					"status_line", strconv.Quote(statusLine),
 					"zone", strconv.Quote(zone))
 				if err := tmux.SendKeys(p.ID, "/rc"); err != nil {
