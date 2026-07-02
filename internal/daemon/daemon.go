@@ -161,6 +161,15 @@ var timeRE = regexp.MustCompile(`^(\d{1,2})(?::(\d{2}))?(am|pm)$`)
 // answer. Acting on it interrupted the user mid-input and cancelled resumes.
 var selectorRE = regexp.MustCompile(`(?i)(?:What do you want to do\?|Stop and wait for limit to reset)`)
 
+// feedbackPromptRE matches Claude Code's post-session rating prompt ("How is
+// Claude doing this session?" with its 1:Bad / 2:Fine / 3:Good / 0:Dismiss
+// options). Claude renders it as chrome above the input box when a session
+// ends - including the moment a usage limit is hit, right below the limit
+// banner. Its ●-prefixed header is not assistant output, so it must neither be
+// mistaken for conversation that ages out the limit banner (see Detect's
+// stale-banner guard) nor left sitting on screen (the daemon dismisses it).
+var feedbackPromptRE = regexp.MustCompile(`(?im)^.*How is Claude doing this session\?.*$`)
+
 // A "❯ <digit>." line; the highlighted option marker. Distinctive: the
 // regular input prompt is "❯ " with no number after, so this only matches
 // inside an actual picker overlay (or its verbatim quote).
@@ -677,7 +686,14 @@ func Detect(content string, now time.Time) *Banner {
 			// ⎿ banner fixtures, which is exactly how the proj pane self-flagged
 			// "out of tokens") or one Claude already resumed past. Acting on it
 			// would be a false positive.
-			if connDropNewerRE.MatchString(content[end:]) {
+			//
+			// The post-limit feedback prompt is the exception: its ●-prefixed
+			// header renders directly below the banner the instant the limit is
+			// hit, so counting it as newer output would hide a live limit stall
+			// (session shows healthy, never auto-resumes). Drop those lines before
+			// the check - they confirm the limit, they do not postdate it.
+			afterBanner := feedbackPromptRE.ReplaceAllString(content[end:], "")
+			if connDropNewerRE.MatchString(afterBanner) {
 				continue
 			}
 			dateStr := ""
@@ -745,6 +761,14 @@ func HasSelector(content string) bool {
 		scanStart = 0
 	}
 	return pickerOptionRE.MatchString(content[scanStart:near])
+}
+
+// feedbackPromptVisible reports whether Claude Code's post-session rating
+// prompt is on screen right now (in the recent portion of the capture, not
+// buried in scrollback), so the daemon dismisses only a live one.
+func feedbackPromptVisible(content string) bool {
+	loc := feedbackPromptRE.FindStringIndex(content)
+	return loc != nil && loc[0] >= len(content)-recentWindow
 }
 
 // PaneState summarises what the daemon currently sees for one pane.
@@ -1560,6 +1584,22 @@ func Tick(cfg Config, state State, errorState ErrorState, managed ManagedState, 
 			slog.Info("dismiss selector", "session", p.Session, "pane", p.ID)
 			if err := tmux.SendKey(p.ID, "Escape"); err != nil {
 				slog.Error("send Escape failed", "session", p.Session, "err", err)
+			} else {
+				time.Sleep(cfg.DismissGap)
+				content = tmux.CapturePane(p.ID, cfg.Capture) // re-read post-dismiss
+			}
+		}
+
+		// 1a) Always clear Claude Code's post-session feedback prompt. It is not a
+		//     decision the daemon should route around a running session: it blocks
+		//     the pane and (below a usage-limit banner) hides a live limit stall.
+		//     Escape does NOT close it; only its "0: Dismiss" option does, which
+		//     records no rating. The feedbackPromptVisible gate keeps the bare "0"
+		//     from ever reaching the input box when no prompt is up.
+		if feedbackPromptVisible(content) {
+			slog.Info("dismiss feedback prompt", "session", p.Session, "pane", p.ID)
+			if err := tmux.SendKey(p.ID, "0"); err != nil {
+				slog.Error("send feedback dismiss failed", "session", p.Session, "err", err)
 			} else {
 				time.Sleep(cfg.DismissGap)
 				content = tmux.CapturePane(p.ID, cfg.Capture) // re-read post-dismiss

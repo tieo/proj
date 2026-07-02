@@ -62,6 +62,28 @@ func TestDetect_SessionLimit(t *testing.T) {
 	}
 }
 
+// TestDetect_LimitBehindFeedbackPrompt guards the case that showed a stuck
+// session as healthy: Claude hit its session limit, then rendered its
+// post-session feedback prompt directly below the banner. The prompt's ● header
+// counted as newer output, so the stale-banner guard discarded a live limit
+// stall - the session read green and never auto-resumed. The banner must be
+// detected despite the prompt, and the prompt must be recognised as dismissable.
+func TestDetect_LimitBehindFeedbackPrompt(t *testing.T) {
+	content := "  ⎿  You've hit your session limit · resets 5pm (Europe/Berlin)\n" +
+		"     /upgrade to increase your usage limit.\n" +
+		"● How is Claude doing this session? (optional)\n" +
+		"  1: Bad    2: Fine   3: Good   0: Dismiss\n" +
+		"──── devtools @lwenb4004 [vscode] ──\n" +
+		"❯ \n" +
+		"  ⏵⏵ bypass permissions on (shift+tab to cycle) · ← for agents\n"
+	if Detect(content, time.Now()) == nil {
+		t.Error("usage-limit banner must be detected even with the feedback prompt below it")
+	}
+	if !feedbackPromptVisible(content) {
+		t.Error("feedback prompt must be recognised so the daemon can dismiss it")
+	}
+}
+
 func TestDetect_StillUsingCreditsIgnored(t *testing.T) {
 	// Banner with the prefix but credits still active.
 	s := "  ⎿  out of extra usage · resets 3pm; continuing with extra usage"
