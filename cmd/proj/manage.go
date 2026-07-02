@@ -11,6 +11,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/tieo/proj/internal/config"
+	"github.com/tieo/proj/internal/daemon"
 	"github.com/tieo/proj/internal/projects"
 	"github.com/tieo/proj/internal/sessions"
 	"github.com/tieo/proj/internal/tmux"
@@ -34,7 +35,21 @@ var rmCmd = &cobra.Command{
 		if a := strings.ToLower(strings.TrimSpace(ans)); a != "y" && a != "yes" {
 			return fmt.Errorf("aborted")
 		}
-		_ = tmux.KillSession(projects.SessionName(p.Name, p.Tags))
+		// Drop the daemon's tracking first, so it cannot recreate the session
+		// between the kill and the directory removal. Without this the daemon
+		// keeps the managed entry and, with keep-alive on, respawns the removed
+		// project's session every poll. Best effort: the daemon also drops a
+		// tracked session whose directory is gone, so a lost race still resolves.
+		sessName := projects.SessionName(p.Name, p.Tags)
+		ucfg := daemonConfig()
+		managed := daemon.LoadManagedState(ucfg.StatePath)
+		if _, tracked := managed[sessName]; tracked {
+			delete(managed, sessName)
+			if err := daemon.SaveManagedState(ucfg.StatePath, managed); err != nil {
+				return fmt.Errorf("clear daemon tracking for %q: %w", sessName, err)
+			}
+		}
+		_ = tmux.KillSession(sessName)
 		if err := os.RemoveAll(p.Dir); err != nil {
 			return err
 		}
