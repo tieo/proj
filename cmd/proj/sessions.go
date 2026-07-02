@@ -71,7 +71,14 @@ func runSessions(cmd *cobra.Command, args []string) error {
 		s := shown[idx]
 		switch act {
 		case '\r':
-			return resumeSession(s)
+			// A successful resume hands off to claude and exits the list; a failed
+			// one (e.g. a session with no cwd) stays in the list so the user can
+			// pick another instead of the whole command erroring out.
+			if err := resumeSession(s); err != nil {
+				fmt.Fprintf(os.Stderr, "resume: %v\n", err)
+			} else {
+				return nil
+			}
 		case 'a':
 			if err := adoptSessionInteractive(cfg, home, all, s); err != nil {
 				fmt.Fprintf(os.Stderr, "adopt: %v\n", err)
@@ -408,6 +415,9 @@ func resumeSession(s sessions.Session) error {
 	dir := sessions.LocalDir(s.Cwd)
 	if dir == "" {
 		dir = s.Cwd
+	}
+	if dir == "" {
+		return fmt.Errorf("session %s has no recorded working directory (nothing to resume)", s.ID[:8])
 	}
 	if _, statErr := os.Stat(dir); os.IsNotExist(statErr) {
 		if err := os.MkdirAll(dir, 0o755); err != nil {
