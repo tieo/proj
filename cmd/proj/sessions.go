@@ -1,9 +1,11 @@
 package main
 
 import (
+	"bufio"
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -14,6 +16,7 @@ import (
 	"github.com/tieo/proj/internal/config"
 	"github.com/tieo/proj/internal/projects"
 	"github.com/tieo/proj/internal/sessions"
+	"github.com/tieo/proj/internal/tmux"
 )
 
 var sessionsCmd = &cobra.Command{
@@ -44,11 +47,67 @@ func runSessions(cmd *cobra.Command, args []string) error {
 		return err
 	}
 	home := sessions.Home(cfg.Claude.Home)
+
+	// Piped or redirected: print the static table, no interaction.
+	if !stdinIsTTY() {
+		return printSessionsTable(cfg, home)
+	}
+
+	// Interactive: a moving cursor over the sessions, acted on by key. After an
+	// action that mutates the list (adopt/stop/rm) the loop redraws the fresh
+	// state; resume hands off to claude and ends the loop.
+	for {
+		all, err := sessions.List(home)
+		if err != nil {
+			return err
+		}
+		header, lines, shown, hidden := sessionLines(cfg, all)
+		if len(lines) == 0 {
+			if hidden > 0 {
+				fmt.Printf("no recent Claude sessions (%d older; --all to show)\n", hidden)
+			} else {
+				fmt.Println("no Claude sessions found")
+			}
+			return nil
+		}
+		footer := "↑/↓ move · enter resume · a adopt · s stop · r rm · esc quit"
+		idx, act := selectAction(header, lines, footer, "asr")
+		if idx < 0 {
+			return nil
+		}
+		s := shown[idx]
+		switch act {
+		case '\r':
+			return resumeSession(s)
+		case 'a':
+			if err := adoptSessionInteractive(cfg, home, all, s); err != nil {
+				fmt.Fprintf(os.Stderr, "adopt: %v\n", err)
+			}
+		case 's':
+			if err := stopSessionInteractive(cfg, all, s); err != nil {
+				fmt.Fprintf(os.Stderr, "stop: %v\n", err)
+			}
+		case 'r':
+			if err := rmSessionInteractive(cfg, home, all, s); err != nil {
+				fmt.Fprintf(os.Stderr, "rm: %v\n", err)
+			}
+		}
+	}
+}
+
+// stdinIsTTY reports whether stdin is an interactive terminal (not a pipe or
+// redirect), so the sessions list only goes interactive when a user can drive it.
+func stdinIsTTY() bool {
+	fi, err := os.Stdin.Stat()
+	return err == nil && fi.Mode()&os.ModeCharDevice != 0
+}
+
+// printSessionsTable renders the static, non-interactive session table.
+func printSessionsTable(cfg config.Config, home string) error {
 	all, err := sessions.List(home)
 	if err != nil {
 		return err
 	}
-
 	header, lines, _, hidden := sessionLines(cfg, all)
 	if len(lines) == 0 {
 		if hidden > 0 {
@@ -66,6 +125,117 @@ func runSessions(cmd *cobra.Command, args []string) error {
 		fmt.Printf("\n  \033[90m%d older session(s) hidden; --all to show\033[0m\n", hidden)
 	}
 	return nil
+}
+
+// projectForSession returns the proj project a session's working directory
+// belongs to, if any.
+func projectForSession(cfg config.Config, all []sessions.Session, s sessions.Session) (projects.Project, bool) {
+	for _, p := range projects.All(cfg.BaseDir) {
+		if sessions.CwdForDir(p.Dir, all) == s.Cwd || p.Dir == sessions.LocalDir(s.Cwd) {
+			return p, true
+		}
+	}
+	return projects.Project{}, false
+}
+
+// adoptSessionInteractive adopts s into a project chosen interactively, using
+// the same Adopt the `proj sessions adopt` command runs.
+func adoptSessionInteractive(cfg config.Config, home string, all []sessions.Session, s sessions.Session) error {
+	p, err := pickProject(cfg, dirBase(s.Cwd))
+	if err != nil {
+		return err
+	}
+	targetCwd := sessions.CwdForDir(p.Dir, all)
+	if s.Cwd == targetCwd {
+		return fmt.Errorf("session already belongs to %s", p.Name)
+	}
+	newID, report, err := sessions.Adopt(home, s, targetCwd, true)
+	if err != nil {
+		if newID == "" {
+			return err
+		}
+		fmt.Fprintf(os.Stderr, "warning: %v\n", err)
+	}
+	fmt.Printf("adopted %s into %s as new session %s\n", s.ID[:8], p.Name, newID[:8])
+	for _, line := range report {
+		fmt.Printf("  %s\n", line)
+	}
+	return nil
+}
+
+// stopSessionInteractive stops (closes) the live tmux session for s, using the
+// same closeSession the `proj close` command runs. It keeps all files.
+func stopSessionInteractive(cfg config.Config, all []sessions.Session, s sessions.Session) error {
+	name := liveSessionNameForCwd(cfg, all, s)
+	if name == "" {
+		fmt.Println("no live session to stop")
+		return nil
+	}
+	if err := closeSession(name, false); err != nil {
+		return err
+	}
+	fmt.Printf("stopped %s\n", name)
+	return nil
+}
+
+// liveSessionNameForCwd returns the name of the live tmux session running in a
+// session's working directory, or "".
+func liveSessionNameForCwd(cfg config.Config, all []sessions.Session, s sessions.Session) string {
+	dir := sessions.LocalDir(s.Cwd)
+	if dir == "" {
+		dir = s.Cwd
+	}
+	if p, ok := projectForSession(cfg, all, s); ok {
+		want := projects.SessionName(p.Name, p.Tags)
+		for _, ts := range tmux.ListSessions() {
+			if ts.Name == want {
+				return want
+			}
+		}
+	}
+	for _, ts := range tmux.ListSessions() {
+		if ts.Path == dir || ts.Path == s.Cwd {
+			return ts.Name
+		}
+	}
+	return ""
+}
+
+// rmSessionInteractive removes s. When its cwd is a proj project, it deletes
+// the whole project via the same removeProject the `proj rm` command runs
+// (files included), after a confirm that names the directory. Otherwise it
+// removes just this session's transcript and per-session sidecars. Both paths
+// confirm first.
+func rmSessionInteractive(cfg config.Config, home string, all []sessions.Session, s sessions.Session) error {
+	if p, ok := projectForSession(cfg, all, s); ok {
+		if !confirm(fmt.Sprintf("rm project %s and delete its files at %s? [y/N] ", p.Name, p.Dir)) {
+			return nil
+		}
+		if err := removeProject(p); err != nil {
+			return err
+		}
+		fmt.Printf("removed project %s\n", p.Name)
+		return nil
+	}
+	if !confirm(fmt.Sprintf("rm session %s (transcript %s), keeping any project? [y/N] ", s.ID[:8], s.Path)) {
+		return nil
+	}
+	if err := os.Remove(s.Path); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	for _, kind := range []string{"tasks", "file-history"} {
+		_ = os.RemoveAll(filepath.Join(home, kind, s.ID))
+	}
+	fmt.Printf("removed session %s\n", s.ID[:8])
+	return nil
+}
+
+// confirm prints a yes/no prompt and reports whether the user answered yes.
+func confirm(prompt string) bool {
+	fmt.Print(prompt)
+	ans, _ := bufio.NewReader(os.Stdin).ReadString('\n')
+	a := strings.ToLower(strings.TrimSpace(ans))
+	return a == "y" || a == "yes"
 }
 
 // termWidth reports the controlling terminal's column count, defaulting to 120
@@ -204,13 +374,17 @@ func runSessionsResume(cmd *cobra.Command, args []string) error {
 	} else if s, err = pickSession(cfg, all); err != nil {
 		return err
 	}
+	return resumeSession(s)
+}
+
+// resumeSession hands off to `claude --resume` for s, launched from the
+// session's working directory (recreated empty if a temp-dir session outlived
+// it, since Claude locates a session by its cwd).
+func resumeSession(s sessions.Session) error {
 	dir := sessions.LocalDir(s.Cwd)
 	if dir == "" {
 		dir = s.Cwd
 	}
-	// Claude finds a session by its working directory, so it has to launch from
-	// that path. Temp-dir sessions outlive their directory; recreate it (empty)
-	// so the resume can still chdir there and locate the transcript.
 	if _, statErr := os.Stat(dir); os.IsNotExist(statErr) {
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			return fmt.Errorf("session directory %s is gone and could not be recreated: %w", dir, err)

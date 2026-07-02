@@ -108,6 +108,95 @@ func selectFromList(header string, lines []string) int {
 	}
 }
 
+// selectAction renders a header, rows, and a key-hint footer with a moving
+// cursor, returning the chosen row index and the action key pressed. Up/Down
+// (or k/j) move; Enter and each rune in actions return (index, key); q or Esc
+// return (-1, 0). Non-interactive stdin falls back to a numbered pick that only
+// supports Enter (returns index, '\r'). It is selectFromList plus custom action
+// keys, for a list where a row can be acted on several ways.
+func selectAction(header string, lines []string, footer string, actions string) (int, byte) {
+	if len(lines) == 0 {
+		return -1, 0
+	}
+	restore, ok := sttyRaw()
+	if !ok {
+		return numberedSelect(header, lines), '\r'
+	}
+	defer restore()
+	fmt.Print("\033[?25l")
+	defer fmt.Print("\033[?25h")
+
+	if header != "" {
+		fmt.Printf("\r\033[K  %s\r\n", header)
+	}
+	sel := 0
+	renderRow := func(i int) string {
+		marker := "  "
+		row := marker + lines[i]
+		if i == sel {
+			marker = "\033[36m❯\033[0m "
+			row = highlightRow(marker + lines[i])
+		}
+		return row
+	}
+	for i := range lines {
+		fmt.Printf("\r\033[K%s\r\n", renderRow(i))
+	}
+	if footer != "" {
+		fmt.Printf("\r\033[K  \033[90m%s\033[0m\r\n", footer)
+	}
+	// The footer occupies one line below the rows; account for it when moving
+	// the cursor back up to repaint a row in place.
+	footerLines := 0
+	if footer != "" {
+		footerLines = 1
+	}
+	repaint := func(i int) {
+		up := len(lines) - i + footerLines
+		fmt.Printf("\033[%dA\r\033[K%s\r\n", up, renderRow(i))
+		if down := len(lines) - i - 1 + footerLines; down > 0 {
+			fmt.Printf("\033[%dB", down)
+		}
+	}
+
+	buf := make([]byte, 8)
+	for {
+		n, err := os.Stdin.Read(buf)
+		if err != nil || n == 0 {
+			fmt.Print("\r\n")
+			return -1, 0
+		}
+		k := buf[:n]
+		up := (len(k) >= 3 && k[0] == 27 && k[1] == '[' && k[2] == 'A') || (len(k) == 1 && k[0] == 'k')
+		down := (len(k) >= 3 && k[0] == 27 && k[1] == '[' && k[2] == 'B') || (len(k) == 1 && k[0] == 'j')
+		switch {
+		case up:
+			if sel > 0 {
+				prev := sel
+				sel--
+				repaint(prev)
+				repaint(sel)
+			}
+		case down:
+			if sel < len(lines)-1 {
+				prev := sel
+				sel++
+				repaint(prev)
+				repaint(sel)
+			}
+		case len(k) == 1 && (k[0] == '\r' || k[0] == '\n'):
+			fmt.Print("\r\n")
+			return sel, '\r'
+		case len(k) == 1 && (k[0] == 'q' || k[0] == 3 || k[0] == 27):
+			fmt.Print("\r\n")
+			return -1, 0
+		case len(k) == 1 && strings.IndexByte(actions, k[0]) >= 0:
+			fmt.Print("\r\n")
+			return sel, k[0]
+		}
+	}
+}
+
 // sttyRaw puts the controlling terminal into raw, no-echo mode and returns a
 // restore func. ok is false when stdin is not a usable terminal.
 func sttyRaw() (restore func(), ok bool) {

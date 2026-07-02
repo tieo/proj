@@ -50,12 +50,24 @@ func runClose(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
+	if err := closeSession(name, closeForce); err != nil {
+		return err
+	}
+	fmt.Printf("closed %s\n", name)
+	return nil
+}
+
+// closeSession marks a session cleanly exited in the daemon's managed state
+// (so keep-alive does not recreate it) and kills its tmux session. unpin also
+// clears the pinned flag, so a pinned project stays closed. Shared by
+// `proj close` and the interactive sessions list's stop action.
+func closeSession(name string, unpin bool) error {
 	ucfg := daemonConfig()
 	managed := daemon.LoadManagedState(ucfg.StatePath)
 	ms := managed[name]
 	ms.Name = name
 	ms.ExitedCleanly = true
-	if closeForce {
+	if unpin {
 		ms.Pinned = false
 	}
 	managed[name] = ms
@@ -65,7 +77,6 @@ func runClose(cmd *cobra.Command, args []string) error {
 	if err := tmux.KillSession(name); err != nil {
 		return fmt.Errorf("kill session %q: %w", name, err)
 	}
-	fmt.Printf("closed %s\n", name)
 	return nil
 }
 
