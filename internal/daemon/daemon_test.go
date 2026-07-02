@@ -198,14 +198,14 @@ func TestHasSelector_EmptyPrompt(t *testing.T) {
 // ---------- Decide ----------
 
 func TestDecide_NoBanner(t *testing.T) {
-	if got := Decide("just shell output\n$ ls\n", Tracked{}, time.Now()); got != ActNone {
+	if got := Decide(Detect("just shell output\n$ ls\n", time.Now()), Tracked{}, time.Now()); got != ActNone {
 		t.Errorf("got %v, want ActNone", got)
 	}
 }
 
 func TestDecide_FirstAttemptImmediate(t *testing.T) {
 	// No prior state → first attempt fires immediately (no waiting).
-	if got := Decide(realBannerInline, Tracked{}, time.Now()); got != ActResume {
+	if got := Decide(Detect(realBannerInline, time.Now()), Tracked{}, time.Now()); got != ActResume {
 		t.Errorf("got %v, want ActResume", got)
 	}
 }
@@ -213,7 +213,7 @@ func TestDecide_FirstAttemptImmediate(t *testing.T) {
 func TestDecide_BannerPlusSelectorIsResume(t *testing.T) {
 	// Selector handling is independent of Decide; banner-present is the
 	// only thing that matters for the Resume/Wait classification.
-	if got := Decide(realBannerInline+"\n"+realSelector, Tracked{}, time.Now()); got != ActResume {
+	if got := Decide(Detect(realBannerInline+"\n"+realSelector, time.Now()), Tracked{}, time.Now()); got != ActResume {
 		t.Errorf("got %v, want ActResume (selector dismissal happens in Tick, outside Decide)", got)
 	}
 }
@@ -312,7 +312,7 @@ func TestHasSelector_PhraseWithoutOptionLineRejected(t *testing.T) {
 func TestDecide_WaitWhenRetryScheduled(t *testing.T) {
 	now := time.Now()
 	prev := Tracked{NextAttempt: now.Add(2 * time.Hour)}
-	if got := Decide(realBannerInline, prev, now); got != ActWait {
+	if got := Decide(Detect(realBannerInline, now), prev, now); got != ActWait {
 		t.Errorf("got %v, want ActWait (retry scheduled 2h out)", got)
 	}
 }
@@ -320,7 +320,7 @@ func TestDecide_WaitWhenRetryScheduled(t *testing.T) {
 func TestDecide_RetriesOnceScheduledTimeArrives(t *testing.T) {
 	now := time.Now()
 	prev := Tracked{NextAttempt: now.Add(-time.Second)} // just past
-	if got := Decide(realBannerInline, prev, now); got != ActResume {
+	if got := Decide(Detect(realBannerInline, now), prev, now); got != ActResume {
 		t.Errorf("got %v, want ActResume (NextAttempt already past)", got)
 	}
 }
@@ -586,12 +586,12 @@ func TestDecide_TransientCooldown(t *testing.T) {
 	now := time.Now()
 	// Just acted: should wait through the backoff before retrying.
 	prev := Tracked{LastActed: now.Add(-10 * time.Second)}
-	if got := Decide(content, prev, now); got != ActWait {
+	if got := Decide(Detect(content, now), prev, now); got != ActWait {
 		t.Errorf("within backoff: got %v, want ActWait", got)
 	}
 	// Acted longer ago than the backoff window: should retry.
 	prev = Tracked{LastActed: now.Add(-2 * time.Minute)}
-	if got := Decide(content, prev, now); got != ActResume {
+	if got := Decide(Detect(content, now), prev, now); got != ActResume {
 		t.Errorf("past backoff: got %v, want ActResume", got)
 	}
 }

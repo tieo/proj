@@ -60,7 +60,7 @@ func runList(cmd *cobra.Command, args []string) error {
 
 	// Scan panes for label (banner/error/selector state) and RC status per session.
 	// Model is read from JSONL session files instead; more reliable.
-	scan := daemon.ScanPanes(unrCfg.Capture)
+	scan := daemon.ScanPanes(cfg.Claude.Home, unrCfg.Capture)
 	labelBySession := make(map[string]string, len(scan))
 	rcBySession := make(map[string]string, len(scan))
 	for _, s := range scan {

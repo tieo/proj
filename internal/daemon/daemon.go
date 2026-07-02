@@ -6,6 +6,7 @@
 package daemon
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -798,15 +799,20 @@ func (s PaneState) Label() string {
 }
 
 // ScanPanes captures every pane and classifies each. Used by status output.
-func ScanPanes(captureLines int) []PaneState {
+// The usage-limit / transient-error banner is read from the pane's session
+// transcript (durable, scroll-proof), matching the daemon's resume path; the
+// selector, RC, and model still come from the live pane. homeOverride selects
+// the .claude root (WSL-aware) for locating each pane's transcript.
+func ScanPanes(homeOverride string, captureLines int) []PaneState {
 	panes := tmux.ListPanes()
 	now := time.Now()
 	out := make([]PaneState, 0, len(panes))
 	for _, p := range panes {
 		content := tmux.CapturePane(p.ID, captureLines)
+		sessFile := recentSessionFile(homeOverride, tmux.PaneCurrentPath(p.ID))
 		out = append(out, PaneState{
 			Pane:     p,
-			Banner:   Detect(content, now),
+			Banner:   DetectFromTranscript(sessFile, now),
 			Selector: HasSelector(content),
 			APIError: DetectAPIError(content),
 			Model:    modelRE.FindString(content),
@@ -869,6 +875,177 @@ func parseReset(dateStr, timeStr, tzStr string, now time.Time) (time.Time, error
 		target = target.AddDate(0, 0, 1)
 	}
 	return target, nil
+}
+
+// transcriptTailBytes bounds how much of a session transcript's end is read per
+// poll. Large enough to hold recent activity (the last error plus any turns
+// that resumed past it), small enough to parse cheaply on a multi-megabyte file.
+const transcriptTailBytes = 256 * 1024
+
+// usageLimitTextRE matches the reset-bearing usage-limit errors as Claude Code
+// records them in the transcript. There is no ⎿ marker to lean on here - the
+// isApiErrorMessage flag on the record already vouches this is a real limit
+// event, not prose - so this matches the phrasing directly. The three lead
+// forms ("out of extra usage", "session limit", "hit your limit") share the
+// "· resets <time> (tz)" tail; date is optional, timezone optional.
+var usageLimitTextRE = regexp.MustCompile(`(?i)(?:out of extra usage|session limit|hit your limit).*?resets\s+(?:([A-Za-z]+\s+\d{1,2}),\s+)?(\d{1,2}(?::\d{2})?\s*(?:am|pm))(?:\s*\(([A-Za-z_/+\-0-9]+)\))?`)
+
+// transientTextRE matches the recoverable API errors whose fix is a short-delay
+// retry ("continue"), not deferral to a usage reset: gateway rate limits,
+// overloads, and dropped/failed connections.
+var transientTextRE = regexp.MustCompile(`(?i)Server is temporarily limiting requests|\bOverloaded\b|Connection (?:error|closed|refused)|Unable to connect to API|stream (?:closed|disconnected|error)|fetch failed|socket hang ?up|ECONNRESET|terminated|premature close`)
+
+// transcriptRecord is the subset of a transcript jsonl line the detector needs.
+type transcriptRecord struct {
+	Type              string `json:"type"`
+	IsAPIErrorMessage bool   `json:"isApiErrorMessage"`
+	Message           struct {
+		Model   string          `json:"model"`
+		Content json.RawMessage `json:"content"`
+	} `json:"message"`
+}
+
+// isRealTurn reports whether the record is a genuine conversation turn - a
+// real-model assistant reply or actual user text - as opposed to a synthetic
+// error message or tool bookkeeping. A real turn after an error means the
+// session resumed past it and is no longer stalled.
+func (r *transcriptRecord) isRealTurn() bool {
+	if r.IsAPIErrorMessage {
+		return false
+	}
+	switch r.Type {
+	case "assistant":
+		return r.Message.Model != "" && r.Message.Model != "<synthetic>"
+	case "user":
+		return recordContentText(r.Message.Content) != ""
+	}
+	return false
+}
+
+// isSyntheticError reports whether the record is one of Claude Code's locally
+// injected error/limit messages (model "<synthetic>", isApiErrorMessage set).
+func (r *transcriptRecord) isSyntheticError() bool {
+	return r.IsAPIErrorMessage && r.Message.Model == "<synthetic>"
+}
+
+// recordContentText flattens a message's content (a bare string, or an array of
+// {type,text} blocks) to plain text.
+func recordContentText(raw json.RawMessage) string {
+	if len(raw) == 0 {
+		return ""
+	}
+	var s string
+	if json.Unmarshal(raw, &s) == nil {
+		return strings.TrimSpace(s)
+	}
+	var blocks []struct {
+		Text string `json:"text"`
+	}
+	if json.Unmarshal(raw, &blocks) == nil {
+		var b strings.Builder
+		for _, x := range blocks {
+			if x.Text != "" {
+				b.WriteString(x.Text)
+				b.WriteByte(' ')
+			}
+		}
+		return strings.TrimSpace(b.String())
+	}
+	return ""
+}
+
+// bannerFromErrorText classifies a synthetic error's text into the retry the
+// daemon should schedule: a usage-limit deferral to its reset time, or a
+// short-backoff retry for a transient failure. Permanent errors that need the
+// user (login, model unavailable) return nil - the daemon must not auto-resume
+// them.
+func bannerFromErrorText(text string, now time.Time) *Banner {
+	clean := strings.Join(strings.Fields(text), " ")
+	if len(clean) > 160 {
+		clean = clean[:160]
+	}
+	if m := usageLimitTextRE.FindStringSubmatch(text); m != nil {
+		reset, _ := parseReset(m[1], m[2], m[3], now)
+		return &Banner{Reset: reset, Text: clean}
+	}
+	if transientTextRE.MatchString(text) {
+		return &Banner{Backoff: transientShortBackoff, Text: clean}
+	}
+	return nil
+}
+
+// DetectFromTranscript reports a live usage-limit or transient-error stall read
+// from a session transcript, or nil. It reads only the file's tail, finds the
+// most recent synthetic error record, and returns a banner for it only if no
+// real conversation turn follows - i.e. the session is still stalled there, not
+// resumed past it. This is the durable, scroll-proof counterpart to scraping
+// the pane: the transcript carries an explicit isApiErrorMessage flag (no prose
+// false positives) and is unaffected by mouse-mode scroll position or viewport
+// truncation.
+func DetectFromTranscript(path string, now time.Time) *Banner {
+	if path == "" {
+		return nil
+	}
+	data := readFileTail(path, transcriptTailBytes)
+	if len(data) == 0 {
+		return nil
+	}
+	lines := strings.Split(string(data), "\n")
+	recs := make([]*transcriptRecord, len(lines))
+	lastErr := -1
+	for i, ln := range lines {
+		if ln == "" {
+			continue
+		}
+		var r transcriptRecord
+		if json.Unmarshal([]byte(ln), &r) != nil {
+			continue
+		}
+		recs[i] = &r
+		if r.isSyntheticError() {
+			lastErr = i
+		}
+	}
+	if lastErr < 0 {
+		return nil
+	}
+	for _, r := range recs[lastErr+1:] {
+		if r != nil && r.isRealTurn() {
+			return nil // resumed past the error
+		}
+	}
+	return bannerFromErrorText(recordContentText(recs[lastErr].Message.Content), now)
+}
+
+// readFileTail returns the last n bytes of the file (all of it when smaller),
+// dropping a leading partial line so callers get whole records.
+func readFileTail(path string, n int64) []byte {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil
+	}
+	defer f.Close()
+	info, err := f.Stat()
+	if err != nil {
+		return nil
+	}
+	start := int64(0)
+	if info.Size() > n {
+		start = info.Size() - n
+	}
+	if _, err := f.Seek(start, io.SeekStart); err != nil {
+		return nil
+	}
+	data, err := io.ReadAll(f)
+	if err != nil {
+		return nil
+	}
+	if start > 0 {
+		if i := bytes.IndexByte(data, '\n'); i >= 0 {
+			data = data[i+1:]
+		}
+	}
+	return data
 }
 
 // launchSession recreates a tmux session for name at dir, running the Claude
@@ -1376,8 +1553,7 @@ const (
 	ActWait                 // banner visible but scheduled retry is in the future
 )
 
-func Decide(content string, prev Tracked, now time.Time) Action {
-	b := Detect(content, now)
+func Decide(b *Banner, prev Tracked, now time.Time) Action {
 	if b == nil {
 		return ActNone
 	}
@@ -1820,8 +1996,13 @@ func Tick(cfg Config, state State, errorState ErrorState, managed ManagedState, 
 			delete(errorState, p.ID)
 		}
 
-		// 3) Handle usage-limit banner (now visible if it was hidden behind the picker).
-		b := Detect(content, now)
+		// 3) Handle a usage-limit / transient-error stall, read from the session
+		//    transcript rather than the pane: the transcript carries an explicit
+		//    isApiErrorMessage flag (no prose false positives) and is immune to
+		//    scroll position (mouse mode) and viewport truncation, which the pane
+		//    scrape is not. The pane is still used above for selectors and RC.
+		sessFile := recentSessionFile(cfg.ClaudeHome, tmux.PaneCurrentPath(p.ID))
+		b := DetectFromTranscript(sessFile, now)
 		if b == nil {
 			if t, ok := state[p.ID]; ok {
 				reason := "banner cleared"
@@ -1834,7 +2015,7 @@ func Tick(cfg Config, state State, errorState ErrorState, managed ManagedState, 
 			continue
 		}
 		prev := state[p.ID]
-		switch Decide(content, prev, now) {
+		switch Decide(b, prev, now) {
 		case ActWait:
 			prev.LastSeen = now
 			prev.Banner = b.Text
