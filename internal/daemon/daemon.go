@@ -1683,6 +1683,19 @@ func Tick(cfg Config, state State, errorState ErrorState, managed ManagedState, 
 				continue
 			}
 		}
+		// A recreate target whose directory is gone is a removed project, not a
+		// vanished session: recreating it would spawn an orphan session at a
+		// non-existent path (which tmux drops back to $HOME), and keep-alive would
+		// respawn it every tick forever. Removing the project directory - however
+		// it happened, `proj rm` or by hand - is the stop signal. Renamed projects
+		// are already reconciled above (mergeRenamedAliases), so a missing dir here
+		// means gone, not moved. Applies to pinned too: a pin cannot outlive its
+		// directory.
+		if ms.Dir != "" && !isDir(ms.Dir) {
+			slog.Info("drop tracked; project directory removed", "session", name, "dir", ms.Dir)
+			delete(managed, name)
+			continue
+		}
 		if ms.Pinned {
 			slog.Info("recreate pinned session", "session", name, "dir", ms.Dir)
 			launchSession(cfg, name, ms.Dir)
