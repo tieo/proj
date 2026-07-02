@@ -13,9 +13,10 @@ import (
 	"github.com/tieo/proj/internal/sessions"
 )
 
-// newAdoptCmd builds a fresh adopt command. It is registered both at the top
-// level (`proj adopt`) and under sessions (`proj sessions adopt`), so it is a
-// factory rather than a package var (a cobra command cannot have two parents).
+// newAdoptCmd builds a fresh adopt command, registered under sessions
+// (`proj sessions adopt`). It is a factory rather than a package var so the same
+// command can also be mounted elsewhere without sharing a parent (a cobra
+// command cannot have two parents).
 func newAdoptCmd() *cobra.Command {
 	c := &cobra.Command{
 		Use:   "adopt [session-id] [project] [tags...]",
@@ -75,9 +76,13 @@ func runAdopt(cmd *cobra.Command, args []string) error {
 	newID, err := sessions.Adopt(home, s, targetCwd, !copyFile)
 	if err != nil {
 		if newID == "" {
-			return err // nothing was moved; the original is untouched
+			// Nothing was published and the original is untouched: a plain failure.
+			return fmt.Errorf("could not adopt session %s (nothing changed, original left in place): %w", s.ID[:8], err)
 		}
-		fmt.Fprintf(os.Stderr, "warning: %v\n", err) // the copy landed; only cleanup/bookkeeping failed
+		// The session was adopted but a final cleanup failed (e.g. a leftover
+		// original). Report the success and the caveat both, loudly.
+		fmt.Printf("adopted %s into %s as new session %s\n  open with: proj %s\n", s.ID[:8], p.Name, newID[:8], p.Name)
+		return fmt.Errorf("warning: %w", err)
 	}
 	verb := "moved"
 	if copyFile {

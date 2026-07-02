@@ -352,11 +352,17 @@ func oneLine(s string, max int) string {
 // target project's memory too - always copied, never moved, since memory is
 // shared by every session in a cwd and moving it would strand the others.
 //
-// When move is true the original is deleted, but only after the copy is read
-// back and verified byte-for-byte: the transcripts live on a flaky 9p mount, so
-// a silent short write must not cost the only copy. If verification fails the
-// original is left untouched and an error is returned (newID is ""). When move
-// is false the original is kept (the --copy-file behavior).
+// Adoption is all-or-nothing. Every piece is copied and verified first, while
+// nothing is deleted; only once the transcript, its sidecars, the project
+// memory and the continue pointer are all in place does a move delete the
+// originals. If any step fails, the copies made so far are rolled back and the
+// originals are left exactly as they were, so a failed adopt never strands a
+// duplicate transcript nor loses the source. On failure newID is "" and the
+// error explains what went wrong; the caller reports it rather than claiming a
+// move happened. When move is false nothing is deleted (the --copy-file
+// behavior). The one non-fatal case is a move whose final removal of an
+// original fails after everything else committed: newID is set and the error is
+// a warning that a leftover original remains.
 func Adopt(home string, sess Session, targetCwd string, move bool) (newID string, err error) {
 	targetDir := filepath.Join(home, "projects", EncodeCwd(targetCwd))
 	if err := os.MkdirAll(targetDir, 0o755); err != nil {
@@ -382,42 +388,73 @@ func Adopt(home string, sess Session, targetCwd string, move bool) (newID string
 		_ = os.Remove(dst)
 		return "", fmt.Errorf("could not verify the copied transcript landed at %s; left the original in place", dst)
 	}
-	if err := pointLastSession(home, targetCwd, newID); err != nil {
-		return newID, fmt.Errorf("copied transcript but could not update the continue pointer: %w", err)
+
+	// Everything below is non-destructive: copies only, each verified. Track the
+	// artifacts created so any failure can undo them, leaving the originals as
+	// they were. rollback removes the new transcript and any sidecar copies.
+	var createdSidecars []string
+	rollback := func() {
+		_ = os.Remove(dst)
+		for _, d := range createdSidecars {
+			_ = os.RemoveAll(d)
+		}
 	}
-	if err := relocateSidecars(home, sess.ID, newID, move); err != nil {
-		return newID, fmt.Errorf("adopted the session but could not carry over its tasks/history: %w", err)
+
+	createdSidecars, err = copySidecars(home, sess.ID, newID)
+	if err != nil {
+		rollback()
+		return "", fmt.Errorf("could not carry over the session's tasks/history; left the original in place: %w", err)
 	}
 	if err := copyProjectMemory(home, sess.Cwd, targetCwd); err != nil {
-		return newID, fmt.Errorf("adopted the session but could not carry over project memory: %w", err)
+		rollback()
+		return "", fmt.Errorf("could not carry over project memory; left the original in place: %w", err)
 	}
+	if err := pointLastSession(home, targetCwd, newID); err != nil {
+		rollback()
+		return "", fmt.Errorf("could not update the continue pointer; left the original in place: %w", err)
+	}
+
+	// Commit. Everything is copied and verified, so a move now deletes the
+	// originals. A failure here has already published the new session, so it is a
+	// warning about a leftover original, not a rollback.
 	if move {
+		removeSidecarSources(home, sess.ID)
 		if err := os.Remove(sess.Path); err != nil {
-			return newID, fmt.Errorf("copied to the new project but could not remove the original %s: %w", sess.ID[:8], err)
+			return newID, fmt.Errorf("adopted the session but could not remove the original transcript %s (a duplicate remains): %w", sess.ID[:8], err)
 		}
 	}
 	return newID, nil
 }
 
-// relocateSidecars carries the per-session folders Claude Code keys by session
-// id - the task list (tasks/<id>) and the file-edit history (file-history/<id>)
-// - from oldID to newID. Without this an adopted session resumes with an empty
-// task list because its tasks still sit under the old id. Folders that do not
-// exist are skipped; it is best effort and reports (but is not blocked by) the
-// first failure. When move is false the originals are left in place to match
-// the --copy-file transcript behavior.
-func relocateSidecars(home, oldID, newID string, move bool) error {
-	var firstErr error
+// copySidecars copies the per-session folders Claude Code keys by session id -
+// the task list (tasks/<id>) and the file-edit history (file-history/<id>) -
+// from oldID to newID, verifying each file byte-for-byte. It never deletes the
+// source: the caller removes the originals only after the whole adoption
+// commits, so a failure here can be rolled back. It returns the destination
+// folders it created, so the caller can undo them on a later failure. Folders
+// that do not exist are skipped. Without this an adopted session resumes with
+// an empty task list because its tasks still sit under the old id.
+func copySidecars(home, oldID, newID string) (created []string, err error) {
 	for _, kind := range []string{"tasks", "file-history"} {
 		src := filepath.Join(home, kind, oldID)
-		if _, err := os.Stat(src); err != nil {
+		if _, statErr := os.Stat(src); statErr != nil {
 			continue // nothing to carry over for this kind
 		}
-		if err := relocateDir(src, filepath.Join(home, kind, newID), move); err != nil && firstErr == nil {
-			firstErr = fmt.Errorf("%s: %w", kind, err)
+		dst := filepath.Join(home, kind, newID)
+		if cerr := copyDir(src, dst); cerr != nil {
+			return created, fmt.Errorf("%s: %w", kind, cerr)
 		}
+		created = append(created, dst)
 	}
-	return firstErr
+	return created, nil
+}
+
+// removeSidecarSources deletes the old-id task and file-history folders. Called
+// only after an adoption has fully committed, to complete a move.
+func removeSidecarSources(home, oldID string) {
+	for _, kind := range []string{"tasks", "file-history"} {
+		_ = os.RemoveAll(filepath.Join(home, kind, oldID))
+	}
 }
 
 // copyProjectMemory merges the source project's memory folder into the target
@@ -487,25 +524,6 @@ func mergeMemoryIndex(src, dst string) error {
 		}
 	}
 	return os.WriteFile(dst, []byte(strings.Join(lines, "\n")+"\n"), 0o644)
-}
-
-// relocateDir moves src to dst (when move) or copies it (when not). The move
-// path prefers a plain rename, which is atomic and never risks the original;
-// only if that fails (e.g. across the 9p mount) does it fall back to copy then
-// remove. copyDir verifies every file byte-for-byte before returning, so the
-// RemoveAll below cannot delete the original on the strength of a silent short
-// write - the same guarantee the transcript copy makes.
-func relocateDir(src, dst string, move bool) error {
-	if move {
-		if err := os.Rename(src, dst); err == nil {
-			return nil
-		}
-		if err := copyDir(src, dst); err != nil {
-			return err
-		}
-		return os.RemoveAll(src)
-	}
-	return copyDir(src, dst)
 }
 
 // copyDir recursively copies the directory tree at src into dst, preserving
@@ -584,9 +602,17 @@ func MigrateHistory(home, oldDir, newDir string) {
 			continue
 		}
 		data = bytes.ReplaceAll(data, []byte(jsonInner(oldCwd)), []byte(jsonInner(newCwd)))
-		if os.WriteFile(filepath.Join(newFolder, e.Name()), data, 0o644) == nil {
-			_ = os.Remove(filepath.Join(oldFolder, e.Name()))
+		newPath := filepath.Join(newFolder, e.Name())
+		if os.WriteFile(newPath, data, 0o644) != nil {
+			continue
 		}
+		// Verify the rewritten copy landed intact before deleting the original:
+		// the transcripts live on a flaky 9p mount, so a silent short write must
+		// not cost the only copy.
+		if got, err := os.ReadFile(newPath); err != nil || !bytes.Equal(got, data) {
+			continue
+		}
+		_ = os.Remove(filepath.Join(oldFolder, e.Name()))
 	}
 }
 
