@@ -363,30 +363,45 @@ func oneLine(s string, max int) string {
 // behavior). The one non-fatal case is a move whose final removal of an
 // original fails after everything else committed: newID is set and the error is
 // a warning that a leftover original remains.
-func Adopt(home string, sess Session, targetCwd string, move bool) (newID string, err error) {
+//
+// report lists, one line each, everything the adoption did beyond the
+// transcript itself - sidecars carried, memory files merged or left, source
+// folders removed - so the caller can show the user exactly what happened
+// instead of a bare "moved".
+func Adopt(home string, sess Session, targetCwd string, move bool) (newID string, report []string, err error) {
 	targetDir := filepath.Join(home, "projects", EncodeCwd(targetCwd))
 	if err := os.MkdirAll(targetDir, 0o755); err != nil {
-		return "", err
+		return "", nil, err
 	}
 	data, err := os.ReadFile(sess.Path)
 	if err != nil {
-		return "", err
+		return "", nil, err
 	}
 	if sess.Cwd != "" && sess.Cwd != targetCwd {
 		data = bytes.ReplaceAll(data, []byte(jsonInner(sess.Cwd)), []byte(jsonInner(targetCwd)))
+		// The transcript also embeds the cwd in its ENCODED form: harness
+		// reminders name the project memory directory
+		// (.claude/projects/<EncodeCwd(cwd)>/memory/...). Left stale, a resumed
+		// session keeps writing memory into the old project's folder - for a
+		// temp-dir session that silently recreates the deleted temp folder.
+		// Encoded names are [A-Za-z0-9-] only, so a plain byte replace is safe.
+		data = bytes.ReplaceAll(data, []byte(EncodeCwd(sess.Cwd)), []byte(EncodeCwd(targetCwd)))
 	}
 	newID = newSessionID()
-	data = bytes.ReplaceAll(data,
-		[]byte(`"sessionId":"`+sess.ID+`"`),
-		[]byte(`"sessionId":"`+newID+`"`))
+	// Replace every occurrence of the id, not just the "sessionId" key: the
+	// transcript also embeds it in sidecar paths (.claude/tasks/<id>/...) and
+	// memory frontmatter (originSessionId), which would otherwise point a
+	// resumed session at folders that no longer exist. A UUID cannot collide
+	// with unrelated text.
+	data = bytes.ReplaceAll(data, []byte(sess.ID), []byte(newID))
 	dst := filepath.Join(targetDir, newID+".jsonl")
 	if err := os.WriteFile(dst, data, 0o644); err != nil {
-		return "", err
+		return "", nil, err
 	}
 	// Prove the copy is actually on disk and intact before touching the original.
 	if got, rerr := os.ReadFile(dst); rerr != nil || !bytes.Equal(got, data) {
 		_ = os.Remove(dst)
-		return "", fmt.Errorf("could not verify the copied transcript landed at %s; left the original in place", dst)
+		return "", nil, fmt.Errorf("could not verify the copied transcript landed at %s; left the original in place", dst)
 	}
 
 	// Everything below is non-destructive: copies only, each verified. Track the
@@ -403,15 +418,20 @@ func Adopt(home string, sess Session, targetCwd string, move bool) (newID string
 	createdSidecars, err = copySidecars(home, sess.ID, newID)
 	if err != nil {
 		rollback()
-		return "", fmt.Errorf("could not carry over the session's tasks/history; left the original in place: %w", err)
+		return "", nil, fmt.Errorf("could not carry over the session's tasks/history; left the original in place: %w", err)
 	}
-	if err := copyProjectMemory(home, sess.Cwd, targetCwd); err != nil {
+	for _, d := range createdSidecars {
+		report = append(report, fmt.Sprintf("carried %s to the new session id", filepath.Base(filepath.Dir(d))))
+	}
+	memoryCarried, memNotes, err := copyProjectMemory(home, sess.Cwd, targetCwd, sess.ID, newID)
+	if err != nil {
 		rollback()
-		return "", fmt.Errorf("could not carry over project memory; left the original in place: %w", err)
+		return "", nil, fmt.Errorf("could not carry over project memory; left the original in place: %w", err)
 	}
+	report = append(report, memNotes...)
 	if err := pointLastSession(home, targetCwd, newID); err != nil {
 		rollback()
-		return "", fmt.Errorf("could not update the continue pointer; left the original in place: %w", err)
+		return "", nil, fmt.Errorf("could not update the continue pointer; left the original in place: %w", err)
 	}
 
 	// Commit. Everything is copied and verified, so a move now deletes the
@@ -420,10 +440,13 @@ func Adopt(home string, sess Session, targetCwd string, move bool) (newID string
 	if move {
 		removeSidecarSources(home, sess.ID)
 		if err := os.Remove(sess.Path); err != nil {
-			return newID, fmt.Errorf("adopted the session but could not remove the original transcript %s (a duplicate remains): %w", sess.ID[:8], err)
+			return newID, report, fmt.Errorf("adopted the session but could not remove the original transcript %s (a duplicate remains): %w", sess.ID[:8], err)
+		}
+		if sess.Cwd != "" && EncodeCwd(sess.Cwd) != EncodeCwd(targetCwd) {
+			report = append(report, cleanupSourceProject(home, sess.Cwd, memoryCarried)...)
 		}
 	}
-	return newID, nil
+	return newID, report, nil
 }
 
 // copySidecars copies the per-session folders Claude Code keys by session id -
@@ -460,47 +483,96 @@ func removeSidecarSources(home, oldID string) {
 // copyProjectMemory merges the source project's memory folder into the target
 // project's, so an adopted session does not resume having forgotten everything
 // the project taught it. Memory is keyed by cwd (projects/<cwd>/memory) and is
-// shared by every session in that cwd, so it is always copied, never moved:
-// moving it would strand the source project's other sessions. Existing fact
-// files in the target are left untouched (the target's own knowledge wins on a
-// name clash); the MEMORY.md index is merged line-wise so both projects'
-// pointers survive. Best effort - a missing source memory folder is a no-op.
-func copyProjectMemory(home, oldCwd, newCwd string) error {
+// shared by every session in that cwd, so this only ever copies; whether the
+// source folder may then be deleted is the caller's decision, based on the
+// carried result: true when every source memory file is now fully represented
+// at the target, byte-for-byte (fact files verified by read-back, the MEMORY.md
+// index by a successful merge). A fact file whose name exists at the target
+// with different content is kept on both sides (the target's knowledge wins),
+// reported in notes, and makes carried false so the source is never deleted
+// while it still holds the only copy of something. A missing source memory
+// folder is a no-op with carried true.
+//
+// Occurrences of oldID in copied files are rewritten to newID: memory
+// frontmatter records the creating session (originSessionId), and after a move
+// oldID names a session that no longer exists. Other sessions' ids are left
+// alone.
+func copyProjectMemory(home, oldCwd, newCwd, oldID, newID string) (carried bool, notes []string, err error) {
 	if oldCwd == "" || oldCwd == newCwd {
-		return nil
+		return true, nil, nil
 	}
 	srcMem := filepath.Join(home, "projects", EncodeCwd(oldCwd), "memory")
 	entries, err := os.ReadDir(srcMem)
 	if err != nil {
-		return nil // no memory folder to carry over
+		return true, nil, nil // no memory folder to carry over
 	}
 	dstMem := filepath.Join(home, "projects", EncodeCwd(newCwd), "memory")
 	if err := os.MkdirAll(dstMem, 0o755); err != nil {
-		return err
+		return false, nil, err
 	}
+	carried = true
 	for _, e := range entries {
 		if e.IsDir() {
-			continue // memory is a flat folder of markdown files
+			carried = false // memory is a flat folder of markdown files
+			notes = append(notes, fmt.Sprintf("memory: left unexpected directory %s in the source", e.Name()))
+			continue
 		}
 		src, dst := filepath.Join(srcMem, e.Name()), filepath.Join(dstMem, e.Name())
 		if e.Name() == "MEMORY.md" {
 			if err := mergeMemoryIndex(src, dst); err != nil {
-				return err
+				return false, notes, err
 			}
 			continue
 		}
-		if _, err := os.Stat(dst); err == nil {
-			continue // keep the target's existing fact file on a name clash
-		}
 		data, err := os.ReadFile(src)
 		if err != nil {
-			return err
+			return false, notes, err
+		}
+		data = bytes.ReplaceAll(data, []byte(oldID), []byte(newID))
+		if existing, err := os.ReadFile(dst); err == nil {
+			if !bytes.Equal(existing, data) {
+				carried = false // target's knowledge wins; source keeps the only copy of its version
+				notes = append(notes, fmt.Sprintf("memory: kept the target's %s (source version differs, left in the source)", e.Name()))
+			}
+			continue
 		}
 		if err := os.WriteFile(dst, data, 0o644); err != nil {
-			return err
+			return false, notes, err
+		}
+		// Verify the copy landed intact; only a verified copy may later justify
+		// deleting the source folder.
+		if got, rerr := os.ReadFile(dst); rerr != nil || !bytes.Equal(got, data) {
+			return false, notes, fmt.Errorf("could not verify copied memory file %s", dst)
 		}
 	}
-	return nil
+	return carried, notes, nil
+}
+
+// cleanupSourceProject removes the source project's folder after a move, but
+// only what is provably redundant: it acts only when no other session
+// transcript remains there, deletes the memory folder only when memoryCarried
+// says every memory file is fully represented at the target, and removes the
+// folder itself only when empty. It returns what it did (or why it left things)
+// so the caller can show the user; it never fails the adoption.
+func cleanupSourceProject(home, oldCwd string, memoryCarried bool) (actions []string) {
+	folder := filepath.Join(home, "projects", EncodeCwd(oldCwd))
+	if left, _ := filepath.Glob(filepath.Join(folder, "*.jsonl")); len(left) > 0 {
+		return nil // other sessions still live in this cwd; their folder stays
+	}
+	if memoryCarried {
+		memDir := filepath.Join(folder, "memory")
+		if _, err := os.Stat(memDir); err == nil {
+			if err := os.RemoveAll(memDir); err == nil {
+				actions = append(actions, "removed the source project's memory folder (all of it verified at the target)")
+			}
+		}
+	} else {
+		actions = append(actions, "left the source project's memory folder (not everything is at the target)")
+	}
+	if err := os.Remove(folder); err == nil {
+		actions = append(actions, "removed the now-empty source project folder")
+	}
+	return actions
 }
 
 // mergeMemoryIndex appends the pointer lines from the source MEMORY.md to the

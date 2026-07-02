@@ -73,7 +73,7 @@ func runAdopt(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("session %s already belongs to %s", s.ID[:8], p.Name)
 	}
 	copyFile, _ := cmd.Flags().GetBool("copy-file")
-	newID, err := sessions.Adopt(home, s, targetCwd, !copyFile)
+	newID, report, err := sessions.Adopt(home, s, targetCwd, !copyFile)
 	if err != nil {
 		if newID == "" {
 			// Nothing was published and the original is untouched: a plain failure.
@@ -81,14 +81,22 @@ func runAdopt(cmd *cobra.Command, args []string) error {
 		}
 		// The session was adopted but a final cleanup failed (e.g. a leftover
 		// original). Report the success and the caveat both, loudly.
-		fmt.Printf("adopted %s into %s as new session %s\n  open with: proj %s\n", s.ID[:8], p.Name, newID[:8], p.Name)
+		fmt.Printf("adopted %s into %s as new session %s\n", s.ID[:8], p.Name, newID[:8])
+		for _, line := range report {
+			fmt.Printf("  %s\n", line)
+		}
+		fmt.Printf("  open with: proj %s\n", p.Name)
 		return fmt.Errorf("warning: %w", err)
 	}
 	verb := "moved"
 	if copyFile {
 		verb = "copied"
 	}
-	fmt.Printf("%s %s into %s as new session %s\n  open with: proj %s\n", verb, s.ID[:8], p.Name, newID[:8], p.Name)
+	fmt.Printf("%s %s into %s as new session %s\n", verb, s.ID[:8], p.Name, newID[:8])
+	for _, line := range report {
+		fmt.Printf("  %s\n", line)
+	}
+	fmt.Printf("  open with: proj %s\n", p.Name)
 	return nil
 }
 

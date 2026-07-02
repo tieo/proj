@@ -26,7 +26,7 @@ func TestAdopt(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	newID, err := Adopt(home, Session{ID: "abc123", Cwd: oldCwd, Path: src}, newCwd, true)
+	newID, _, err := Adopt(home, Session{ID: "abc123", Cwd: oldCwd, Path: src}, newCwd, true)
 	if err != nil {
 		t.Fatalf("Adopt: %v", err)
 	}
@@ -85,7 +85,7 @@ func TestAdoptCopyFile(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	newID, err := Adopt(home, Session{ID: "abc123", Cwd: oldCwd, Path: src}, newCwd, false)
+	newID, _, err := Adopt(home, Session{ID: "abc123", Cwd: oldCwd, Path: src}, newCwd, false)
 	if err != nil {
 		t.Fatalf("Adopt: %v", err)
 	}
@@ -132,7 +132,7 @@ func TestAdoptCarriesSidecars(t *testing.T) {
 
 	t.Run("move", func(t *testing.T) {
 		home, src, oldCwd, newCwd := setup(t)
-		newID, err := Adopt(home, Session{ID: "abc123", Cwd: oldCwd, Path: src}, newCwd, true)
+		newID, _, err := Adopt(home, Session{ID: "abc123", Cwd: oldCwd, Path: src}, newCwd, true)
 		if err != nil {
 			t.Fatalf("Adopt: %v", err)
 		}
@@ -148,7 +148,7 @@ func TestAdoptCarriesSidecars(t *testing.T) {
 
 	t.Run("copy-file keeps originals", func(t *testing.T) {
 		home, src, oldCwd, newCwd := setup(t)
-		newID, err := Adopt(home, Session{ID: "abc123", Cwd: oldCwd, Path: src}, newCwd, false)
+		newID, _, err := Adopt(home, Session{ID: "abc123", Cwd: oldCwd, Path: src}, newCwd, false)
 		if err != nil {
 			t.Fatalf("Adopt: %v", err)
 		}
@@ -164,9 +164,9 @@ func TestAdoptCarriesSidecars(t *testing.T) {
 }
 
 // TestAdoptCarriesMemory checks that the source project's memory is merged into
-// the target's (copied, never moved) so an adopted session keeps what the
-// project taught it, the source keeps its own copy, and the target's existing
-// memory is preserved.
+// the target's so an adopted session keeps what the project taught it, and that
+// on a move of the cwd's last session the fully-carried source memory folder
+// (and the then-empty project folder) are removed rather than stranded.
 func TestAdoptCarriesMemory(t *testing.T) {
 	base := t.TempDir()
 	home := filepath.Join(base, ".claude")
@@ -196,7 +196,7 @@ func TestAdoptCarriesMemory(t *testing.T) {
 	mustWrite(t, filepath.Join(dstMem, "MEMORY.md"), "- [Fact B](fact-b.md) — hook B\n")
 	mustWrite(t, filepath.Join(dstMem, "fact-b.md"), "fact b body")
 
-	if _, err := Adopt(home, Session{ID: "abc123", Cwd: oldCwd, Path: src}, newCwd, true); err != nil {
+	if _, _, err := Adopt(home, Session{ID: "abc123", Cwd: oldCwd, Path: src}, newCwd, true); err != nil {
 		t.Fatalf("Adopt: %v", err)
 	}
 
@@ -212,9 +212,11 @@ func TestAdoptCarriesMemory(t *testing.T) {
 	if !strings.Contains(string(idx), "Fact A") || !strings.Contains(string(idx), "Fact B") {
 		t.Errorf("MEMORY.md should hold both entries, got:\n%s", idx)
 	}
-	// Source memory preserved (copy, not move).
-	if _, err := os.Stat(filepath.Join(srcMem, "fact-a.md")); err != nil {
-		t.Error("source memory must remain in place (copied, not moved)")
+	// This was the cwd's only session and every memory file is verified at the
+	// target, so the move removes the source memory folder and the now-empty
+	// source project folder instead of stranding them.
+	if _, err := os.Stat(srcProj); !os.IsNotExist(err) {
+		t.Error("source project folder should be removed after its last session moved out with memory fully carried")
 	}
 }
 
