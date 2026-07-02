@@ -21,23 +21,16 @@ import (
 
 var sessionsCmd = &cobra.Command{
 	Use:   "sessions",
-	Short: "list existing Claude sessions; resume one with `proj sessions resume <id>`",
-	Long: `List the Claude Code sessions on disk, newest first. proj only indexes them;
-viewing is handed off to Claude itself.`,
+	Short: "interactive list of Claude sessions: enter resume, a adopt, s stop, r rm",
+	Long: `List the Claude Code sessions on disk, newest first, as an interactive list:
+move with the arrows, then enter to resume, a to adopt into a project, s to stop
+(close, keeping files), r to rm (delete the project and its files), esc to quit.
+Piped or redirected, it prints the static table instead.`,
 	Args: cobra.NoArgs,
 	RunE: runSessions,
 }
 
-var sessionsResumeCmd = &cobra.Command{
-	Use:   "resume [id]",
-	Short: "reopen a Claude session by id or prefix, or pick one interactively (hands off to `claude --resume`)",
-	Args:  cobra.MaximumNArgs(1),
-	RunE:  runSessionsResume,
-}
-
 func init() {
-	sessionsCmd.AddCommand(sessionsResumeCmd)
-	sessionsCmd.AddCommand(newAdoptCmd())
 	rootCmd.AddCommand(sessionsCmd)
 }
 
@@ -203,12 +196,12 @@ func liveSessionNameForCwd(cfg config.Config, all []sessions.Session, s sessions
 
 // rmSessionInteractive removes s. When its cwd is a proj project, it deletes
 // the whole project via the same removeProject the `proj rm` command runs
-// (files included), after a confirm that names the directory. Otherwise it
-// removes just this session's transcript and per-session sidecars. Both paths
-// confirm first.
+// (files included). Otherwise it removes the whole session: transcript,
+// per-session sidecars, and the transcript's project folder (memory included)
+// once no other session remains in it. Both paths confirm first.
 func rmSessionInteractive(cfg config.Config, home string, all []sessions.Session, s sessions.Session) error {
 	if p, ok := projectForSession(cfg, all, s); ok {
-		if !confirm(fmt.Sprintf("rm project %s and delete its files at %s? [y/N] ", p.Name, p.Dir)) {
+		if !confirm(fmt.Sprintf("rm project %s and all its files? [y/N] ", p.Name)) {
 			return nil
 		}
 		if err := removeProject(p); err != nil {
@@ -217,7 +210,10 @@ func rmSessionInteractive(cfg config.Config, home string, all []sessions.Session
 		fmt.Printf("removed project %s\n", p.Name)
 		return nil
 	}
-	if !confirm(fmt.Sprintf("rm session %s (transcript %s), keeping any project? [y/N] ", s.ID[:8], s.Path)) {
+	// Not a proj project (e.g. a temp-dir session): rm the whole session -
+	// transcript, per-session sidecars, and the transcript's project folder
+	// (memory included) once no other session remains in it.
+	if !confirm(fmt.Sprintf("rm session %s and all its data? [y/N] ", s.ID[:8])) {
 		return nil
 	}
 	if err := os.Remove(s.Path); err != nil && !os.IsNotExist(err) {
@@ -225,6 +221,10 @@ func rmSessionInteractive(cfg config.Config, home string, all []sessions.Session
 	}
 	for _, kind := range []string{"tasks", "file-history"} {
 		_ = os.RemoveAll(filepath.Join(home, kind, s.ID))
+	}
+	folder := filepath.Dir(s.Path)
+	if left, _ := filepath.Glob(filepath.Join(folder, "*.jsonl")); len(left) == 0 {
+		_ = os.RemoveAll(folder)
 	}
 	fmt.Printf("removed session %s\n", s.ID[:8])
 	return nil
@@ -236,6 +236,51 @@ func confirm(prompt string) bool {
 	ans, _ := bufio.NewReader(os.Stdin).ReadString('\n')
 	a := strings.ToLower(strings.TrimSpace(ans))
 	return a == "y" || a == "yes"
+}
+
+// pickProject defaults to creating a new project (type a name) and lets the
+// user arrow down to adopt into an existing one instead.
+func pickProject(cfg config.Config, defaultName string) (projects.Project, error) {
+	all := projects.All(cfg.BaseDir)
+	lines := make([]string, len(all))
+	for i, p := range all {
+		line := fmt.Sprintf("%-*s", projNameCol, p.Name)
+		if len(p.Tags) > 0 {
+			line += "  \033[90m" + strings.Join(p.Tags, " ") + "\033[0m"
+		}
+		lines[i] = line
+	}
+	name, tags, idx, ok := selectOrCreate(defaultName, lines)
+	if !ok {
+		return projects.Project{}, fmt.Errorf("cancelled")
+	}
+	if idx >= 0 {
+		return projects.FindByName(cfg.BaseDir, all[idx].Name)
+	}
+	if err := projects.ValidateName(name); err != nil {
+		return projects.Project{}, err
+	}
+	for _, t := range tags {
+		if err := projects.ValidateTag(t); err != nil {
+			return projects.Project{}, err
+		}
+	}
+	exists, err := projects.CheckNewName(cfg.BaseDir, name)
+	if err != nil {
+		return projects.Project{}, err
+	}
+	dir := filepath.Join(cfg.BaseDir, name)
+	if !exists {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			return projects.Project{}, err
+		}
+	}
+	if len(tags) > 0 {
+		if reg, err := projects.LoadRegistry(); err == nil {
+			_ = reg.SetTags(name, tags)
+		}
+	}
+	return projects.FindByName(cfg.BaseDir, name)
 }
 
 // termWidth reports the controlling terminal's column count, defaulting to 120
@@ -354,27 +399,6 @@ func truncPadRight(s string, w int) string {
 		return runewidth.Truncate(s, w, "…")
 	}
 	return strings.Repeat(" ", w-runewidth.StringWidth(s)) + s
-}
-
-func runSessionsResume(cmd *cobra.Command, args []string) error {
-	cfg, err := config.Load()
-	if err != nil {
-		return err
-	}
-	home := sessions.Home(cfg.Claude.Home)
-	all, err := sessions.List(home)
-	if err != nil {
-		return err
-	}
-	var s sessions.Session
-	if len(args) == 1 {
-		if s, err = sessions.FindIn(all, args[0]); err != nil {
-			return err
-		}
-	} else if s, err = pickSession(cfg, all); err != nil {
-		return err
-	}
-	return resumeSession(s)
 }
 
 // resumeSession hands off to `claude --resume` for s, launched from the
