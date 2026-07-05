@@ -410,7 +410,7 @@ func RCConnections(homeOverride string) (map[string]bool, error) {
 	req.Header.Set("Authorization", "Bearer "+creds.ClaudeAiOauth.AccessToken)
 	req.Header.Set("anthropic-version", "2023-06-01")
 	req.Header.Set("anthropic-beta", "ccr-byoc-2025-07-29")
-	resp, err := (&http.Client{Timeout: 4 * time.Second}).Do(req)
+	resp, err := (&http.Client{Timeout: 10 * time.Second}).Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("GET /v1/sessions: %w", err)
 	}
@@ -1875,11 +1875,17 @@ func Tick(cfg Config, state State, errorState ErrorState, managed ManagedState, 
 			// "ever active" comes from the in-memory latch OR the persisted flag,
 			// so a daemon restart doesn't orphan a session that bound before it.
 			everActive := rcEverActive[p.ID] || managed[p.Session].RCEverActive
-			// API is the source of truth: if it reports this session connected,
-			// the pane just shows a hint instead of "/rc active" - do not nudge.
-			// When the API is unreachable (rcConn nil) fall back to the chrome.
-			apiConnected := rcConn != nil && rcConn[RCName(p.Session, rcHost)]
-			trigger := !apiConnected && (failed || (everActive && now.Sub(rcNudgedAt[p.ID]) >= rcNudgeCooldown))
+			// Nudge only when a drop is POSITIVELY confirmed - never on the
+			// unreliable chrome marker alone. The API is the source of truth:
+			//   - apiDisconnected: it explicitly reports this session down, or
+			//   - failed: the status line shows an explicit "/rc failed".
+			// When the API is UNKNOWN (rcConn nil - e.g. a request timeout, which
+			// happens regularly on this host), do NOT fall back to the chrome and
+			// nudge: that reopened the false-picker bug - every connected session
+			// reads "inactive" in the pane (rotating /rc hint, not "/rc active")
+			// and got /rc typed into it, opening the picker over live input.
+			apiDisconnected := rcConn != nil && !rcConn[RCName(p.Session, rcHost)]
+			trigger := failed || (apiDisconnected && everActive && now.Sub(rcNudgedAt[p.ID]) >= rcNudgeCooldown)
 			if pastGrace && trigger {
 				slog.Info("remote-control inactive, re-binding",
 					"session", p.Session, "pane", p.ID,
