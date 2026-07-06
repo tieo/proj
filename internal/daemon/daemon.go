@@ -1573,6 +1573,22 @@ func Decide(b *Banner, prev Tracked, now time.Time) Action {
 	return ActResume
 }
 
+// transientBackoff grows the base retry delay geometrically with the number of
+// prior consecutive attempts, capped at max. A persistent outage thus backs off
+// from seconds toward hours instead of hammering a dead endpoint every minute,
+// while a brief blip still retries fast. The loop doubles rather than shifting
+// to avoid overflow and to stop once the cap is reached.
+func transientBackoff(base time.Duration, attempts int, max time.Duration) time.Duration {
+	d := base
+	for i := 0; i < attempts && d < max; i++ {
+		d *= 2
+	}
+	if d > max {
+		d = max
+	}
+	return d
+}
+
 // nextAttemptAfter computes when the next retry should fire if this one
 // fails. Trust the banner's time: explicit dates are used as-is; clock-only
 // banners are advanced to the next future occurrence of that clock. If the
@@ -2034,6 +2050,13 @@ func Tick(cfg Config, state State, errorState ErrorState, managed ManagedState, 
 			continue
 		}
 		prev := state[p.ID]
+		// A transient error that never clears escalates its backoff with each
+		// failed attempt so a long outage self-throttles toward MaxWait instead
+		// of retrying every minute forever. Written into the banner so Decide's
+		// wait-gate and nextAttemptAfter schedule against the same value.
+		if b.Backoff > 0 {
+			b.Backoff = transientBackoff(b.Backoff, prev.Attempts, cfg.MaxWait)
+		}
 		switch Decide(b, prev, now) {
 		case ActWait:
 			prev.LastSeen = now

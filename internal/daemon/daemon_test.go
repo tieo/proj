@@ -457,6 +457,29 @@ func TestNextAttemptAfter_BackoffOverridesReset(t *testing.T) {
 	}
 }
 
+func TestTransientBackoff_Escalates(t *testing.T) {
+	base := 60 * time.Second
+	max := 5 * time.Hour
+	cases := []struct {
+		attempts int
+		want     time.Duration
+	}{
+		{0, 60 * time.Second},
+		{1, 2 * time.Minute},
+		{2, 4 * time.Minute},
+		{3, 8 * time.Minute},
+	}
+	for _, c := range cases {
+		if got := transientBackoff(base, c.attempts, max); got != c.want {
+			t.Errorf("attempts=%d: got %v, want %v", c.attempts, got, c.want)
+		}
+	}
+	// Never exceeds the cap however many attempts pile up.
+	if got := transientBackoff(base, 100, max); got != max {
+		t.Errorf("saturated: got %v, want cap %v", got, max)
+	}
+}
+
 func TestJitter_InRange(t *testing.T) {
 	for i := 0; i < 100; i++ {
 		if got := jitter(); got < 0 || got >= jitterMax {
