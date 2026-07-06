@@ -203,18 +203,40 @@ func TestDecide_NoBanner(t *testing.T) {
 	}
 }
 
-func TestDecide_FirstAttemptImmediate(t *testing.T) {
-	// No prior state → first attempt fires immediately (no waiting).
-	if got := Decide(Detect(realBannerInline, time.Now()), Tracked{}, time.Now()); got != ActResume {
-		t.Errorf("got %v, want ActResume", got)
+func TestDecide_FutureResetWaits(t *testing.T) {
+	// Reset known and still ahead: wait for it rather than burning a continue
+	// that only earns another limit message.
+	now := time.Now()
+	if got := Decide(&Banner{Reset: now.Add(time.Hour)}, Tracked{}, now); got != ActWait {
+		t.Errorf("got %v, want ActWait (reset 1h ahead)", got)
 	}
 }
 
-func TestDecide_BannerPlusSelectorIsResume(t *testing.T) {
-	// Selector handling is independent of Decide; banner-present is the
-	// only thing that matters for the Resume/Wait classification.
-	if got := Decide(Detect(realBannerInline+"\n"+realSelector, time.Now()), Tracked{}, time.Now()); got != ActResume {
-		t.Errorf("got %v, want ActResume (selector dismissal happens in Tick, outside Decide)", got)
+func TestDecide_PastResetResumesImmediately(t *testing.T) {
+	// Limit already expired: resume now.
+	now := time.Now()
+	if got := Decide(&Banner{Reset: now.Add(-time.Hour)}, Tracked{}, now); got != ActResume {
+		t.Errorf("got %v, want ActResume (reset already passed)", got)
+	}
+}
+
+func TestDecide_UnknownResetResumesImmediately(t *testing.T) {
+	// No parseable reset time: fall back to an immediate resume, the hedge
+	// against a limit whose reset the detector could not read.
+	now := time.Now()
+	if got := Decide(&Banner{}, Tracked{}, now); got != ActResume {
+		t.Errorf("got %v, want ActResume (unknown reset)", got)
+	}
+}
+
+func TestDecide_SelectorDoesNotChangeClassification(t *testing.T) {
+	// Selector dismissal happens in Tick, outside Decide; the banner's reset
+	// time alone drives Resume/Wait, with or without a selector present.
+	now := time.Now()
+	base := Decide(Detect(realBannerInline, now), Tracked{}, now)
+	withSel := Decide(Detect(realBannerInline+"\n"+realSelector, now), Tracked{}, now)
+	if base != withSel {
+		t.Errorf("selector changed classification: %v vs %v", base, withSel)
 	}
 }
 
@@ -319,9 +341,10 @@ func TestDecide_WaitWhenRetryScheduled(t *testing.T) {
 
 func TestDecide_RetriesOnceScheduledTimeArrives(t *testing.T) {
 	now := time.Now()
-	prev := Tracked{NextAttempt: now.Add(-time.Second)} // just past
-	if got := Decide(Detect(realBannerInline, now), prev, now); got != ActResume {
-		t.Errorf("got %v, want ActResume (NextAttempt already past)", got)
+	// Reset reached: banner reset and the scheduled retry both just past.
+	prev := Tracked{NextAttempt: now.Add(-time.Second)}
+	if got := Decide(&Banner{Reset: now.Add(-time.Second)}, prev, now); got != ActResume {
+		t.Errorf("got %v, want ActResume (reset reached)", got)
 	}
 }
 

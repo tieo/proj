@@ -1567,6 +1567,16 @@ func Decide(b *Banner, prev Tracked, now time.Time) Action {
 		}
 		return ActResume
 	}
+	// Usage limit (no backoff). When the reset time is known and still ahead,
+	// wait for it: a "continue" sent now only earns another limit message. A
+	// reset already in the past (the limit has expired) or an unparseable time
+	// falls through to an immediate resume. The transcript detector only
+	// surfaces a banner the session is genuinely stalled on, so an old
+	// already-reset limit yields no banner at all - the reason this can trust
+	// the reset time rather than resuming on sight as a hedge against stale data.
+	if !b.Reset.IsZero() && now.Before(b.Reset) {
+		return ActWait
+	}
 	if !prev.NextAttempt.IsZero() && now.Before(prev.NextAttempt) {
 		return ActWait
 	}
@@ -2062,6 +2072,11 @@ func Tick(cfg Config, state State, errorState ErrorState, managed ManagedState, 
 			prev.LastSeen = now
 			prev.Banner = b.Text
 			prev.Reset = b.Reset
+			// Seed the scheduled retry on first sight so the wait is visible in
+			// status and survives to fire once the reset passes.
+			if prev.NextAttempt.IsZero() {
+				prev.NextAttempt = nextAttemptAfter(b, now, cfg)
+			}
 			state[p.ID] = prev
 		case ActResume:
 			slog.Info("resume",
