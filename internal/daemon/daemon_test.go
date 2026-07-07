@@ -1,6 +1,8 @@
 package daemon
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -1114,6 +1116,57 @@ func TestRCPicker(t *testing.T) {
 	// Prose mentioning one label alone must not trip the matcher.
 	if rcPickerRE.MatchString("you can Disconnect this session whenever you like") {
 		t.Error("a single label in prose must not match the RC dialog")
+	}
+}
+
+// writeTranscript writes lines as a jsonl file and returns its path.
+func writeTranscript(t *testing.T, lines ...string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "transcript.jsonl")
+	if err := os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0o644); err != nil {
+		t.Fatalf("write transcript: %v", err)
+	}
+	return path
+}
+
+const (
+	limitErrRecord = `{"type":"user","isApiErrorMessage":true,"message":{"model":"<synthetic>","content":"You've hit your session limit · resets 4:40pm (Europe/Berlin)"}}`
+	// A background command finishing injects a role-"user" line that the user
+	// never typed; it must not read as a resume.
+	taskNotifyRecord = `{"type":"user","message":{"content":"<task-notification> <task-id>abc</task-id> done"}}`
+	assistantRecord  = `{"type":"assistant","message":{"model":"claude-opus-4-8","content":[{"type":"text","text":"back to work"}]}}`
+)
+
+// TestDetectFromTranscript_InjectedUserAfterLimit guards the stall where a
+// usage limit was followed only by a machine-injected role-"user" record (a
+// background <task-notification>, a queued command, a tool result). The session
+// is still stalled, so the banner must survive: dropping it here abandons the
+// session and no continue is ever sent once the limit resets.
+func TestDetectFromTranscript_InjectedUserAfterLimit(t *testing.T) {
+	now := time.Now()
+	if b := DetectFromTranscript(writeTranscript(t, limitErrRecord, taskNotifyRecord), now); b == nil {
+		t.Error("injected user record after limit must not read as a resume; banner expected")
+	}
+	// A bare user turn (whatever its content) is not proof either.
+	userTyped := `{"type":"user","message":{"content":"continue"}}`
+	if b := DetectFromTranscript(writeTranscript(t, limitErrRecord, userTyped), now); b == nil {
+		t.Error("a user turn alone must not read as a resume; typing does not clear a limit")
+	}
+}
+
+// TestDetectFromTranscript_AssistantResumes confirms the one signal that does
+// prove a resume: a real-model assistant reply after the error clears the banner.
+func TestDetectFromTranscript_AssistantResumes(t *testing.T) {
+	if b := DetectFromTranscript(writeTranscript(t, limitErrRecord, assistantRecord), time.Now()); b != nil {
+		t.Errorf("assistant turn after limit means resumed; want nil, got %+v", b)
+	}
+}
+
+// TestDetectFromTranscript_LimitLast keeps the base case: a limit error at the
+// tail with nothing after it surfaces a banner.
+func TestDetectFromTranscript_LimitLast(t *testing.T) {
+	if b := DetectFromTranscript(writeTranscript(t, assistantRecord, limitErrRecord), time.Now()); b == nil {
+		t.Error("trailing limit error must surface a banner")
 	}
 }
 

@@ -905,21 +905,22 @@ type transcriptRecord struct {
 	} `json:"message"`
 }
 
-// isRealTurn reports whether the record is a genuine conversation turn - a
-// real-model assistant reply or actual user text - as opposed to a synthetic
-// error message or tool bookkeeping. A real turn after an error means the
-// session resumed past it and is no longer stalled.
+// isRealTurn reports whether the record proves the session resumed past an
+// earlier error: a real-model assistant reply, and only that. The model
+// emitting output is the sole evidence the API served the session again.
+//
+// A user record proves nothing. Claude Code stamps role "user" on injected
+// system lines too - background <task-notification>s, tool results, queued
+// commands - and none of those clear a usage limit, so counting them as a
+// resume abandons a still-stalled session (its limit refills but no continue
+// is ever sent). A genuinely typed message is no different: typing does not
+// clear a limit, and if the limit had already passed the model's reply follows,
+// which this catches on its own.
 func (r *transcriptRecord) isRealTurn() bool {
 	if r.IsAPIErrorMessage {
 		return false
 	}
-	switch r.Type {
-	case "assistant":
-		return r.Message.Model != "" && r.Message.Model != "<synthetic>"
-	case "user":
-		return recordContentText(r.Message.Content) != ""
-	}
-	return false
+	return r.Type == "assistant" && r.Message.Model != "" && r.Message.Model != "<synthetic>"
 }
 
 // isSyntheticError reports whether the record is one of Claude Code's locally
