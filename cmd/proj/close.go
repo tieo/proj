@@ -63,15 +63,16 @@ func runClose(cmd *cobra.Command, args []string) error {
 // `proj close` and the interactive sessions list's stop action.
 func closeSession(name string, unpin bool) error {
 	ucfg := daemonConfig()
-	managed := daemon.LoadManagedState(ucfg.StatePath)
-	ms := managed[name]
-	ms.Name = name
-	ms.ExitedCleanly = true
-	if unpin {
-		ms.Pinned = false
-	}
-	managed[name] = ms
-	if err := daemon.SaveManagedState(ucfg.StatePath, managed); err != nil {
+	if err := daemon.UpdateManagedState(ucfg.StatePath, func(managed daemon.ManagedState) error {
+		ms := managed[name]
+		ms.Name = name
+		ms.ExitedCleanly = true
+		if unpin {
+			ms.Pinned = false
+		}
+		managed[name] = ms
+		return nil
+	}); err != nil {
 		return fmt.Errorf("save managed state: %w", err)
 	}
 	if err := tmux.KillSession(name); err != nil {

@@ -9,6 +9,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -19,6 +20,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/tieo/proj/internal/projects"
@@ -1056,13 +1058,16 @@ func readFileTail(path string, n int64) []byte {
 // `; exec $SHELL` here, which kept the pane alive in a fresh shell and left
 // the user stranded in a tmux pane after closing claude.
 //
-// The launch command marks the session cleanly closed when claude itself
-// exits, so a recreated keep-alive session that the user then quits (Ctrl-D)
-// stays closed instead of being resurrected again. If the pane is killed out
-// from under claude (server death, VM restart) the mark never runs, so
-// keep-alive recreates it on the next tick - which is the point. Mirrors the
-// suffix in cmd/proj/open.go; both are needed because claude is the pane
-// program with no wrapping shell to carry the shells/proj.* exit trap.
+// The launch command marks the session cleanly closed when claude itself exits
+// successfully, so a recreated keep-alive session that the user then quits
+// (Ctrl-D) stays closed instead of being resurrected again. The mark hangs off
+// && rather than ;: tmux runs the command under a shell that outlives claude, so
+// with ; the mark also ran when claude was killed (OOM, kill -9) and a killed
+// session was recorded as a deliberate close, then dropped and never recreated.
+// Gating on a zero exit keeps a signal death looking like what it is, leaving
+// keep-alive to recreate it. Mirrors the suffix in cmd/proj/open.go; both are
+// needed because claude is the pane program with no wrapping shell to carry the
+// shells/proj.* exit trap.
 func launchSession(cfg Config, name, dir string) {
 	command := ""
 	if cfg.ClaudeCommand != "" {
@@ -1071,7 +1076,7 @@ func launchSession(cfg Config, name, dir string) {
 		if cfg.ClaudeResumeFlag != "" && HasHistory(cfg.ClaudeHome, dir) {
 			cmdLine += " " + cfg.ClaudeResumeFlag
 		}
-		command = cmdLine + "; proj daemon mark-closed " + shellout.Quote(name)
+		command = cmdLine + " && proj daemon mark-closed " + shellout.Quote(name)
 	}
 	pane, err := tmux.NewSession(name, dir, command)
 	if err != nil {
@@ -1482,19 +1487,133 @@ func managedStatePath(statePath string) string {
 	return statePath[:len(statePath)-len(ext)] + "-sessions" + ext
 }
 
-func LoadManagedState(path string) ManagedState {
+// LoadManagedState reads the managed-state file. A missing file is an empty
+// state and no error - the first run has nothing to remember. Anything else
+// (unreadable, truncated, not valid JSON) is an error the caller must not
+// paper over: pins live only here, so treating a corrupt file as "no sessions"
+// and then saving over it destroys every pin silently.
+func LoadManagedState(path string) (ManagedState, error) {
 	data, err := os.ReadFile(managedStatePath(path))
+	if errors.Is(err, os.ErrNotExist) {
+		return make(ManagedState), nil
+	}
 	if err != nil {
-		return make(ManagedState)
+		return nil, fmt.Errorf("read managed state: %w", err)
 	}
 	var s ManagedState
 	if err := json.Unmarshal(data, &s); err != nil {
-		return make(ManagedState)
+		return nil, fmt.Errorf("parse managed state %s: %w", managedStatePath(path), err)
 	}
 	if s == nil {
 		s = make(ManagedState)
 	}
-	return s
+	return s, nil
+}
+
+// Clone returns a deep-enough copy to serve as the base of a later merge.
+// ManagedSession is a flat comparable struct, so a value copy suffices.
+func (s ManagedState) Clone() ManagedState {
+	out := make(ManagedState, len(s))
+	for k, v := range s {
+		out[k] = v
+	}
+	return out
+}
+
+// withStateLock serializes read-modify-write cycles on the managed-state file
+// across the daemon and every CLI command. The lock is advisory (flock) and
+// tied to the open file description, so it is released even if the process
+// dies. Nothing long-running may happen inside fn: a session launch takes tens
+// of seconds and would block `proj pin` for that whole time.
+func withStateLock(statePath string, fn func() error) error {
+	p := managedStatePath(statePath) + ".lock"
+	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+		return err
+	}
+	f, err := os.OpenFile(p, os.O_CREATE|os.O_RDWR, 0o644)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX); err != nil {
+		return fmt.Errorf("lock managed state: %w", err)
+	}
+	defer func() { _ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN) }()
+	return fn()
+}
+
+// UpdateManagedState applies mutate to the managed state under the state lock,
+// reading the file inside the lock so the write cannot clobber a concurrent
+// one. Every CLI mutation of pins, keep-alive, or the clean-exit mark goes
+// through here.
+func UpdateManagedState(statePath string, mutate func(ManagedState) error) error {
+	return withStateLock(statePath, func() error {
+		managed, err := LoadManagedState(statePath)
+		if err != nil {
+			return err
+		}
+		if err := mutate(managed); err != nil {
+			return err
+		}
+		return SaveManagedState(statePath, managed)
+	})
+}
+
+// CommitManagedState writes the daemon's post-Tick state back, merging it onto
+// whatever is on disk now rather than overwriting. A tick spans tens of seconds
+// (pane captures, transcript reads, session launches), and a `proj pin` landing
+// inside that window used to be erased by the daemon's stale write.
+func CommitManagedState(statePath string, base, ours ManagedState) error {
+	return withStateLock(statePath, func() error {
+		theirs, err := LoadManagedState(statePath)
+		if err != nil {
+			return err
+		}
+		return SaveManagedState(statePath, mergeManaged(base, ours, theirs))
+	})
+}
+
+// mergeManaged three-way merges the daemon's view (ours, derived from base) with
+// the file as it stands now (theirs). Where theirs is untouched since base the
+// daemon's version wins. Where it changed, a CLI wrote concurrently and owns the
+// intent fields (pinned, keep-alive, the clean-exit mark); the daemon only
+// layers back the bookkeeping it alone maintains. An entry the daemon dropped is
+// dropped only if nobody touched it meanwhile - otherwise a pin racing a delete
+// would vanish.
+func mergeManaged(base, ours, theirs ManagedState) ManagedState {
+	out := theirs.Clone()
+	for name, o := range ours {
+		t, inTheirs := theirs[name]
+		b, inBase := base[name]
+		if !inTheirs {
+			if !inBase {
+				out[name] = o // the daemon added it; disk never had it
+			}
+			continue // otherwise: deleted on disk, respect that
+		}
+		if t == b {
+			out[name] = o // disk untouched since our read
+			continue
+		}
+		t.SeenAt = o.SeenAt
+		t.RCEverActive = t.RCEverActive || o.RCEverActive
+		if t.Name == "" {
+			t.Name = o.Name
+		}
+		if t.Dir == "" {
+			t.Dir = o.Dir
+		}
+		out[name] = t
+	}
+	for name, t := range theirs {
+		if _, inOurs := ours[name]; inOurs {
+			continue
+		}
+		if b, inBase := base[name]; inBase && t == b {
+			delete(out, name) // the daemon dropped it and nobody else wrote it
+		}
+	}
+	return out
 }
 
 func SaveManagedState(path string, state ManagedState) error {
@@ -1706,6 +1825,7 @@ func Tick(cfg Config, state State, errorState ErrorState, managed ManagedState, 
 				managed[name] = ms
 			} else {
 				// Keep-alive or plain tracked: exited cleanly, stop tracking.
+				slog.Info("drop tracked; session exited cleanly", "session", name, "dir", ms.Dir)
 				delete(managed, name)
 				continue
 			}
@@ -1732,6 +1852,7 @@ func Tick(cfg Config, state State, errorState ErrorState, managed ManagedState, 
 		} else {
 			// Nothing to recreate: the session is gone and is neither pinned nor
 			// kept alive. Stop tracking it so dead entries don't accumulate.
+			slog.Info("drop tracked; session gone, not pinned or kept alive", "session", name, "dir", ms.Dir)
 			delete(managed, name)
 		}
 	}
@@ -2146,8 +2267,16 @@ func Run(ctx context.Context, cfg Config) error {
 				}
 			}()
 			// Reload managed state each tick so CLI changes (pin/unpin/mark-closed)
-			// are picked up without requiring a daemon restart.
-			managed := LoadManagedState(cfg.StatePath)
+			// are picked up without requiring a daemon restart. A corrupt file is
+			// never written over: the tick runs against a throwaway state so the
+			// pane loop still works, and the file is left for the user to inspect.
+			managed, err := LoadManagedState(cfg.StatePath)
+			commit := err == nil
+			if err != nil {
+				slog.Error("managed state unreadable; not touching it this tick (pins are only stored there)", "err", err)
+				managed = make(ManagedState)
+			}
+			base := managed.Clone()
 			Tick(cfg, state, errorState, managed, time.Now())
 			if err := SaveState(cfg.StatePath, state); err != nil {
 				slog.Error("save state failed", "err", err)
@@ -2155,8 +2284,10 @@ func Run(ctx context.Context, cfg Config) error {
 			if err := SaveErrorState(cfg.StatePath, errorState); err != nil {
 				slog.Error("save error state failed", "err", err)
 			}
-			if err := SaveManagedState(cfg.StatePath, managed); err != nil {
-				slog.Error("save managed state failed", "err", err)
+			if commit {
+				if err := CommitManagedState(cfg.StatePath, base, managed); err != nil {
+					slog.Error("save managed state failed", "err", err)
+				}
 			}
 		}()
 		tick++

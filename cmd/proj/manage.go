@@ -47,12 +47,11 @@ var rmCmd = &cobra.Command{
 func removeProject(p projects.Project) error {
 	sessName := projects.SessionName(p.Name, p.Tags)
 	ucfg := daemonConfig()
-	managed := daemon.LoadManagedState(ucfg.StatePath)
-	if _, tracked := managed[sessName]; tracked {
+	if err := daemon.UpdateManagedState(ucfg.StatePath, func(managed daemon.ManagedState) error {
 		delete(managed, sessName)
-		if err := daemon.SaveManagedState(ucfg.StatePath, managed); err != nil {
-			return fmt.Errorf("clear daemon tracking for %q: %w", sessName, err)
-		}
+		return nil
+	}); err != nil {
+		return fmt.Errorf("clear daemon tracking for %q: %w", sessName, err)
 	}
 	_ = tmux.KillSession(sessName)
 	if err := os.RemoveAll(p.Dir); err != nil {

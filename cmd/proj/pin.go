@@ -42,15 +42,16 @@ func setPinned(args []string, pinned bool) error {
 		return err
 	}
 	cfg := daemonConfig()
-	managed := daemon.LoadManagedState(cfg.StatePath)
-	ms := managed[session]
-	ms.Name = session
-	ms.Pinned = pinned
-	if pinned && dir != "" {
-		ms.Dir = dir
-	}
-	managed[session] = ms
-	if err := daemon.SaveManagedState(cfg.StatePath, managed); err != nil {
+	if err := daemon.UpdateManagedState(cfg.StatePath, func(managed daemon.ManagedState) error {
+		ms := managed[session]
+		ms.Name = session
+		ms.Pinned = pinned
+		if pinned && dir != "" {
+			ms.Dir = dir
+		}
+		managed[session] = ms
+		return nil
+	}); err != nil {
 		return err
 	}
 	verb := "pinned"

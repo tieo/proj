@@ -986,7 +986,10 @@ func TestSaveLoadManagedState_RCEverActivePersists(t *testing.T) {
 	if err := SaveManagedState(path, in); err != nil {
 		t.Fatal(err)
 	}
-	out := LoadManagedState(path)
+	out, err := LoadManagedState(path)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if !out["virtmc@big_projects+qemu"].RCEverActive {
 		t.Error("RCEverActive=true must survive the roundtrip")
 	}
@@ -1116,6 +1119,120 @@ func TestRCPicker(t *testing.T) {
 	// Prose mentioning one label alone must not trip the matcher.
 	if rcPickerRE.MatchString("you can Disconnect this session whenever you like") {
 		t.Error("a single label in prose must not match the RC dialog")
+	}
+}
+
+// ---------- managed state: corruption and concurrent writes ----------
+
+// TestLoadManagedState_MissingVsCorrupt separates the two cases the old code
+// collapsed into "empty state": a missing file is a clean first run, a corrupt
+// one is an error. Collapsing them let a single bad file erase every pin, since
+// the daemon promptly saved the empty map back over it.
+func TestLoadManagedState_MissingVsCorrupt(t *testing.T) {
+	missing := filepath.Join(t.TempDir(), "daemon.json")
+	got, err := LoadManagedState(missing)
+	if err != nil || len(got) != 0 {
+		t.Errorf("missing file: want empty state and no error, got %v, %v", got, err)
+	}
+
+	corrupt := filepath.Join(t.TempDir(), "daemon.json")
+	if err := os.WriteFile(managedStatePath(corrupt), []byte(`{"a": {trunc`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LoadManagedState(corrupt); err == nil {
+		t.Error("corrupt file must be an error, not an empty state")
+	}
+}
+
+// TestMergeManaged_ConcurrentPinSurvivesTick is the lost update that unpinned a
+// session: the daemon reads state, spends a tick launching sessions, and writes
+// its stale map back. A `proj pin` landing inside that window must survive.
+func TestMergeManaged_ConcurrentPinSurvivesTick(t *testing.T) {
+	base := ManagedState{"tldr@Python": {Name: "tldr@Python"}}
+	// The daemon's copy: it saw the session alive and stamped it, no pin.
+	ours := ManagedState{"tldr@Python": {Name: "tldr@Python", SeenAt: time.Unix(100, 0)}}
+	// Meanwhile `proj pin tldr` wrote the pin to disk.
+	theirs := ManagedState{"tldr@Python": {Name: "tldr@Python", Pinned: true}}
+
+	out := mergeManaged(base, ours, theirs)
+	if !out["tldr@Python"].Pinned {
+		t.Error("a pin written during a tick must survive the daemon's write-back")
+	}
+	if !out["tldr@Python"].SeenAt.Equal(time.Unix(100, 0)) {
+		t.Error("the daemon's own bookkeeping (SeenAt) must still be applied")
+	}
+}
+
+// TestMergeManaged_ConcurrentPinSurvivesDelete covers the same race against the
+// daemon's delete path: it decided the dead session was unpinned and dropped it,
+// while a pin landed on disk. The pin wins; dropping it would lose the session.
+func TestMergeManaged_ConcurrentPinSurvivesDelete(t *testing.T) {
+	base := ManagedState{"tldr@Python": {Name: "tldr@Python"}}
+	ours := ManagedState{} // daemon dropped it
+	theirs := ManagedState{"tldr@Python": {Name: "tldr@Python", Pinned: true}}
+
+	if out := mergeManaged(base, ours, theirs); !out["tldr@Python"].Pinned {
+		t.Error("a pin racing the daemon's delete must survive")
+	}
+}
+
+// TestMergeManaged_UncontestedDeleteApplies keeps the delete path working: when
+// nobody else touched the entry, the daemon's drop must actually take effect.
+func TestMergeManaged_UncontestedDeleteApplies(t *testing.T) {
+	entry := ManagedSession{Name: "gone@x"}
+	base := ManagedState{"gone@x": entry}
+	ours := ManagedState{}
+	theirs := ManagedState{"gone@x": entry}
+
+	if out := mergeManaged(base, ours, theirs); len(out) != 0 {
+		t.Errorf("uncontested delete must apply, got %v", out)
+	}
+}
+
+// TestMergeManaged_DaemonAddSurvives: a session the daemon newly observed is not
+// on disk yet and must be added rather than mistaken for someone else's delete.
+func TestMergeManaged_DaemonAddSurvives(t *testing.T) {
+	out := mergeManaged(ManagedState{}, ManagedState{"new@x": {Name: "new@x"}}, ManagedState{})
+	if _, ok := out["new@x"]; !ok {
+		t.Error("a session first seen this tick must be added")
+	}
+}
+
+// TestUpdateManagedState_RefusesCorrupt: a CLI mutation must not write over a
+// state file it could not parse, or `proj pin` becomes a pin-wipe.
+func TestUpdateManagedState_RefusesCorrupt(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "daemon.json")
+	bad := []byte(`{"a": {trunc`)
+	if err := os.WriteFile(managedStatePath(path), bad, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	called := false
+	err := UpdateManagedState(path, func(ManagedState) error { called = true; return nil })
+	if err == nil {
+		t.Error("UpdateManagedState must fail on a corrupt state file")
+	}
+	if called {
+		t.Error("the mutation must not run against a corrupt state")
+	}
+	after, _ := os.ReadFile(managedStatePath(path))
+	if string(after) != string(bad) {
+		t.Error("a corrupt state file must be left untouched for inspection")
+	}
+}
+
+// TestUpdateManagedState_RoundTrip is the ordinary path: mutate under the lock,
+// persist, read back.
+func TestUpdateManagedState_RoundTrip(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "daemon.json")
+	if err := UpdateManagedState(path, func(m ManagedState) error {
+		m["tldr@Python"] = ManagedSession{Name: "tldr@Python", Pinned: true}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	out, err := LoadManagedState(path)
+	if err != nil || !out["tldr@Python"].Pinned {
+		t.Errorf("pin must persist, got %v, %v", out, err)
 	}
 }
 

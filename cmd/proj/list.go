@@ -56,7 +56,10 @@ func runList(cmd *cobra.Command, args []string) error {
 	}
 
 	unrCfg := daemonConfig()
-	managed := daemon.LoadManagedState(unrCfg.StatePath)
+	managed, err := daemon.LoadManagedState(unrCfg.StatePath)
+	if err != nil {
+		return fmt.Errorf("managed state unreadable (pins are only stored there): %w", err)
+	}
 
 	// Scan panes for label (banner/error/selector state) and RC status per session.
 	// Model is read from JSONL session files instead; more reliable.

@@ -210,7 +210,11 @@ func formatAgo(d time.Duration) string {
 // live/dead marker. The full project list lives in `proj` / `proj list`; the
 // daemon status deliberately shows only what the daemon itself acts on.
 func renderManaged(cfg daemon.Config) {
-	managed := daemon.LoadManagedState(cfg.StatePath)
+	managed, err := daemon.LoadManagedState(cfg.StatePath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "managed state unreadable: %v\n", err)
+		return
+	}
 	live := make(map[string]bool)
 	for _, s := range tmux.ListSessions() {
 		live[s.Name] = true
@@ -430,10 +434,11 @@ func runDaemonKeepAlive(cmd *cobra.Command, args []string) error {
 func runDaemonMarkClosed(cmd *cobra.Command, args []string) error {
 	name := args[0]
 	cfg := daemonConfig()
-	managed := daemon.LoadManagedState(cfg.StatePath)
-	ms := managed[name]
-	ms.Name = name
-	ms.ExitedCleanly = true
-	managed[name] = ms
-	return daemon.SaveManagedState(cfg.StatePath, managed)
+	return daemon.UpdateManagedState(cfg.StatePath, func(managed daemon.ManagedState) error {
+		ms := managed[name]
+		ms.Name = name
+		ms.ExitedCleanly = true
+		managed[name] = ms
+		return nil
+	})
 }
