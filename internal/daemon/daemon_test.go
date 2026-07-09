@@ -6,6 +6,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/tieo/proj/internal/config"
 )
 
 // Captured 2026-05-21 from a real tmux pane (proj user's session that hit
@@ -1288,11 +1290,15 @@ func TestDetectFromTranscript_LimitLast(t *testing.T) {
 }
 
 func TestRCEnabled(t *testing.T) {
-	on := Config{ClaudeCommand: "claude --dangerously-skip-permissions --remote-control --remote-control-session-name-prefix {name} -n {name}"}
+	on := Config{Agents: map[string]config.AgentSpec{
+		"claude": {Name: "claude", Command: "claude --dangerously-skip-permissions --remote-control --remote-control-session-name-prefix {name} -n {name}"},
+	}}
 	if !rcEnabled(on) {
 		t.Error("rcEnabled should be true when --remote-control present")
 	}
-	off := Config{ClaudeCommand: "claude --dangerously-skip-permissions -n {name}"}
+	off := Config{Agents: map[string]config.AgentSpec{
+		"claude": {Name: "claude", Command: "claude --dangerously-skip-permissions -n {name}"},
+	}}
 	if rcEnabled(off) {
 		t.Error("rcEnabled should be false without --remote-control")
 	}

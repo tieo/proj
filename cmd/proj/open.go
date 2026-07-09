@@ -2,8 +2,6 @@ package main
 
 import (
 	"fmt"
-	"os"
-	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -11,7 +9,6 @@ import (
 	"github.com/tieo/proj/internal/config"
 	"github.com/tieo/proj/internal/daemon"
 	"github.com/tieo/proj/internal/projects"
-	"github.com/tieo/proj/internal/shellout"
 	"github.com/tieo/proj/internal/tmux"
 )
 
@@ -49,36 +46,23 @@ func openInTmux(cfg config.Config, p projects.Project) error {
 	case session:
 		// Already running under the right name; re-apply skills below.
 	case "":
-		host, _ := os.Hostname()
-		cmdLine := strings.NewReplacer("{name}", shellout.Quote(p.Name), "{dir}", shellout.Quote(p.Dir), "{host}", host, "{rc}", shellout.Quote(daemon.RCName(session, host))).Replace(cfg.Claude.Command)
-		// Append the resume flag only when there's a transcript to resume.
-		// Claude's --continue is NOT a no-op on an empty history: it exits
-		// with "No deferred tool marker found in the resumed session", which
-		// tears the brand-new pane down before anyone can attach. So gate it
-		// on HasHistory, which resolves the real transcript location (the
-		// Windows home under WSL, where claude.exe runs via interop).
-		if cfg.Claude.ResumeFlag != "" && daemon.HasHistory(cfg.Claude.Home, p.Dir) {
-			cmdLine += " " + cfg.Claude.ResumeFlag
+		spec, err := cfg.Agent(p.Agent)
+		if err != nil {
+			return err
 		}
-		// Run claude as the pane's program with no trailing shell. When claude
+		// Run the agent as the pane's program with no trailing shell. When it
 		// exits, the pane's program ends and tmux (with remain-on-exit off, set
 		// in NewSession) tears the single-window session down, so a finished
 		// project leaves nothing behind, and the next `proj <name>` launches a
-		// fresh `claude -c` instead of re-attaching a leftover shell. Surviving a
+		// fresh resume instead of re-attaching a leftover shell. Surviving a
 		// closed terminal is handled at the server level (see tmux.NewSession /
 		// ensureServer), not by keeping a shell in the pane.
 		//
-		// Mark the session cleanly closed when claude itself exits successfully
-		// (Ctrl-D, /exit): then the daemon's keep-alive leaves it closed instead
-		// of resurrecting it. The mark hangs off && rather than ;, because tmux
-		// runs this under a shell that outlives claude: with ; the mark also ran
-		// after a kill (OOM, kill -9, server death), recording a killed session
-		// as a deliberate close so keep-alive skipped it. A nonzero exit now
-		// leaves the session unmarked and keep-alive recreates it - exactly its
-		// purpose. Since claude is the pane program (no wrapping shell), the
-		// shell exit trap in shells/proj.* can't fire, so the mark has to ride
-		// on the launch command itself.
-		cmdLine += " && proj daemon mark-closed " + shellout.Quote(session)
+		// LaunchCommand gates the resume command on real prior history (resume
+		// on an empty history is an error that tears the fresh pane down) and
+		// appends the clean-close mark that keeps keep-alive from resurrecting
+		// a deliberately closed session; see its doc for the && semantics.
+		cmdLine := daemon.LaunchCommand(spec, cfg.Claude.Home, p.Name, session, p.Dir)
 		if _, err := tmux.NewSession(session, p.Dir, cmdLine); err != nil {
 			return fmt.Errorf("create tmux session: %w", err)
 		}
@@ -91,8 +75,9 @@ func openInTmux(cfg config.Config, p projects.Project) error {
 	// re-attach to a live session - that way "this project always runs in
 	// caveman mode" stays consistent without the user typing it each time.
 	// Waits for claude's input box to settle so commands don't land mid-init
-	// (or on the trust-folder prompt for a brand-new dir).
-	if len(p.Skills) > 0 {
+	// (or on the trust-folder prompt for a brand-new dir). Skills are Claude
+	// Code slash commands; other agents don't get them.
+	if len(p.Skills) > 0 && daemon.AgentName(p.Agent) == config.DefaultAgent {
 		tmux.ApplySlashCommands(session, p.Skills, 30*time.Second)
 	}
 	if headless {

@@ -6,22 +6,99 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
+	"strings"
 	"time"
 
 	"github.com/BurntSushi/toml"
 )
 
 type Config struct {
-	BaseDir string       `toml:"base_dir"`
-	Claude  ClaudeConfig `toml:"claude"`
-	Daemon  DaemonConfig `toml:"daemon"`
-	List    ListConfig   `toml:"list"`
+	BaseDir string                 `toml:"base_dir"`
+	Claude  ClaudeConfig           `toml:"claude"`
+	Agents  map[string]AgentConfig `toml:"agents"`
+	Daemon  DaemonConfig           `toml:"daemon"`
+	List    ListConfig             `toml:"list"`
 }
 
 type ClaudeConfig struct {
 	Command    string `toml:"command"`
 	ResumeFlag string `toml:"resume_flag"`
 	Home       string `toml:"home"` // Claude home override; default ~/.claude, or the Windows one when running under WSL
+}
+
+// AgentConfig is the launch recipe for a non-Claude coding agent, configured
+// under [agents.<name>]. Claude keeps its own [claude] section (it carries the
+// extra home override) and is exposed through the same AgentSpec resolution.
+type AgentConfig struct {
+	Command       string `toml:"command"`
+	ResumeCommand string `toml:"resume_command"` // full command used instead of command when the project has prior history
+}
+
+// AgentSpec is a resolved launch recipe: the command templates a session is
+// started with. Both commands support the {name}, {dir}, {host} and {rc}
+// placeholders.
+type AgentSpec struct {
+	Name          string
+	Command       string
+	ResumeCommand string // empty: always launch fresh
+}
+
+// DefaultAgent is the agent used by projects with no agent set.
+const DefaultAgent = "claude"
+
+// defaultAgents holds the built-in recipes for the supported non-Claude
+// agents. A [agents.<name>] entry in config.toml overrides the whole recipe
+// for that name.
+var defaultAgents = map[string]AgentConfig{
+	"codex": {
+		Command:       "codex --dangerously-bypass-approvals-and-sandbox",
+		ResumeCommand: "codex resume --last --dangerously-bypass-approvals-and-sandbox",
+	},
+	"agy": {
+		Command: "agy",
+	},
+}
+
+// Agent resolves an agent name to its launch spec. "" means claude. Unknown
+// names error with a hint at where to define them.
+func (c Config) Agent(name string) (AgentSpec, error) {
+	if name == "" || name == DefaultAgent {
+		spec := AgentSpec{Name: DefaultAgent, Command: c.Claude.Command}
+		if c.Claude.ResumeFlag != "" {
+			spec.ResumeCommand = c.Claude.Command + " " + c.Claude.ResumeFlag
+		}
+		return spec, nil
+	}
+	a, ok := c.Agents[name]
+	if !ok {
+		a, ok = defaultAgents[name]
+	}
+	if !ok || a.Command == "" {
+		return AgentSpec{}, fmt.Errorf("unknown agent %q; known: %s (add [agents.%s] to %s)",
+			name, strings.Join(c.AgentNames(), ", "), name, Path())
+	}
+	return AgentSpec{Name: name, Command: a.Command, ResumeCommand: a.ResumeCommand}, nil
+}
+
+// AgentNames returns every resolvable agent name, claude first, the rest sorted.
+func (c Config) AgentNames() []string {
+	seen := map[string]bool{}
+	var rest []string
+	for name := range defaultAgents {
+		if !seen[name] {
+			seen[name] = true
+			rest = append(rest, name)
+		}
+	}
+	for name, a := range c.Agents {
+		if !seen[name] && a.Command != "" {
+			seen[name] = true
+			rest = append(rest, name)
+		}
+	}
+	sort.Strings(rest)
+	return append([]string{DefaultAgent}, rest...)
 }
 
 type DaemonConfig struct {

@@ -362,8 +362,12 @@ func daemonConfig() daemon.Config {
 		out.Capture = user.Daemon.CaptureLines
 	}
 	out.KeepAlive = user.Daemon.KeepAlive
-	out.ClaudeCommand = user.Claude.Command
-	out.ClaudeResumeFlag = user.Claude.ResumeFlag
+	out.Agents = make(map[string]config.AgentSpec)
+	for _, name := range user.AgentNames() {
+		if spec, err := user.Agent(name); err == nil {
+			out.Agents[name] = spec
+		}
+	}
 	out.ClaudeHome = user.Claude.Home
 	return out
 }

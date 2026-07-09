@@ -135,7 +135,10 @@ func runList(cmd *cobra.Command, args []string) error {
 		rc := rcBySession[sessName]
 		// Prefer the API's connection truth for live sessions; the pane marker
 		// (rcBySession) is only the fallback when the API is unreachable.
-		if alive && rcConn != nil {
+		// Remote Control is a Claude Code feature; other agents get no RC note.
+		if daemon.AgentName(p.Agent) != config.DefaultAgent {
+			rc = ""
+		} else if alive && rcConn != nil {
 			if rcConn[daemon.RCName(sessName, host)] {
 				rc = "active"
 			} else {
@@ -153,7 +156,7 @@ func runList(cmd *cobra.Command, args []string) error {
 			indicator: buildIndicator(alive, ms.Pinned, label, rc),
 			name:      p.Name,
 			tags:      strings.Join(p.Tags, " "),
-			model:     daemon.ModelFromDir(cfg.Claude.Home, p.Dir),
+			model:     modelLabel(p, cfg.Claude.Home),
 			ts:        sessionTS(p, alive),
 			note:      buildNote(label, rc, ms, tracked, alive, unrCfg.KeepAlive),
 			noteColor: noteColor(label, rc, alive),
@@ -240,6 +243,15 @@ func hasTag(tags []string, want string) bool {
 //	📌   pinned (alive or dead, emoji, 2 cols)
 //	● ·  alive; colored dot + space (1+1 cols)
 //	○ ·  dead ; grey circle + space (1+1 cols)
+// modelLabel fills the model column: the Claude model read from the session
+// transcript, or the agent name for projects running another agent.
+func modelLabel(p projects.Project, claudeHome string) string {
+	if daemon.AgentName(p.Agent) != config.DefaultAgent {
+		return p.Agent
+	}
+	return daemon.ModelFromDir(claudeHome, p.Dir)
+}
+
 func buildIndicator(alive, pinned bool, label, rc string) string {
 	if pinned {
 		return "📌"

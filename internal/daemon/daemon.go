@@ -23,6 +23,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/tieo/proj/internal/config"
 	"github.com/tieo/proj/internal/projects"
 	"github.com/tieo/proj/internal/shellout"
 	"github.com/tieo/proj/internal/tmux"
@@ -53,18 +54,17 @@ type Tracked struct {
 type State map[string]Tracked
 
 type Config struct {
-	Poll             time.Duration
-	MaxWait          time.Duration // fallback retry interval when the banner has no parseable time
-	DismissGap       time.Duration // pause between Escape and "continue"
-	ResumeText       string
-	CompactText      string // slash command to compact a stuck session
-	ClearText        string // slash command to clear when compact itself fails
-	Capture          int
-	StatePath        string
-	KeepAlive        bool // recreate vanished sessions that weren't cleanly closed
-	ClaudeCommand    string
-	ClaudeResumeFlag string
-	ClaudeHome       string // [claude] home override; where Claude Code keeps transcripts (the Windows home under WSL)
+	Poll        time.Duration
+	MaxWait     time.Duration // fallback retry interval when the banner has no parseable time
+	DismissGap  time.Duration // pause between Escape and "continue"
+	ResumeText  string
+	CompactText string // slash command to compact a stuck session
+	ClearText   string // slash command to clear when compact itself fails
+	Capture     int
+	StatePath   string
+	KeepAlive   bool                        // recreate vanished sessions that weren't cleanly closed
+	Agents      map[string]config.AgentSpec // resolved launch recipes keyed by agent name, "claude" included
+	ClaudeHome  string                      // [claude] home override; where Claude Code keeps transcripts (the Windows home under WSL)
 }
 
 func DefaultConfig() Config {
@@ -348,10 +348,11 @@ var (
 // during a sustained API outage still recovers.
 const rcConnCacheTTL = 3 * time.Minute
 
-// rcEnabled reports whether the configured launch command opts into Remote
-// Control, so the watchdog only nudges sessions that are supposed to have it.
+// rcEnabled reports whether the configured claude launch command opts into
+// Remote Control, so the watchdog only nudges sessions that are supposed to
+// have it.
 func rcEnabled(cfg Config) bool {
-	return strings.Contains(cfg.ClaudeCommand, "--remote-control")
+	return strings.Contains(cfg.Agents[config.DefaultAgent].Command, "--remote-control")
 }
 
 // RCName formats the Remote Control session title shown on claude.ai. A proj
@@ -777,6 +778,7 @@ func feedbackPromptVisible(content string) bool {
 // PaneState summarises what the daemon currently sees for one pane.
 type PaneState struct {
 	Pane     tmux.Pane
+	Agent    string    // agent running in the pane's project ("claude", "codex", ...)
 	Banner   *Banner   // non-nil if a usage-limit banner is visible
 	Selector bool      // a dismissable interactive picker is visible
 	APIError *APIError // non-nil if stuck after a permanent API error
@@ -807,13 +809,23 @@ func (s PaneState) Label() string {
 // the .claude root (WSL-aware) for locating each pane's transcript.
 func ScanPanes(homeOverride string, captureLines int) []PaneState {
 	panes := tmux.ListPanes()
+	reg, _ := projects.LoadRegistry()
 	now := time.Now()
 	out := make([]PaneState, 0, len(panes))
 	for _, p := range panes {
+		// Non-claude panes are not classified: every detector here reads Claude
+		// Code's TUI and transcript formats, and matching them against another
+		// agent's output only invites false labels.
+		workDir := tmux.PaneCurrentPath(p.ID)
+		if agent := AgentName(reg.Agent(filepath.Base(workDir))); agent != config.DefaultAgent {
+			out = append(out, PaneState{Pane: p, Agent: agent})
+			continue
+		}
 		content := tmux.CapturePane(p.ID, captureLines)
-		sessFile := recentSessionFile(homeOverride, tmux.PaneCurrentPath(p.ID))
+		sessFile := recentSessionFile(homeOverride, workDir)
 		out = append(out, PaneState{
 			Pane:     p,
+			Agent:    config.DefaultAgent,
 			Banner:   DetectFromTranscript(sessFile, now),
 			Selector: HasSelector(content),
 			APIError: DetectAPIError(content),
@@ -1069,14 +1081,19 @@ func readFileTail(path string, n int64) []byte {
 // needed because claude is the pane program with no wrapping shell to carry the
 // shells/proj.* exit trap.
 func launchSession(cfg Config, name, dir string) {
+	// Project key in the registry is the dir's basename - the flat layout means
+	// every project lives at baseDir/<name>/.
+	reg, regErr := projects.LoadRegistry()
+	agentName := AgentName(reg.Agent(filepath.Base(dir)))
+	spec, known := cfg.Agents[agentName]
+	if !known {
+		slog.Error("recreate skipped; project's agent has no launch recipe",
+			"session", name, "dir", dir, "agent", agentName)
+		return
+	}
 	command := ""
-	if cfg.ClaudeCommand != "" {
-		host, _ := os.Hostname()
-		cmdLine := strings.NewReplacer("{name}", shellout.Quote(name), "{dir}", shellout.Quote(dir), "{host}", host, "{rc}", shellout.Quote(RCName(name, host))).Replace(cfg.ClaudeCommand)
-		if cfg.ClaudeResumeFlag != "" && HasHistory(cfg.ClaudeHome, dir) {
-			cmdLine += " " + cfg.ClaudeResumeFlag
-		}
-		command = cmdLine + " && proj daemon mark-closed " + shellout.Quote(name)
+	if spec.Command != "" {
+		command = LaunchCommand(spec, cfg.ClaudeHome, name, name, dir)
 	}
 	pane, err := tmux.NewSession(name, dir, command)
 	if err != nil {
@@ -1084,13 +1101,60 @@ func launchSession(cfg Config, name, dir string) {
 		return
 	}
 	// Apply the project's configured slash-skills (e.g. "caveman") once claude's
-	// input box is up, same as `proj <name>` does. Project key in the registry
-	// is the dir's basename - the flat layout means every project lives at
-	// baseDir/<name>/.
-	if reg, err := projects.LoadRegistry(); err == nil {
+	// input box is up, same as `proj <name>` does. Skills are Claude Code slash
+	// commands; other agents don't get them.
+	if regErr == nil && agentName == config.DefaultAgent {
 		if skills := reg.Skills(filepath.Base(dir)); len(skills) > 0 {
 			tmux.ApplySlashCommands(pane, skills, 30*time.Second)
 		}
+	}
+}
+
+// AgentName normalizes a registry agent value: empty means claude.
+func AgentName(agent string) string {
+	if agent == "" {
+		return config.DefaultAgent
+	}
+	return agent
+}
+
+// LaunchCommand renders the pane command that launches spec's agent for a
+// project. projName fills {name}; session names the tmux session (it carries
+// the tag block) and feeds {rc} and the clean-close mark. The resume command
+// is used instead of the base one only when the agent has prior history for
+// dir, because agents don't treat resume-with-no-history as a no-op (claude -c
+// exits with an error, tearing the fresh pane down before anyone can attach).
+//
+// The trailing mark hangs off && rather than ;: tmux runs the command under a
+// shell that outlives the agent, so with ; the mark also ran when the agent
+// was killed (OOM, kill -9) and a killed session was recorded as a deliberate
+// close, then dropped and never recreated. Gating on a zero exit keeps a
+// signal death looking like what it is, leaving keep-alive to recreate it.
+func LaunchCommand(spec config.AgentSpec, claudeHome, projName, session, dir string) string {
+	host, _ := os.Hostname()
+	tpl := spec.Command
+	if spec.ResumeCommand != "" && AgentHasHistory(spec.Name, claudeHome, dir) {
+		tpl = spec.ResumeCommand
+	}
+	cmdLine := strings.NewReplacer(
+		"{name}", shellout.Quote(projName),
+		"{dir}", shellout.Quote(dir),
+		"{host}", host,
+		"{rc}", shellout.Quote(RCName(session, host)),
+	).Replace(tpl)
+	return cmdLine + " && proj daemon mark-closed " + shellout.Quote(session)
+}
+
+// AgentHasHistory reports whether the named agent has a prior session for dir.
+// Agents without a history detector always launch fresh.
+func AgentHasHistory(agent, claudeHome, dir string) bool {
+	switch AgentName(agent) {
+	case config.DefaultAgent:
+		return HasHistory(claudeHome, dir)
+	case "codex":
+		return CodexHasHistory(dir)
+	default:
+		return false
 	}
 }
 
@@ -1113,6 +1177,73 @@ func HasHistory(homeOverride, dir string) bool {
 		}
 	}
 	return false
+}
+
+// codexHome returns the Codex home directory ($CODEX_HOME, default ~/.codex).
+// Rollout transcripts live under <home>/sessions/YYYY/MM/DD/rollout-*.jsonl.
+func codexHome() string {
+	if h := os.Getenv("CODEX_HOME"); h != "" {
+		return h
+	}
+	home, _ := os.UserHomeDir()
+	return filepath.Join(home, ".codex")
+}
+
+// codexMetaBytes bounds how much of a rollout's head is read to find its cwd.
+// The first line is the session_meta record; it embeds the full base
+// instructions, so it runs to tens of KB.
+const codexMetaBytes = 128 * 1024
+
+// CodexHasHistory reports whether Codex recorded a session for dir. Codex
+// keys rollouts by date, not by working directory; the cwd sits in each
+// rollout's first line (the session_meta record), so this scans heads until
+// one matches. `codex resume --last` filters sessions by cwd the same way,
+// which is what makes gating the resume command on this check line up with
+// what the resume will actually find.
+func CodexHasHistory(dir string) bool {
+	root := filepath.Join(codexHome(), "sessions")
+	found := false
+	_ = filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return nil
+		}
+		name := d.Name()
+		if !strings.HasPrefix(name, "rollout-") || !strings.HasSuffix(name, ".jsonl") {
+			return nil
+		}
+		if codexRolloutCwd(path) == dir {
+			found = true
+			return filepath.SkipAll
+		}
+		return nil
+	})
+	return found
+}
+
+// codexRolloutCwd extracts the cwd from a rollout's session_meta head line,
+// or "" when the head is unreadable or not a session_meta record.
+func codexRolloutCwd(path string) string {
+	f, err := os.Open(path)
+	if err != nil {
+		return ""
+	}
+	defer f.Close()
+	head := make([]byte, codexMetaBytes)
+	n, _ := io.ReadFull(f, head)
+	head = head[:n]
+	if i := bytes.IndexByte(head, '\n'); i >= 0 {
+		head = head[:i]
+	}
+	var rec struct {
+		Type    string `json:"type"`
+		Payload struct {
+			Cwd string `json:"cwd"`
+		} `json:"payload"`
+	}
+	if json.Unmarshal(head, &rec) != nil || rec.Type != "session_meta" {
+		return ""
+	}
+	return rec.Payload.Cwd
 }
 
 // claudeRoot returns the .claude directory Claude Code actually uses for a
@@ -1858,6 +1989,9 @@ func Tick(cfg Config, state State, errorState ErrorState, managed ManagedState, 
 	}
 
 	// --- Existing pane-level banner/error loop ---
+	// The registry maps each pane's project (dir basename, flat layout) to its
+	// agent, so the loop below can leave non-claude panes alone.
+	reg, _ := projects.LoadRegistry()
 	panes := tmux.ListPanes()
 	live := make(map[string]string, len(panes))
 	for _, p := range panes {
@@ -1912,6 +2046,14 @@ func Tick(cfg Config, state State, errorState ErrorState, managed ManagedState, 
 	}
 
 	for _, p := range panes {
+		// Every detector and keystroke in this loop speaks Claude Code's TUI
+		// (its ⎿/● markers, /compact, /rc, "continue"); typing those into
+		// codex or agy would inject garbage into a live session. Non-claude
+		// panes only get the session-level keep-alive/pin handling above.
+		paneDir := tmux.PaneCurrentPath(p.ID)
+		if AgentName(reg.Agent(filepath.Base(paneDir))) != config.DefaultAgent {
+			continue
+		}
 		content := tmux.CapturePane(p.ID, cfg.Capture)
 
 		// 1) Dismiss any known Claude interactive picker. Independent of
@@ -2063,10 +2205,9 @@ func Tick(cfg Config, state State, errorState ErrorState, managed ManagedState, 
 				// /compact failed (either this run or a prior daemon run) -
 				// the broken content is embedded in history. Fall back to
 				// /clear, then send Claude an explanation so it can resume from memory.
-				workDir := tmux.PaneCurrentPath(p.ID)
 				// Extract context BEFORE /clear; /clear causes Claude Code to
 				// start a new session file, so the pre-clear file has the history.
-				sessFile := recentSessionFile(cfg.ClaudeHome, workDir)
+				sessFile := recentSessionFile(cfg.ClaudeHome, paneDir)
 				sessContext := extractSessionContext(sessFile)
 				slog.Info("compact failed, clearing conversation",
 					"session", p.Session, "pane", p.ID,
@@ -2168,7 +2309,7 @@ func Tick(cfg Config, state State, errorState ErrorState, managed ManagedState, 
 		//    isApiErrorMessage flag (no prose false positives) and is immune to
 		//    scroll position (mouse mode) and viewport truncation, which the pane
 		//    scrape is not. The pane is still used above for selectors and RC.
-		sessFile := recentSessionFile(cfg.ClaudeHome, tmux.PaneCurrentPath(p.ID))
+		sessFile := recentSessionFile(cfg.ClaudeHome, paneDir)
 		b := DetectFromTranscript(sessFile, now)
 		if b == nil {
 			if t, ok := state[p.ID]; ok {

@@ -37,6 +37,11 @@ var newCmd = &cobra.Command{
 				return err
 			}
 		}
+		if newAgentF != "" {
+			if _, err := cfg.Agent(newAgentF); err != nil {
+				return err
+			}
+		}
 
 		exists, err := projects.CheckNewName(cfg.BaseDir, name)
 		if err != nil {
@@ -56,6 +61,11 @@ var newCmd = &cobra.Command{
 		if err := reg.SetTags(name, tags); err != nil {
 			return err
 		}
+		if newAgentF != "" {
+			if err := reg.SetAgent(name, newAgentF); err != nil {
+				return err
+			}
+		}
 		p, err := projects.FindByName(cfg.BaseDir, name)
 		if err != nil {
 			return err
@@ -64,6 +74,9 @@ var newCmd = &cobra.Command{
 	},
 }
 
+var newAgentF string
+
 func init() {
+	newCmd.Flags().StringVar(&newAgentF, "agent", "", "coding agent for the project's sessions (claude, codex, agy, or a [agents.*] entry)")
 	rootCmd.AddCommand(newCmd)
 }
