@@ -1290,13 +1290,13 @@ func TestDetectFromTranscript_LimitLast(t *testing.T) {
 }
 
 func TestRCEnabled(t *testing.T) {
-	on := Config{Agents: map[string]config.AgentSpec{
+	on := Config{Tools: map[string]config.ToolSpec{
 		"claude": {Name: "claude", Command: "claude --dangerously-skip-permissions --remote-control --remote-control-session-name-prefix {name} -n {name}"},
 	}}
 	if !rcEnabled(on) {
 		t.Error("rcEnabled should be true when --remote-control present")
 	}
-	off := Config{Agents: map[string]config.AgentSpec{
+	off := Config{Tools: map[string]config.ToolSpec{
 		"claude": {Name: "claude", Command: "claude --dangerously-skip-permissions -n {name}"},
 	}}
 	if rcEnabled(off) {

@@ -135,8 +135,8 @@ func runList(cmd *cobra.Command, args []string) error {
 		rc := rcBySession[sessName]
 		// Prefer the API's connection truth for live sessions; the pane marker
 		// (rcBySession) is only the fallback when the API is unreachable.
-		// Remote Control is a Claude Code feature; other agents get no RC note.
-		if daemon.AgentName(p.Agent) != config.DefaultAgent {
+		// Remote Control is a Claude Code feature; other tools get no RC note.
+		if daemon.ToolName(p.Tool) != config.DefaultTool {
 			rc = ""
 		} else if alive && rcConn != nil {
 			if rcConn[daemon.RCName(sessName, host)] {
@@ -244,10 +244,10 @@ func hasTag(tags []string, want string) bool {
 //	● ·  alive; colored dot + space (1+1 cols)
 //	○ ·  dead ; grey circle + space (1+1 cols)
 // modelLabel fills the model column: the Claude model read from the session
-// transcript, or the agent name for projects running another agent.
+// transcript, or the tool name for projects running another tool.
 func modelLabel(p projects.Project, claudeHome string) string {
-	if daemon.AgentName(p.Agent) != config.DefaultAgent {
-		return p.Agent
+	if daemon.ToolName(p.Tool) != config.DefaultTool {
+		return p.Tool
 	}
 	return daemon.ModelFromDir(claudeHome, p.Dir)
 }

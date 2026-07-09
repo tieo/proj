@@ -43,7 +43,7 @@ func TestCodexHasHistory(t *testing.T) {
 func TestLaunchCommandResumeGating(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("CODEX_HOME", home)
-	spec := config.AgentSpec{Name: "codex", Command: "codex", ResumeCommand: "codex resume --last"}
+	spec := config.ToolSpec{Name: "codex", Command: "codex", ResumeCommand: "codex resume --last"}
 	proj := "/home/u/projects/code/api"
 
 	cmd := LaunchCommand(spec, "", "api", "api@work", proj)
@@ -63,7 +63,7 @@ func TestLaunchCommandResumeGating(t *testing.T) {
 }
 
 func TestLaunchCommandPlaceholders(t *testing.T) {
-	spec := config.AgentSpec{Name: "claude", Command: "claude -n {rc} --dir {dir} --name {name}"}
+	spec := config.ToolSpec{Name: "claude", Command: "claude -n {rc} --dir {dir} --name {name}"}
 	cmd := LaunchCommand(spec, t.TempDir(), "api", "api@work", "/tmp/api")
 	host, _ := os.Hostname()
 	if !strings.Contains(cmd, "'api @"+host+" [work]'") {

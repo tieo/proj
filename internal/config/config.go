@@ -16,7 +16,7 @@ import (
 type Config struct {
 	BaseDir string                 `toml:"base_dir"`
 	Claude  ClaudeConfig           `toml:"claude"`
-	Agents  map[string]AgentConfig `toml:"agents"`
+	Tools   map[string]ToolConfig `toml:"tools"`
 	Daemon  DaemonConfig           `toml:"daemon"`
 	List    ListConfig             `toml:"list"`
 }
@@ -27,30 +27,30 @@ type ClaudeConfig struct {
 	Home       string `toml:"home"` // Claude home override; default ~/.claude, or the Windows one when running under WSL
 }
 
-// AgentConfig is the launch recipe for a non-Claude coding agent, configured
-// under [agents.<name>]. Claude keeps its own [claude] section (it carries the
-// extra home override) and is exposed through the same AgentSpec resolution.
-type AgentConfig struct {
+// ToolConfig is the launch recipe for a non-Claude coding tool, configured
+// under [tools.<name>]. Claude keeps its own [claude] section (it carries the
+// extra home override) and is exposed through the same ToolSpec resolution.
+type ToolConfig struct {
 	Command       string `toml:"command"`
 	ResumeCommand string `toml:"resume_command"` // full command used instead of command when the project has prior history
 }
 
-// AgentSpec is a resolved launch recipe: the command templates a session is
+// ToolSpec is a resolved launch recipe: the command templates a session is
 // started with. Both commands support the {name}, {dir}, {host} and {rc}
 // placeholders.
-type AgentSpec struct {
+type ToolSpec struct {
 	Name          string
 	Command       string
 	ResumeCommand string // empty: always launch fresh
 }
 
-// DefaultAgent is the agent used by projects with no agent set.
-const DefaultAgent = "claude"
+// DefaultTool is the tool used by projects with no tool set.
+const DefaultTool = "claude"
 
-// defaultAgents holds the built-in recipes for the supported non-Claude
-// agents. A [agents.<name>] entry in config.toml overrides the whole recipe
+// defaultTools holds the built-in recipes for the supported non-Claude
+// tools. A [tools.<name>] entry in config.toml overrides the whole recipe
 // for that name.
-var defaultAgents = map[string]AgentConfig{
+var defaultTools = map[string]ToolConfig{
 	"codex": {
 		Command:       "codex --dangerously-bypass-approvals-and-sandbox",
 		ResumeCommand: "codex resume --last --dangerously-bypass-approvals-and-sandbox",
@@ -60,45 +60,45 @@ var defaultAgents = map[string]AgentConfig{
 	},
 }
 
-// Agent resolves an agent name to its launch spec. "" means claude. Unknown
+// Tool resolves an tool name to its launch spec. "" means claude. Unknown
 // names error with a hint at where to define them.
-func (c Config) Agent(name string) (AgentSpec, error) {
-	if name == "" || name == DefaultAgent {
-		spec := AgentSpec{Name: DefaultAgent, Command: c.Claude.Command}
+func (c Config) Tool(name string) (ToolSpec, error) {
+	if name == "" || name == DefaultTool {
+		spec := ToolSpec{Name: DefaultTool, Command: c.Claude.Command}
 		if c.Claude.ResumeFlag != "" {
 			spec.ResumeCommand = c.Claude.Command + " " + c.Claude.ResumeFlag
 		}
 		return spec, nil
 	}
-	a, ok := c.Agents[name]
+	a, ok := c.Tools[name]
 	if !ok {
-		a, ok = defaultAgents[name]
+		a, ok = defaultTools[name]
 	}
 	if !ok || a.Command == "" {
-		return AgentSpec{}, fmt.Errorf("unknown agent %q; known: %s (add [agents.%s] to %s)",
-			name, strings.Join(c.AgentNames(), ", "), name, Path())
+		return ToolSpec{}, fmt.Errorf("unknown tool %q; known: %s (add [tools.%s] to %s)",
+			name, strings.Join(c.ToolNames(), ", "), name, Path())
 	}
-	return AgentSpec{Name: name, Command: a.Command, ResumeCommand: a.ResumeCommand}, nil
+	return ToolSpec{Name: name, Command: a.Command, ResumeCommand: a.ResumeCommand}, nil
 }
 
-// AgentNames returns every resolvable agent name, claude first, the rest sorted.
-func (c Config) AgentNames() []string {
+// ToolNames returns every resolvable tool name, claude first, the rest sorted.
+func (c Config) ToolNames() []string {
 	seen := map[string]bool{}
 	var rest []string
-	for name := range defaultAgents {
+	for name := range defaultTools {
 		if !seen[name] {
 			seen[name] = true
 			rest = append(rest, name)
 		}
 	}
-	for name, a := range c.Agents {
+	for name, a := range c.Tools {
 		if !seen[name] && a.Command != "" {
 			seen[name] = true
 			rest = append(rest, name)
 		}
 	}
 	sort.Strings(rest)
-	return append([]string{DefaultAgent}, rest...)
+	return append([]string{DefaultTool}, rest...)
 }
 
 type DaemonConfig struct {

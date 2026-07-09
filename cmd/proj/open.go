@@ -46,11 +46,11 @@ func openInTmux(cfg config.Config, p projects.Project) error {
 	case session:
 		// Already running under the right name; re-apply skills below.
 	case "":
-		spec, err := cfg.Agent(p.Agent)
+		spec, err := cfg.Tool(p.Tool)
 		if err != nil {
 			return err
 		}
-		// Run the agent as the pane's program with no trailing shell. When it
+		// Run the tool as the pane's program with no trailing shell. When it
 		// exits, the pane's program ends and tmux (with remain-on-exit off, set
 		// in NewSession) tears the single-window session down, so a finished
 		// project leaves nothing behind, and the next `proj <name>` launches a
@@ -76,8 +76,8 @@ func openInTmux(cfg config.Config, p projects.Project) error {
 	// caveman mode" stays consistent without the user typing it each time.
 	// Waits for claude's input box to settle so commands don't land mid-init
 	// (or on the trust-folder prompt for a brand-new dir). Skills are Claude
-	// Code slash commands; other agents don't get them.
-	if len(p.Skills) > 0 && daemon.AgentName(p.Agent) == config.DefaultAgent {
+	// Code slash commands; other tools don't get them.
+	if len(p.Skills) > 0 && daemon.ToolName(p.Tool) == config.DefaultTool {
 		tmux.ApplySlashCommands(session, p.Skills, 30*time.Second)
 	}
 	if headless {

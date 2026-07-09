@@ -21,7 +21,7 @@ type Project struct {
 	Dir       string
 	Tags      []string // sorted
 	Skills    []string // slash-skills sent to claude after launch (e.g. "caveman")
-	Agent     string   // coding agent for the session; "" = claude
+	Tool      string   // coding tool for the session; "" = claude
 	SessionTS int64    // tmux activity unix-time, 0 if no live session
 	DirMTime  int64
 }
@@ -126,7 +126,7 @@ func FindByName(baseDir, name string) (Project, error) {
 		Dir:      dir,
 		Tags:     reg.Tags(name),
 		Skills:   reg.Skills(name),
-		Agent:    reg.Agent(name),
+		Tool:     reg.Tool(name),
 		DirMTime: info.ModTime().Unix(),
 	}, nil
 }
@@ -230,7 +230,7 @@ func All(baseDir string) []Project {
 			Dir:    dir,
 			Tags:   reg.Tags(e.Name()),
 			Skills: reg.Skills(e.Name()),
-			Agent:  reg.Agent(e.Name()),
+			Tool:   reg.Tool(e.Name()),
 		}
 		if ts, ok := sessionByPath[dir]; ok {
 			p.SessionTS = ts

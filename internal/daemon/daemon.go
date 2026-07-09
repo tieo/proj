@@ -63,7 +63,7 @@ type Config struct {
 	Capture     int
 	StatePath   string
 	KeepAlive   bool                        // recreate vanished sessions that weren't cleanly closed
-	Agents      map[string]config.AgentSpec // resolved launch recipes keyed by agent name, "claude" included
+	Tools       map[string]config.ToolSpec // resolved launch recipes keyed by tool name, "claude" included
 	ClaudeHome  string                      // [claude] home override; where Claude Code keeps transcripts (the Windows home under WSL)
 }
 
@@ -352,7 +352,7 @@ const rcConnCacheTTL = 3 * time.Minute
 // Remote Control, so the watchdog only nudges sessions that are supposed to
 // have it.
 func rcEnabled(cfg Config) bool {
-	return strings.Contains(cfg.Agents[config.DefaultAgent].Command, "--remote-control")
+	return strings.Contains(cfg.Tools[config.DefaultTool].Command, "--remote-control")
 }
 
 // RCName formats the Remote Control session title shown on claude.ai. A proj
@@ -778,7 +778,7 @@ func feedbackPromptVisible(content string) bool {
 // PaneState summarises what the daemon currently sees for one pane.
 type PaneState struct {
 	Pane     tmux.Pane
-	Agent    string    // agent running in the pane's project ("claude", "codex", ...)
+	Tool     string    // tool running in the pane's project ("claude", "codex", ...)
 	Banner   *Banner   // non-nil if a usage-limit banner is visible
 	Selector bool      // a dismissable interactive picker is visible
 	APIError *APIError // non-nil if stuck after a permanent API error
@@ -815,17 +815,17 @@ func ScanPanes(homeOverride string, captureLines int) []PaneState {
 	for _, p := range panes {
 		// Non-claude panes are not classified: every detector here reads Claude
 		// Code's TUI and transcript formats, and matching them against another
-		// agent's output only invites false labels.
+		// tool's output only invites false labels.
 		workDir := tmux.PaneCurrentPath(p.ID)
-		if agent := AgentName(reg.Agent(filepath.Base(workDir))); agent != config.DefaultAgent {
-			out = append(out, PaneState{Pane: p, Agent: agent})
+		if tool := ToolName(reg.Tool(filepath.Base(workDir))); tool != config.DefaultTool {
+			out = append(out, PaneState{Pane: p, Tool: tool})
 			continue
 		}
 		content := tmux.CapturePane(p.ID, captureLines)
 		sessFile := recentSessionFile(homeOverride, workDir)
 		out = append(out, PaneState{
 			Pane:     p,
-			Agent:    config.DefaultAgent,
+			Tool:     config.DefaultTool,
 			Banner:   DetectFromTranscript(sessFile, now),
 			Selector: HasSelector(content),
 			APIError: DetectAPIError(content),
@@ -1084,11 +1084,11 @@ func launchSession(cfg Config, name, dir string) {
 	// Project key in the registry is the dir's basename - the flat layout means
 	// every project lives at baseDir/<name>/.
 	reg, regErr := projects.LoadRegistry()
-	agentName := AgentName(reg.Agent(filepath.Base(dir)))
-	spec, known := cfg.Agents[agentName]
+	toolName := ToolName(reg.Tool(filepath.Base(dir)))
+	spec, known := cfg.Tools[toolName]
 	if !known {
-		slog.Error("recreate skipped; project's agent has no launch recipe",
-			"session", name, "dir", dir, "agent", agentName)
+		slog.Error("recreate skipped; project's tool has no launch recipe",
+			"session", name, "dir", dir, "tool", toolName)
 		return
 	}
 	command := ""
@@ -1102,38 +1102,38 @@ func launchSession(cfg Config, name, dir string) {
 	}
 	// Apply the project's configured slash-skills (e.g. "caveman") once claude's
 	// input box is up, same as `proj <name>` does. Skills are Claude Code slash
-	// commands; other agents don't get them.
-	if regErr == nil && agentName == config.DefaultAgent {
+	// commands; other tools don't get them.
+	if regErr == nil && toolName == config.DefaultTool {
 		if skills := reg.Skills(filepath.Base(dir)); len(skills) > 0 {
 			tmux.ApplySlashCommands(pane, skills, 30*time.Second)
 		}
 	}
 }
 
-// AgentName normalizes a registry agent value: empty means claude.
-func AgentName(agent string) string {
-	if agent == "" {
-		return config.DefaultAgent
+// ToolName normalizes a registry tool value: empty means claude.
+func ToolName(tool string) string {
+	if tool == "" {
+		return config.DefaultTool
 	}
-	return agent
+	return tool
 }
 
-// LaunchCommand renders the pane command that launches spec's agent for a
+// LaunchCommand renders the pane command that launches spec's tool for a
 // project. projName fills {name}; session names the tmux session (it carries
 // the tag block) and feeds {rc} and the clean-close mark. The resume command
-// is used instead of the base one only when the agent has prior history for
-// dir, because agents don't treat resume-with-no-history as a no-op (claude -c
+// is used instead of the base one only when the tool has prior history for
+// dir, because tools don't treat resume-with-no-history as a no-op (claude -c
 // exits with an error, tearing the fresh pane down before anyone can attach).
 //
 // The trailing mark hangs off && rather than ;: tmux runs the command under a
-// shell that outlives the agent, so with ; the mark also ran when the agent
+// shell that outlives the tool, so with ; the mark also ran when the tool
 // was killed (OOM, kill -9) and a killed session was recorded as a deliberate
 // close, then dropped and never recreated. Gating on a zero exit keeps a
 // signal death looking like what it is, leaving keep-alive to recreate it.
-func LaunchCommand(spec config.AgentSpec, claudeHome, projName, session, dir string) string {
+func LaunchCommand(spec config.ToolSpec, claudeHome, projName, session, dir string) string {
 	host, _ := os.Hostname()
 	tpl := spec.Command
-	if spec.ResumeCommand != "" && AgentHasHistory(spec.Name, claudeHome, dir) {
+	if spec.ResumeCommand != "" && ToolHasHistory(spec.Name, claudeHome, dir) {
 		tpl = spec.ResumeCommand
 	}
 	cmdLine := strings.NewReplacer(
@@ -1145,11 +1145,11 @@ func LaunchCommand(spec config.AgentSpec, claudeHome, projName, session, dir str
 	return cmdLine + " && proj daemon mark-closed " + shellout.Quote(session)
 }
 
-// AgentHasHistory reports whether the named agent has a prior session for dir.
-// Agents without a history detector always launch fresh.
-func AgentHasHistory(agent, claudeHome, dir string) bool {
-	switch AgentName(agent) {
-	case config.DefaultAgent:
+// ToolHasHistory reports whether the named tool has a prior session for dir.
+// Tools without a history detector always launch fresh.
+func ToolHasHistory(tool, claudeHome, dir string) bool {
+	switch ToolName(tool) {
+	case config.DefaultTool:
 		return HasHistory(claudeHome, dir)
 	case "codex":
 		return CodexHasHistory(dir)
@@ -1990,7 +1990,7 @@ func Tick(cfg Config, state State, errorState ErrorState, managed ManagedState, 
 
 	// --- Existing pane-level banner/error loop ---
 	// The registry maps each pane's project (dir basename, flat layout) to its
-	// agent, so the loop below can leave non-claude panes alone.
+	// tool, so the loop below can leave non-claude panes alone.
 	reg, _ := projects.LoadRegistry()
 	panes := tmux.ListPanes()
 	live := make(map[string]string, len(panes))
@@ -2051,7 +2051,7 @@ func Tick(cfg Config, state State, errorState ErrorState, managed ManagedState, 
 		// codex or agy would inject garbage into a live session. Non-claude
 		// panes only get the session-level keep-alive/pin handling above.
 		paneDir := tmux.PaneCurrentPath(p.ID)
-		if AgentName(reg.Agent(filepath.Base(paneDir))) != config.DefaultAgent {
+		if ToolName(reg.Tool(filepath.Base(paneDir))) != config.DefaultTool {
 			continue
 		}
 		content := tmux.CapturePane(p.ID, cfg.Capture)

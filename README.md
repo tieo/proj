@@ -44,7 +44,7 @@ tags = ["work", "go"]
 
 [projects.cli]
 tags = ["oss"]
-agent = "codex"
+tool = "codex"
 ```
 
 Any direct child directory of `base_dir` counts as a project; an entry
@@ -55,12 +55,12 @@ the same project always resolves to the same session: `myapi` with tags
 `<name>`.
 
 Opening a project creates the session detached, runs the project's coding
-agent in it, and attaches. Re-running `proj <name>` later just attaches.
-The default agent is Claude Code
+tool in it, and attaches. Re-running `proj <name>` later just attaches.
+The default tool is Claude Code
 (`claude --dangerously-skip-permissions --remote-control …`); per project
-another agent can be selected with `proj agent <name> codex` (built-ins:
-`claude`, `codex`, `agy`; more via `[agents.<name>]` in the config). When a
-project has prior history for its agent, the session launches the agent's
+another tool can be selected with `proj tool <name> codex` (built-ins:
+`claude`, `codex`, `agy`; more via `[tools.<name>]` in the config). When a
+project has prior history for its tool, the session launches the tool's
 resume command instead (`claude … -c`, `codex resume --last …`), so a
 recreated session continues where it left off.
 
@@ -69,8 +69,8 @@ recreated session continues where it left off.
 | Command | What it does |
 | --- | --- |
 | `proj <name-or-prefix>` | open an existing project by name or unique prefix (names are unique) |
-| `proj new <name> <tag>...` | create a project: first arg is the name, the rest are tags. Quote a multi-word name. `--agent codex` selects the coding agent. |
-| `proj agent <name> [agent]` | show or set the project's coding agent (`claude`, `codex`, `agy`, or a `[agents.*]` entry); applies on the next launch |
+| `proj new <name> <tag>...` | create a project: first arg is the name, the rest are tags. Quote a multi-word name. `--tool codex` selects the coding tool. |
+| `proj tool <name> [tool]` | show or set the project's coding tool (`claude`, `codex`, `agy`, or a `[tools.*]` entry); applies on the next launch |
 | `proj list [--tag <t>]` | active projects first, then idle, then orphan tmux sessions; `--tag` filters |
 | `proj cd <name-or-prefix>` | cd the current shell into the project (needs the shim) |
 | `proj path <name-or-prefix>` | print the project's absolute path |
@@ -111,9 +111,9 @@ and so on are all rejected; only real TUI tool output triggers an action.
 Sessions without the banner are never touched.
 
 **Claude-only automation.** Everything above speaks Claude Code's TUI, so
-the daemon applies it only to panes whose project runs the claude agent.
-Sessions on another agent (codex, agy) still get the session-level care:
-pinned and keep-alive recreation, with the agent's own resume command.
+the daemon applies it only to panes whose project runs the claude tool.
+Sessions on another tool (codex, agy) still get the session-level care:
+pinned and keep-alive recreation, with the tool's own resume command.
 
 | Command | What it does |
 | --- | --- |
@@ -137,16 +137,16 @@ base_dir = "~/projects/code"
 command     = "claude --dangerously-skip-permissions --remote-control --remote-control-session-name-prefix {name} -n {name}"
 resume_flag = "-c"
 
-# Other coding agents, selectable per project with `proj agent <name> <agent>`.
-# codex and agy ship as built-ins with these defaults; an [agents.<name>]
+# Other coding tools, selectable per project with `proj tool <name> <tool>`.
+# codex and agy ship as built-ins with these defaults; a [tools.<name>]
 # entry replaces the whole built-in recipe for that name, and new names
-# define new agents. resume_command is used instead of command when the
-# project has prior history for the agent.
-[agents.codex]
+# define new tools. resume_command is used instead of command when the
+# project has prior history for the tool.
+[tools.codex]
 command        = "codex --dangerously-bypass-approvals-and-sandbox"
 resume_command = "codex resume --last --dangerously-bypass-approvals-and-sandbox"
 
-[agents.agy]
+[tools.agy]
 command = "agy"
 
 [daemon]
@@ -202,7 +202,7 @@ feature, which corp policy may restrict).
 
 - `tmux`
 - `claude` (Claude Code CLI), runs inside each session; configurable via `[claude] command`
-- optionally `codex` / `agy` (or any other agent CLI) for projects switched to another agent
+- optionally `codex` / `agy` (or any other tool CLI) for projects switched to another tool
 - Go 1.22+ (build-time only)
 - Linux (systemd user instance) or macOS (launchd) or Windows via WSL2
   (see above). The binary itself runs on any unix; only the

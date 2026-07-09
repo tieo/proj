@@ -362,10 +362,10 @@ func daemonConfig() daemon.Config {
 		out.Capture = user.Daemon.CaptureLines
 	}
 	out.KeepAlive = user.Daemon.KeepAlive
-	out.Agents = make(map[string]config.AgentSpec)
-	for _, name := range user.AgentNames() {
-		if spec, err := user.Agent(name); err == nil {
-			out.Agents[name] = spec
+	out.Tools = make(map[string]config.ToolSpec)
+	for _, name := range user.ToolNames() {
+		if spec, err := user.Tool(name); err == nil {
+			out.Tools[name] = spec
 		}
 	}
 	out.ClaudeHome = user.Claude.Home

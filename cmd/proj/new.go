@@ -37,8 +37,8 @@ var newCmd = &cobra.Command{
 				return err
 			}
 		}
-		if newAgentF != "" {
-			if _, err := cfg.Agent(newAgentF); err != nil {
+		if newToolF != "" {
+			if _, err := cfg.Tool(newToolF); err != nil {
 				return err
 			}
 		}
@@ -61,8 +61,8 @@ var newCmd = &cobra.Command{
 		if err := reg.SetTags(name, tags); err != nil {
 			return err
 		}
-		if newAgentF != "" {
-			if err := reg.SetAgent(name, newAgentF); err != nil {
+		if newToolF != "" {
+			if err := reg.SetTool(name, newToolF); err != nil {
 				return err
 			}
 		}
@@ -74,9 +74,9 @@ var newCmd = &cobra.Command{
 	},
 }
 
-var newAgentF string
+var newToolF string
 
 func init() {
-	newCmd.Flags().StringVar(&newAgentF, "agent", "", "coding agent for the project's sessions (claude, codex, agy, or a [agents.*] entry)")
+	newCmd.Flags().StringVar(&newToolF, "tool", "", "coding tool for the project's sessions (claude, codex, agy, or a [tools.*] entry)")
 	rootCmd.AddCommand(newCmd)
 }

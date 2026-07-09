@@ -21,12 +21,12 @@ type Registry struct {
 type ProjectMeta struct {
 	Tags   []string `toml:"tags,omitempty"`
 	Skills []string `toml:"skills,omitempty"` // Claude Code slash-skills auto-sent on launch
-	Agent  string   `toml:"agent,omitempty"`  // coding agent launched in the session; empty = claude
+	Tool   string   `toml:"tool,omitempty"`  // coding tool launched in the session; empty = claude
 }
 
 // empty reports whether the meta carries nothing worth persisting.
 func (m ProjectMeta) empty() bool {
-	return len(m.Tags) == 0 && len(m.Skills) == 0 && m.Agent == ""
+	return len(m.Tags) == 0 && len(m.Skills) == 0 && m.Tool == ""
 }
 
 // RegistryPath returns the location of the registry file.
@@ -109,19 +109,19 @@ func (r Registry) SetTags(name string, tags []string) error {
 	return r.Save()
 }
 
-// Agent returns the coding agent configured for name; "" means claude.
-func (r Registry) Agent(name string) string {
-	return r.Projects[name].Agent
+// Tool returns the coding tool configured for name; "" means claude.
+func (r Registry) Tool(name string) string {
+	return r.Projects[name].Tool
 }
 
-// SetAgent assigns the coding agent for name. "claude" (the default) is
+// SetTool assigns the coding tool for name. "claude" (the default) is
 // stored as empty so untouched projects stay absent from the registry.
-func (r Registry) SetAgent(name, agent string) error {
-	if agent == "claude" {
-		agent = ""
+func (r Registry) SetTool(name, tool string) error {
+	if tool == "claude" {
+		tool = ""
 	}
 	m := r.Projects[name]
-	m.Agent = agent
+	m.Tool = tool
 	if m.empty() {
 		delete(r.Projects, name)
 	} else {
