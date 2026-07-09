@@ -73,3 +73,27 @@ func TestLaunchCommandPlaceholders(t *testing.T) {
 		t.Errorf("placeholders not filled: %q", cmd)
 	}
 }
+
+func TestAgyHasHistory(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	proj := "/home/u/projects/code/api"
+	if AgyHasHistory(proj) {
+		t.Error("missing history file must report no history")
+	}
+	dir := filepath.Join(home, ".gemini", "antigravity-cli")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	lines := `{"display":"hi","timestamp":1,"workspace":"/home/u/projects/code/api"}` + "\n" +
+		`{"display":"yo","timestamp":2,"workspace":"/home/u/projects/code/other"}` + "\n"
+	if err := os.WriteFile(filepath.Join(dir, "history.jsonl"), []byte(lines), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if !AgyHasHistory(proj) {
+		t.Error("workspace match must report history")
+	}
+	if AgyHasHistory("/home/u/projects/code/third") {
+		t.Error("unrecorded workspace must not count")
+	}
+}

@@ -61,7 +61,8 @@ The default tool is Claude Code
 another tool can be selected with `proj tool <name> codex` (built-ins:
 `claude`, `codex`, `agy`; more via `[tools.<name>]` in the config). When a
 project has prior history for its tool, the session launches the tool's
-resume command instead (`claude … -c`, `codex resume --last …`), so a
+resume command instead (`claude … -c`, `codex resume --last …`,
+`agy --continue`), so a
 recreated session continues where it left off.
 
 ## Commands
@@ -147,7 +148,8 @@ command        = "codex --dangerously-bypass-approvals-and-sandbox"
 resume_command = "codex resume --last --dangerously-bypass-approvals-and-sandbox"
 
 [tools.agy]
-command = "agy"
+command        = "agy --dangerously-skip-permissions"
+resume_command = "agy --continue --dangerously-skip-permissions"
 
 [daemon]
 poll_interval = "60s"

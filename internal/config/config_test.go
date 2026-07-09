@@ -34,7 +34,7 @@ func TestToolBuiltins(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Tool(agy): %v", err)
 	}
-	if agy.Command != "agy" || agy.ResumeCommand != "" {
+	if !strings.HasPrefix(agy.Command, "agy") || !strings.Contains(agy.ResumeCommand, "--continue") {
 		t.Errorf("agy spec %+v", agy)
 	}
 }

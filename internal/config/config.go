@@ -56,11 +56,12 @@ var defaultTools = map[string]ToolConfig{
 		ResumeCommand: "codex resume --last --dangerously-bypass-approvals-and-sandbox",
 	},
 	"agy": {
-		Command: "agy",
+		Command:       "agy --dangerously-skip-permissions",
+		ResumeCommand: "agy --continue --dangerously-skip-permissions",
 	},
 }
 
-// Tool resolves an tool name to its launch spec. "" means claude. Unknown
+// Tool resolves a tool name to its launch spec. "" means claude. Unknown
 // names error with a hint at where to define them.
 func (c Config) Tool(name string) (ToolSpec, error) {
 	if name == "" || name == DefaultTool {

@@ -6,7 +6,8 @@
 - Per-project coding tools: `proj tool <name> [tool]` and `proj new
   --tool` select which CLI a session runs (built-ins: claude, codex, agy;
   more via `[tools.<name>]` in the config). Sessions resume through the
-  tool's own resume command (`claude -c`, `codex resume --last`), gated on
+  tool's own resume command (`claude -c`, `codex resume --last`,
+  `agy --continue`), gated on
   real prior history per tool. The daemon's Claude-specific automation
   (banner resume, /compact recovery, RC watchdog) skips panes running other
   tools; keep-alive and pinned recreation cover every tool.

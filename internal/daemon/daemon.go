@@ -6,6 +6,7 @@
 package daemon
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -1153,9 +1154,37 @@ func ToolHasHistory(tool, claudeHome, dir string) bool {
 		return HasHistory(claudeHome, dir)
 	case "codex":
 		return CodexHasHistory(dir)
+	case "agy":
+		return AgyHasHistory(dir)
 	default:
 		return false
 	}
+}
+
+// AgyHasHistory reports whether the Antigravity CLI recorded a conversation
+// for dir. agy appends one record per prompt to history.jsonl, each carrying
+// the workspace it ran in; `agy --continue` restores the most recent
+// conversation of the current workspace, so a workspace match here lines up
+// with what the resume will find.
+func AgyHasHistory(dir string) bool {
+	home, _ := os.UserHomeDir()
+	path := filepath.Join(home, ".gemini", "antigravity-cli", "history.jsonl")
+	f, err := os.Open(path)
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+	sc := bufio.NewScanner(f)
+	sc.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+	for sc.Scan() {
+		var rec struct {
+			Workspace string `json:"workspace"`
+		}
+		if json.Unmarshal(sc.Bytes(), &rec) == nil && rec.Workspace == dir {
+			return true
+		}
+	}
+	return false
 }
 
 // HasHistory reports whether Claude Code has a prior session transcript for dir.
