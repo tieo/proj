@@ -361,7 +361,7 @@ func cleanText(s string) string {
 		return !unicode.IsLetter(r) && !unicode.IsDigit(r)
 	}))
 	// Claude injects these as user-role messages; they are not real prompts.
-	for _, noise := range []string{"This session is being continued", "Conversation compacted", "Caveat:"} {
+	for _, noise := range []string{"This session is being continued", "Conversation compacted", "Caveat:", "Request interrupted"} {
 		if strings.HasPrefix(s, noise) {
 			return ""
 		}

@@ -197,6 +197,125 @@ func selectAction(header string, lines []string, footer string, actions string) 
 	}
 }
 
+// selectFromEnd renders a scrolling viewport of at most height rows over lines,
+// with the cursor starting on the last line (the newest message), for choosing
+// from a long list. Up/Down move and scroll one row; PageUp/PageDown move a
+// screenful; Home/End jump to the ends; Enter returns the index; q or Esc return
+// -1. Only the viewport is drawn, so a thousand-line list costs the same as a
+// short one. Non-interactive stdin falls back to a numbered prompt.
+func selectFromEnd(header string, lines []string, footer string, height int) int {
+	n := len(lines)
+	if n == 0 {
+		return -1
+	}
+	if height > n {
+		height = n
+	}
+	if height < 1 {
+		height = 1
+	}
+	restore, ok := sttyRaw()
+	if !ok {
+		return numberedSelect(header, lines)
+	}
+	defer restore()
+	fmt.Print("\033[?25l")
+	defer fmt.Print("\033[?25h")
+
+	sel := n - 1
+	top := n - height
+	clampTop := func() {
+		if sel < top {
+			top = sel
+		}
+		if sel >= top+height {
+			top = sel - height + 1
+		}
+		if top > n-height {
+			top = n - height
+		}
+		if top < 0 {
+			top = 0
+		}
+	}
+	clampTop()
+
+	frame := func() string {
+		var b strings.Builder
+		b.WriteString("\r\033[K  " + header + "\r\n")
+		for i := top; i < top+height; i++ {
+			b.WriteString("\r\033[K")
+			if i == sel {
+				b.WriteString(highlightRow("\033[36m❯\033[0m " + lines[i]))
+			} else {
+				b.WriteString("  " + lines[i])
+			}
+			b.WriteString("\r\n")
+		}
+		b.WriteString(fmt.Sprintf("\r\033[K  \033[90m%s   %d/%d\033[0m\r\n", footer, sel+1, n))
+		return b.String()
+	}
+	fmt.Print(frame())
+	total := height + 2 // header + rows + footer
+	repaint := func() {
+		fmt.Printf("\033[%dA", total)
+		fmt.Print(frame())
+	}
+
+	buf := make([]byte, 8)
+	for {
+		nr, err := os.Stdin.Read(buf)
+		if err != nil || nr == 0 {
+			fmt.Print("\r\n")
+			return -1
+		}
+		k := buf[:nr]
+		esc := len(k) >= 3 && k[0] == 27 && k[1] == '['
+		switch {
+		case (esc && k[2] == 'A') || (nr == 1 && k[0] == 'k'): // up
+			if sel > 0 {
+				sel--
+				clampTop()
+				repaint()
+			}
+		case (esc && k[2] == 'B') || (nr == 1 && k[0] == 'j'): // down
+			if sel < n-1 {
+				sel++
+				clampTop()
+				repaint()
+			}
+		case esc && k[2] == '5': // PageUp
+			sel -= height
+			if sel < 0 {
+				sel = 0
+			}
+			clampTop()
+			repaint()
+		case esc && k[2] == '6': // PageDown
+			sel += height
+			if sel > n-1 {
+				sel = n - 1
+			}
+			clampTop()
+			repaint()
+		case (esc && (k[2] == 'H' || k[2] == '1')) || (nr == 1 && k[0] == 'g'): // Home
+			sel = 0
+			clampTop()
+			repaint()
+		case (esc && (k[2] == 'F' || k[2] == '4')) || (nr == 1 && k[0] == 'G'): // End
+			sel = n - 1
+			clampTop()
+			repaint()
+		case nr == 1 && (k[0] == '\r' || k[0] == '\n'):
+			fmt.Print("\r\n")
+			return sel
+		case nr == 1 && (k[0] == 'q' || k[0] == 3 || k[0] == 27):
+			fmt.Print("\r\n")
+			return -1
+		}
+	}
+}
+
 // sttyRaw puts the controlling terminal into raw, no-echo mode and returns a
 // restore func. ok is false when stdin is not a usable terminal.
 func sttyRaw() (restore func(), ok bool) {

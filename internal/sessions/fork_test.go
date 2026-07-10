@@ -52,6 +52,30 @@ func TestPrompts(t *testing.T) {
 	}
 }
 
+func TestPromptsDropsInterrupts(t *testing.T) {
+	dir := t.TempDir()
+	u := func(text string) string {
+		return `{"type":"user","cwd":"/x","sessionId":"z","message":{"role":"user","content":"` + text + `"}}`
+	}
+	body := strings.Join([]string{u("real one"), u("[Request interrupted by user]"), u("real two")}, "\n") + "\n"
+	path := filepath.Join(dir, "z.jsonl")
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	prompts, err := Prompts(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(prompts) != 2 {
+		t.Fatalf("got %d prompts, want 2 (interrupt marker dropped)", len(prompts))
+	}
+	for _, p := range prompts {
+		if strings.Contains(p.Text, "interrupted") {
+			t.Errorf("interrupt marker leaked into prompts: %q", p.Text)
+		}
+	}
+}
+
 func TestFork(t *testing.T) {
 	base := t.TempDir()
 	home := filepath.Join(base, ".claude")

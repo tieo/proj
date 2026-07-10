@@ -180,12 +180,20 @@ func forkSessionInteractive(cfg config.Config, home string, all []sessions.Sessi
 	if len(prompts) == 0 {
 		return fmt.Errorf("session %s has no user messages to fork from", s.ID[:8])
 	}
-	w := termWidth() - 8
+	rows, cols := termSize()
+	w := cols - 8
 	lines := make([]string, len(prompts))
 	for i, p := range prompts {
-		lines[i] = fmt.Sprintf("%3d  %s", i+1, truncPad(p.Text, w))
+		lines[i] = fmt.Sprintf("\033[90m%4d\033[0m  %s", i+1, truncPad(p.Text, w))
 	}
-	sel := selectFromList("fork after which message? (keeps it and the reply)", lines)
+	h := rows - 6
+	if h < 8 {
+		h = 8
+	}
+	// Cursor starts on the newest message (bottom); arrow up walks back through
+	// the history to the branch point.
+	sel := selectFromEnd("fork after which message? (keeps it and its reply)",
+		lines, "↑/↓ move · pgup/pgdn · enter fork here · esc cancel", h)
 	if sel < 0 {
 		return nil
 	}
@@ -335,21 +343,31 @@ func pickProject(cfg config.Config, defaultName string) (projects.Project, error
 	return projects.FindByName(cfg.BaseDir, name)
 }
 
-// termWidth reports the controlling terminal's column count, defaulting to 120
-// when stdout is not a terminal (piped or redirected).
-func termWidth() int {
+// termSize reports the controlling terminal's row and column count, defaulting
+// to 24x120 when stdin is not a terminal (piped or redirected).
+func termSize() (rows, cols int) {
+	rows, cols = 24, 120
 	c := exec.Command("stty", "size")
 	c.Stdin = os.Stdin
 	out, err := c.Output()
 	if err != nil {
-		return 120
+		return
 	}
 	if f := strings.Fields(string(out)); len(f) == 2 {
+		if r, err := strconv.Atoi(f[0]); err == nil && r > 4 {
+			rows = r
+		}
 		if n, err := strconv.Atoi(f[1]); err == nil && n > 20 {
-			return n
+			cols = n
 		}
 	}
-	return 120
+	return
+}
+
+// termWidth reports the controlling terminal's column count.
+func termWidth() int {
+	_, cols := termSize()
+	return cols
 }
 
 // sessionTextCols splits the space left after the fixed columns (and the 2-col
