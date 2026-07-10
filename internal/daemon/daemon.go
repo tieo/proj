@@ -2621,20 +2621,23 @@ func Tick(cfg Config, state State, errorState ErrorState, managed ManagedState, 
 			// bound is still connecting (--remote-control auto-binds at startup);
 			// nudging it just opens the picker into live input - the bug that
 			// typed /rc into freshly-recreated sessions.
-			// "ever active" comes from the in-memory latch OR the persisted flag,
-			// so a daemon restart doesn't orphan a session that bound before it.
+			// "ever active" is kept for the log line only; it no longer gates the
+			// nudge (see below).
 			everActive := rcEverActive[p.ID] || managed[p.Session].RCEverActive
 			// Nudge only when a drop is POSITIVELY confirmed - never on the
-			// unreliable chrome marker alone. The API is the source of truth:
-			//   - apiDisconnected: it explicitly reports this session down, or
+			// unreliable chrome marker alone. The source of truth is RCBridges
+			// (bridgeSessionId in Claude's per-session file): non-null means bound,
+			// null means the bridge is down. It is authoritative and does not
+			// rotate, so a connected session is never mistaken for disconnected -
+			// which is what the false-picker guards (everActive, the API-unknown
+			// hold-off) were protecting against. With a reliable signal the drop
+			// itself is the trigger; rcStartupGrace still covers the initial
+			// auto-bind window so a starting session (transiently null) is left be.
+			//   - bridgeDropped: the file reports this session's bridge null, or
 			//   - failed: the status line shows an explicit "/rc failed".
-			// When the API is UNKNOWN (rcConn nil - e.g. a request timeout, which
-			// happens regularly on this host), do NOT fall back to the chrome and
-			// nudge: that reopened the false-picker bug - every connected session
-			// reads "inactive" in the pane (rotating /rc hint, not "/rc active")
-			// and got /rc typed into it, opening the picker over live input.
-			apiDisconnected := rcConn != nil && !rcConn[RCName(p.Session, rcHost)]
-			trigger := failed || (apiDisconnected && everActive && now.Sub(rcNudgedAt[p.ID]) >= rcNudgeCooldown)
+			// When RCBridges is UNKNOWN (rcConn nil - unreadable dir), hold off.
+			bridgeDropped := rcConn != nil && !rcConn[RCName(p.Session, rcHost)]
+			trigger := failed || (bridgeDropped && now.Sub(rcNudgedAt[p.ID]) >= rcNudgeCooldown)
 			if pastGrace && trigger {
 				slog.Info("remote-control inactive, re-binding",
 					"session", p.Session, "pane", p.ID,
