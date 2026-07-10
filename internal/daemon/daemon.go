@@ -209,6 +209,22 @@ func autoTrustPath(baseDir, path string) bool {
 	return strings.HasPrefix(slash, "/tmp/claude-") && strings.Contains(slash, "/scratchpad/")
 }
 
+// submitPrompt types text into a pane and submits it as a turn of its own.
+// Codex reads a carriage return that arrives in the same input burst as the
+// text as a pasted newline rather than a submit, so send-keys with a trailing
+// Enter leaves the line sitting in the composer. Every later resume then
+// appends to that same buffer, and the whole stack goes out as one prompt
+// whenever the user finally presses Enter. Typing the text literally, letting
+// the pane settle, then sending Enter on its own keeps the two bursts apart.
+// Literal mode also stops tmux from resolving the text against its key names.
+func submitPrompt(cfg Config, paneID, text string) error {
+	if err := tmux.SendLiteral(paneID, text); err != nil {
+		return err
+	}
+	time.Sleep(cfg.DismissGap)
+	return tmux.SendKey(paneID, "Enter")
+}
+
 // rcActiveRE matches Claude Code's status-bar marker shown while Remote Control
 // is bound ("Remote Control active" or "/rc active"). Its ABSENCE on a live
 // claude pane means RC has dropped - claude has no auto-reconnect, so the
@@ -2408,7 +2424,7 @@ func Tick(cfg Config, state State, errorState ErrorState, managed ManagedState, 
 				slog.Info("resume codex",
 					"session", p.Session, "pane", p.ID,
 					"attempt", prev.Attempts+1, "banner", b.Text)
-				if err := tmux.SendKeys(p.ID, cfg.ResumeText); err != nil {
+				if err := submitPrompt(cfg, p.ID, cfg.ResumeText); err != nil {
 					slog.Error("send-keys failed", "session", p.Session, "err", err)
 					continue
 				}
