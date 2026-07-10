@@ -272,6 +272,59 @@ func lastAnswerText(lines [][]byte) string {
 	return ""
 }
 
+// Prompt is one genuine user turn in a transcript, offered as a fork point.
+type Prompt struct {
+	Text  string // one-line cleaned preview of the user message
+	CutAt int    // byte offset of the start of the next user turn (len(file) for
+	// the last one); truncating the transcript at CutAt keeps this turn and the
+	// assistant's reply to it
+}
+
+// Prompts returns the real user prompts in a transcript, oldest first, each with
+// the byte offset at which to truncate to keep that prompt and its reply. It
+// skips tool-result and synthetic (continued/compacted/caveat) user lines - the
+// same ones the title extractor ignores - so the list matches what a reader
+// recognises as the messages they sent.
+func Prompts(path string) ([]Prompt, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	var prompts []Prompt
+	offset := 0
+	for rest := data; len(rest) > 0; {
+		lineStart := offset
+		var line []byte
+		if nl := bytes.IndexByte(rest, '\n'); nl >= 0 {
+			line, rest = rest[:nl], rest[nl+1:]
+			offset += nl + 1
+		} else {
+			line, rest = rest, nil
+			offset = len(data)
+		}
+		if len(line) == 0 || !bytes.Contains(line, userTok) || bytes.Contains(line, trTok) {
+			continue
+		}
+		var rec record
+		if json.Unmarshal(line, &rec) != nil || rec.Message.Role != "user" {
+			continue
+		}
+		text := cleanText(firstText(rec.Message.Content))
+		if text == "" {
+			continue
+		}
+		// This prompt's line begins where the previous prompt's reply ends.
+		if len(prompts) > 0 {
+			prompts[len(prompts)-1].CutAt = lineStart
+		}
+		prompts = append(prompts, Prompt{Text: text})
+	}
+	if len(prompts) > 0 {
+		prompts[len(prompts)-1].CutAt = len(data)
+	}
+	return prompts, nil
+}
+
 // firstText returns the plain text of a user message's content (string form or
 // the first text block), or "" for tool results and structured-only content.
 func firstText(content json.RawMessage) string {
@@ -369,12 +422,36 @@ func oneLine(s string, max int) string {
 // folders removed - so the caller can show the user exactly what happened
 // instead of a bare "moved".
 func Adopt(home string, sess Session, targetCwd string, move bool) (newID string, report []string, err error) {
-	targetDir := filepath.Join(home, "projects", EncodeCwd(targetCwd))
-	if err := os.MkdirAll(targetDir, 0o755); err != nil {
-		return "", nil, err
-	}
 	data, err := os.ReadFile(sess.Path)
 	if err != nil {
+		return "", nil, err
+	}
+	return transplant(home, sess, targetCwd, data, move)
+}
+
+// Fork writes the transcript of sess truncated to its first cutAt bytes as a new
+// session under targetCwd, performing the same rewrite as Adopt (cwd, session
+// id, sidecars, memory, continue pointer) but always as a copy: the source
+// session is left intact. cutAt must fall on a record boundary, as the offsets
+// from Prompts do; a cutAt of 0 or beyond the file keeps the whole transcript.
+func Fork(home string, sess Session, targetCwd string, cutAt int) (newID string, report []string, err error) {
+	data, err := os.ReadFile(sess.Path)
+	if err != nil {
+		return "", nil, err
+	}
+	if cutAt > 0 && cutAt < len(data) {
+		data = data[:cutAt]
+	}
+	return transplant(home, sess, targetCwd, data, false)
+}
+
+// transplant writes data (a full or truncated transcript of sess) as a new
+// session under targetCwd, rewriting the embedded cwd, session id, sidecars,
+// memory, and continue pointer. With move set it deletes the source once the
+// copy is verified; otherwise the source is left in place.
+func transplant(home string, sess Session, targetCwd string, data []byte, move bool) (newID string, report []string, err error) {
+	targetDir := filepath.Join(home, "projects", EncodeCwd(targetCwd))
+	if err := os.MkdirAll(targetDir, 0o755); err != nil {
 		return "", nil, err
 	}
 	if sess.Cwd != "" && sess.Cwd != targetCwd {

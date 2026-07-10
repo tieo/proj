@@ -21,11 +21,12 @@ import (
 
 var sessionsCmd = &cobra.Command{
 	Use:   "sessions",
-	Short: "interactive list of Claude sessions: enter resume, a adopt, s stop, r rm",
+	Short: "interactive list of Claude sessions: enter resume, a adopt, f fork, s stop, r rm",
 	Long: `List the Claude Code sessions on disk, newest first, as an interactive list:
-move with the arrows, then enter to resume, a to adopt into a project, s to stop
-(close, keeping files), r to rm (delete the project and its files), esc to quit.
-Piped or redirected, it prints the static table instead.`,
+move with the arrows, then enter to resume, a to adopt into a project, f to fork
+(branch the history at a chosen message into a new project), s to stop (close,
+keeping files), r to rm (delete the project and its files), esc to quit. Piped or
+redirected, it prints the static table instead.`,
 	Args: cobra.NoArgs,
 	RunE: runSessions,
 }
@@ -63,8 +64,8 @@ func runSessions(cmd *cobra.Command, args []string) error {
 			}
 			return nil
 		}
-		footer := "↑/↓ move · enter resume · a adopt · s stop · r rm · esc quit"
-		idx, act := selectAction(header, lines, footer, "asr")
+		footer := "↑/↓ move · enter resume · a adopt · f fork · s stop · r rm · esc quit"
+		idx, act := selectAction(header, lines, footer, "afsr")
 		if idx < 0 {
 			return nil
 		}
@@ -82,6 +83,10 @@ func runSessions(cmd *cobra.Command, args []string) error {
 		case 'a':
 			if err := adoptSessionInteractive(cfg, home, all, s); err != nil {
 				fmt.Fprintf(os.Stderr, "adopt: %v\n", err)
+			}
+		case 'f':
+			if err := forkSessionInteractive(cfg, home, all, s); err != nil {
+				fmt.Fprintf(os.Stderr, "fork: %v\n", err)
 			}
 		case 's':
 			if err := stopSessionInteractive(cfg, all, s); err != nil {
@@ -157,6 +162,46 @@ func adoptSessionInteractive(cfg config.Config, home string, all []sessions.Sess
 		fmt.Fprintf(os.Stderr, "warning: %v\n", err)
 	}
 	fmt.Printf("adopted %s into %s as new session %s\n", s.ID[:8], p.Name, newID[:8])
+	for _, line := range report {
+		fmt.Printf("  %s\n", line)
+	}
+	return nil
+}
+
+// forkSessionInteractive branches s at a user-chosen message into a new project.
+// It lists s's prompts, cuts after the selected one (keeping that turn and its
+// reply), creates the chosen project, and copies the truncated history in via
+// sessions.Fork. The source session is left untouched.
+func forkSessionInteractive(cfg config.Config, home string, all []sessions.Session, s sessions.Session) error {
+	prompts, err := sessions.Prompts(s.Path)
+	if err != nil {
+		return err
+	}
+	if len(prompts) == 0 {
+		return fmt.Errorf("session %s has no user messages to fork from", s.ID[:8])
+	}
+	w := termWidth() - 8
+	lines := make([]string, len(prompts))
+	for i, p := range prompts {
+		lines[i] = fmt.Sprintf("%3d  %s", i+1, truncPad(p.Text, w))
+	}
+	sel := selectFromList("fork after which message? (keeps it and the reply)", lines)
+	if sel < 0 {
+		return nil
+	}
+	p, err := pickProject(cfg, "")
+	if err != nil {
+		return err
+	}
+	targetCwd := sessions.CwdForDir(p.Dir, all)
+	if s.Cwd == targetCwd {
+		return fmt.Errorf("cannot fork a session into its own project")
+	}
+	newID, report, err := sessions.Fork(home, s, targetCwd, prompts[sel].CutAt)
+	if err != nil {
+		return err
+	}
+	fmt.Printf("forked %s after message %d into %s as new session %s\n", s.ID[:8], sel+1, p.Name, newID[:8])
 	for _, line := range report {
 		fmt.Printf("  %s\n", line)
 	}
