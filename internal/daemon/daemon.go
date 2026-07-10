@@ -290,20 +290,42 @@ func rcTUIZone(content string) (zone string, ok bool) {
 	return content[start:], true
 }
 
-// RCStatus returns the Remote Control state visible in a captured pane.
-// Uses the same rcActiveRE the watchdog uses: "/rc active" on the context line
-// is the persistent active indicator (not a transient). "Remote Control active"
-// on the ⏵⏵ line is an alternative form. Either means RC is live.
+// rcLinkRE matches the connected-RC marker in an escape-preserving capture:
+// Claude Code renders "/rc" as an OSC 8 hyperlink to the session's
+// claude.ai/code URL only while Remote Control is bound. The link (not any text)
+// is the signal; a dropped session shows a plain "/rc" hint with no link. The
+// anchor is the literal "/rc" immediately after the OSC 8 string terminator
+// (ESC \\), so a claude.ai/code URL merely printed in the conversation cannot
+// match.
+var rcLinkRE = regexp.MustCompile("\x1b\\]8;[^\x1b]*claude\\.ai/code/session_[^\x1b]*\x1b\\\\/rc")
+
+// rcLinkConnected reports whether the connected-RC hyperlink is present in the
+// bottom chrome of an escape-preserving capture. It scopes to the last lines so
+// a claude.ai/code link scrolled up in the conversation cannot be mistaken for
+// the live status marker.
+func rcLinkConnected(esc string) bool {
+	lines := strings.Split(strings.TrimRight(esc, "\n"), "\n")
+	if len(lines) > 8 {
+		lines = lines[len(lines)-8:]
+	}
+	return rcLinkRE.MatchString(strings.Join(lines, "\n"))
+}
+
+// RCStatus returns the Remote Control state visible in a captured pane. plain is
+// the escape-stripped capture (used to confirm a TUI zone is present at all);
+// esc is the escape-preserving capture, where a bound session's "/rc" carries a
+// claude.ai/code hyperlink. The older text markers ("/rc active", "Remote
+// Control active") remain a fallback for builds that render them.
 //
-//	"active"   — rcActiveRE matches the TUI chrome zone
+//	"active"   — the /rc hyperlink (or a legacy active marker) is present
 //	"offline"  — zone present but no active marker (dropped or never bound)
 //	""         — no TUI zone (splash, trust prompt, plain shell)
-func RCStatus(content string) string {
-	zone, ok := rcTUIZone(content)
+func RCStatus(plain, esc string) string {
+	zone, ok := rcTUIZone(plain)
 	if !ok {
 		return ""
 	}
-	if rcActiveRE.MatchString(zone) {
+	if rcLinkConnected(esc) || rcActiveRE.MatchString(zone) {
 		return "active"
 	}
 	return "offline"
@@ -409,6 +431,42 @@ func RCName(session, host string) string {
 	out := name + " @" + host
 	if tags != "" {
 		out += " [" + strings.ToLower(strings.ReplaceAll(tags, "+", ",")) + "]"
+	}
+	return out
+}
+
+// RCBridges reports, per Remote Control session title, whether Claude Code
+// currently holds a live bridge for it. Claude writes one <pid>.json per running
+// session under <claude>/sessions/, carrying the RC title (name) and a
+// bridgeSessionId: a session_... id while the bridge is bound, null when it is
+// not. This is a local, network-free, non-rotating signal - unlike the sessions
+// API (unreachable from some networks) and the TUI /rc marker (rotates with
+// slash-hints). The title matches RCName, so it keys the same way RCConnections
+// does. A nil map (unreadable dir) tells callers to fall back. Titles are not
+// unique across a session's restarts, so any live bridge under a title wins.
+func RCBridges(homeOverride string) map[string]bool {
+	dir := filepath.Join(claudeRoot(homeOverride), "sessions")
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil
+	}
+	out := map[string]bool{}
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".json") {
+			continue
+		}
+		raw, err := os.ReadFile(filepath.Join(dir, e.Name()))
+		if err != nil {
+			continue
+		}
+		var s struct {
+			Name            string  `json:"name"`
+			BridgeSessionID *string `json:"bridgeSessionId"`
+		}
+		if json.Unmarshal(raw, &s) != nil || s.Name == "" {
+			continue
+		}
+		out[s.Name] = out[s.Name] || (s.BridgeSessionID != nil && *s.BridgeSessionID != "")
 	}
 	return out
 }
@@ -881,7 +939,7 @@ func ScanPanes(homeOverride string, captureLines int) []PaneState {
 			Selector: HasSelector(content),
 			APIError: DetectAPIError(content),
 			Model:    modelRE.FindString(content),
-			RC:       RCStatus(content),
+			RC:       RCStatus(content, tmux.CapturePaneEsc(p.ID)),
 		})
 	}
 	return out
@@ -2368,19 +2426,19 @@ func Tick(cfg Config, state State, errorState ErrorState, managed ManagedState, 
 		}
 	}
 
-	// Authoritative RC connection state from the sessions API, fetched once per
-	// tick. The TUI chrome marker is unreliable - it rotates with slash-hints
-	// (/effort, /rc) and shows "connecting…", so a live, connected session often
-	// reads as "inactive" in the pane and the watchdog would keystroke /rc into
-	// it, opening the picker over live input. Trust the API: if it says a session
-	// is connected, never nudge it. Best-effort - nil when offline or
-	// unauthenticated, in which case the watchdog falls back to the chrome marker.
-	rcConn, rcErr := RCConnections(cfg.ClaudeHome)
+	// Authoritative RC connection state, from Claude's own per-session bridge
+	// files (RCBridges). This is a local, non-rotating signal: bridgeSessionId is
+	// set while the bridge is bound and null when it is not. It replaces the
+	// sessions API, which is unreachable from some networks (a 10s timeout every
+	// tick, always "unknown", so the watchdog never rebound a real drop) and the
+	// TUI marker, which rotates with slash-hints and gave false "offline". nil
+	// only if the directory is unreadable, in which case the watchdog falls back
+	// to the chrome-marker rules below and holds off (never nudges on unknown).
+	rcConn := RCBridges(cfg.ClaudeHome)
+	var rcErr error
 	rcHost, _ := os.Hostname()
-	// Absorb a transient API failure: on success refresh the snapshot; on failure
-	// keep trusting the last good one until it ages out, so a single blip doesn't
-	// nudge live sessions via the chrome fallback. rcConnStale marks the snapshot
-	// as cached (past-tense) so a nudge that fires anyway records it.
+	// Keep the last good snapshot so an unreadable-dir blip doesn't flip a live
+	// session to "unknown" for one tick. rcConnStale marks a cached snapshot.
 	rcConnStale := false
 	if rcConn != nil {
 		rcConnLastGood, rcConnLastGoodAt = rcConn, now

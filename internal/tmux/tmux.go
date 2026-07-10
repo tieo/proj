@@ -88,6 +88,14 @@ func CapturePane(target string, lines int) string {
 	return shellout.Run("tmux", args...)
 }
 
+// CapturePaneEsc captures the pane's visible viewport preserving escape
+// sequences (colors and OSC 8 hyperlinks). The plain capture strips these, but
+// the Remote Control marker is only distinguishable by them: a bound session
+// renders "/rc" as a hyperlink to its claude.ai/code URL.
+func CapturePaneEsc(target string) string {
+	return shellout.Run("tmux", "capture-pane", "-e", "-p", "-t", target)
+}
+
 // claudeReadyMarkers are substrings the Claude Code TUI renders only once the
 // input box is live and accepting keystrokes (not during startup, not behind
 // the trust-folder prompt). Matching either is sufficient.

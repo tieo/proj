@@ -199,6 +199,77 @@ func TestHasSelector_EmptyPrompt(t *testing.T) {
 	}
 }
 
+// ---------- RC ----------
+
+func TestRCBridges(t *testing.T) {
+	home := t.TempDir()
+	dir := filepath.Join(home, "sessions")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	write := func(pid, name, bridge string) {
+		body := `{"pid":` + pid + `,"name":"` + name + `","bridgeSessionId":` + bridge + `}`
+		if err := os.WriteFile(filepath.Join(dir, pid+".json"), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("1", "proj @lwenb4004 [go,tools]", `"session_abc"`)
+	write("2", "devtools @lwenb4004 [vscode]", `null`)
+
+	m := RCBridges(home)
+	if m == nil {
+		t.Fatal("RCBridges returned nil for a readable dir")
+	}
+	if !m["proj @lwenb4004 [go,tools]"] {
+		t.Error("a bound bridge (non-null bridgeSessionId) must read as connected")
+	}
+	if m["devtools @lwenb4004 [vscode]"] {
+		t.Error("a null bridgeSessionId must read as not connected")
+	}
+	// Matches the title RCName produces, so list/watchdog key it the same way.
+	if got := RCName("proj@go+tools", "lwenb4004"); !m[got] {
+		t.Errorf("RCName %q not found in bridge map", got)
+	}
+	if RCBridges(filepath.Join(home, "nope")) != nil {
+		t.Error("an unreadable dir must return nil so callers fall back")
+	}
+}
+
+
+// rcConnectedZone is a bottom-chrome capture (escapes preserved) of a session
+// with Remote Control bound: "/rc" is an OSC 8 hyperlink to its claude.ai/code
+// URL. The string terminator before "/rc" is ESC \\ (0x1b 0x5c).
+const rcConnectedZone = "  [CAVEMAN]        \x1b]8;id=u-x;https://claude.ai/code/session_013abc\x1b\\/rc\x1b[39m\n" +
+	"  ⏵⏵ bypass permissions on (shift+tab to cycle)\n"
+
+const rcPlainZone = "  [CAVEMAN]                                   /rc\n" +
+	"  ⏵⏵ bypass permissions on (shift+tab to cycle)\n"
+
+func TestRCLinkConnected(t *testing.T) {
+	if !rcLinkConnected(rcConnectedZone) {
+		t.Error("bound-RC /rc hyperlink must read as connected")
+	}
+	if rcLinkConnected(rcPlainZone) {
+		t.Error("plain /rc hint (no hyperlink) must not read as connected")
+	}
+	// A claude.ai/code URL printed in prose, not anchored as the /rc link.
+	if rcLinkConnected("see https://claude.ai/code/session_013abc\n/rc runs it\n") {
+		t.Error("a plain URL in prose must not read as connected")
+	}
+}
+
+func TestRCStatus_Hyperlink(t *testing.T) {
+	if got := RCStatus(rcPlainZone, rcConnectedZone); got != "active" {
+		t.Errorf("RCStatus = %q, want active (hyperlink present)", got)
+	}
+	if got := RCStatus(rcPlainZone, rcPlainZone); got != "offline" {
+		t.Errorf("RCStatus = %q, want offline (no hyperlink)", got)
+	}
+	if got := RCStatus("just a shell prompt\n$ ls\n", ""); got != "" {
+		t.Errorf("RCStatus = %q, want \"\" (no TUI zone)", got)
+	}
+}
+
 // ---------- Decide ----------
 
 func TestDecide_NoBanner(t *testing.T) {

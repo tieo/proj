@@ -62,8 +62,9 @@ func runList(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("managed state unreadable (pins are only stored there): %w", err)
 	}
 
-	// Scan panes for label (banner/error/selector state) and RC status per session.
-	// Model is read from JSONL session files instead; more reliable.
+	// Scan panes for label (banner/error/selector state) and, as a fallback, RC
+	// status per session. Model is read from JSONL session files instead; more
+	// reliable.
 	scan := daemon.ScanPanes(cfg.Claude.Home, unrCfg.Capture)
 	labelBySession := make(map[string]string, len(scan))
 	rcBySession := make(map[string]string, len(scan))
@@ -82,11 +83,10 @@ func runList(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	// Authoritative RC status from the sessions API (the pane marker is
-	// unreliable - it shows false "offline" on live, connected sessions). Best
-	// effort: nil when offline or unauthenticated, in which case we fall back to
-	// the pane-derived rcBySession above.
-	rcConn, _ := daemon.RCConnections(cfg.Claude.Home)
+	// Authoritative RC status from Claude's own per-session bridge files (local,
+	// non-rotating). nil when unreadable, in which case the pane /rc hyperlink
+	// (rcBySession) is the fallback.
+	rcBridges := daemon.RCBridges(cfg.Claude.Home)
 	host, _ := os.Hostname()
 
 	all := projects.All(cfg.BaseDir)
@@ -134,13 +134,11 @@ func runList(cmd *cobra.Command, args []string) error {
 		label := labelBySession[sessName]
 		alive := p.SessionTS > 0
 		rc := rcBySession[sessName]
-		// Prefer the API's connection truth for live sessions; the pane marker
-		// (rcBySession) is only the fallback when the API is unreachable.
 		// Remote Control is a Claude Code feature; other tools get no RC note.
 		if daemon.ToolName(p.Tool) != config.DefaultTool {
 			rc = ""
-		} else if alive && rcConn != nil {
-			if rcConn[daemon.RCName(sessName, host)] {
+		} else if alive && rcBridges != nil {
+			if rcBridges[daemon.RCName(sessName, host)] {
 				rc = "active"
 			} else {
 				rc = "offline"
@@ -169,13 +167,13 @@ func runList(cmd *cobra.Command, args []string) error {
 		for _, s := range projects.OrphanSessions(cfg.BaseDir) {
 			ms, tracked := managed[s.Name]
 			label := labelBySession[s.Name]
-			rc := ""
-			if rcConn != nil { // orphans are always alive
-				if rcConn[daemon.RCName(s.Name, host)] {
+			rc := rcBySession[s.Name] // orphans are always alive
+			if rcBridges != nil {
+				if rcBridges[daemon.RCName(s.Name, host)] {
 					rc = "active"
+				} else {
+					rc = "offline"
 				}
-			} else if rcBySession[s.Name] == "active" {
-				rc = "active"
 			}
 			path := shortPath(strings.Replace(s.Path, home, "~", 1), 48)
 			rows = append(rows, listRow{

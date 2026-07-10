@@ -106,31 +106,48 @@ func List(home string) ([]Session, error) {
 		return nil, err
 	}
 	out := make([]Session, len(files))
+	cache := loadCache()
+	fresh := make(map[string]cacheEntry, len(files))
+	var mu sync.Mutex
 	sem := make(chan struct{}, 16)
 	var wg sync.WaitGroup
 	for i, f := range files {
+		info, err := os.Stat(f)
+		if err != nil {
+			continue
+		}
+		mod, size := info.ModTime().Unix(), info.Size()
+		base := Session{
+			ID:       strings.TrimSuffix(filepath.Base(f), ".jsonl"),
+			Path:     f,
+			Modified: info.ModTime(),
+		}
+		// Cache hit: the file is unchanged since its meta was read, so skip the
+		// full read entirely (the win on large, idle transcripts).
+		if e, ok := cache[f]; ok && e.Mod == mod && e.Size == size {
+			base.Cwd, base.Title, base.Answer, base.Messages = e.Cwd, e.Title, e.Answer, e.Messages
+			out[i] = base
+			fresh[f] = e
+			continue
+		}
 		wg.Add(1)
 		sem <- struct{}{}
-		go func(i int, f string) {
+		go func(i int, f string, base Session, mod, size int64) {
 			defer wg.Done()
 			defer func() { <-sem }()
-			info, err := os.Stat(f)
-			if err != nil {
-				return
-			}
 			cwd, title, answer, n := readMeta(f)
-			out[i] = Session{
-				ID:       strings.TrimSuffix(filepath.Base(f), ".jsonl"),
-				Cwd:      cwd,
-				Path:     f,
-				Modified: info.ModTime(),
-				Messages: n,
-				Title:    title,
-				Answer:   answer,
-			}
-		}(i, f)
+			base.Cwd, base.Title, base.Answer, base.Messages = cwd, title, answer, n
+			e := cacheEntry{Mod: mod, Size: size, Cwd: cwd, Title: title, Answer: answer, Messages: n}
+			mu.Lock()
+			out[i] = base
+			fresh[f] = e
+			mu.Unlock()
+		}(i, f, base, mod, size)
 	}
 	wg.Wait()
+	// fresh holds an entry for every current file (hits kept, misses re-read),
+	// so writing it back also prunes cache entries for deleted transcripts.
+	saveCache(fresh)
 	res := make([]Session, 0, len(out))
 	for _, s := range out {
 		if s.ID != "" {
