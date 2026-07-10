@@ -18,6 +18,12 @@ import (
 
 var switchDryRun bool
 
+// keepHandoffs bounds the artifacts kept per project. Each one holds a full
+// pre-cutoff history, and the tv artifact alone is 6 MB, so they cannot
+// accumulate unbounded. Ten hops back is further than any handoff chain has
+// been walked.
+const keepHandoffs = 10
+
 var switchCmd = &cobra.Command{
 	Use:   "switch <project> <tool>",
 	Short: "switch a project to another coding tool, carrying the conversation over",
@@ -68,7 +74,7 @@ func runSwitch(cmd *cobra.Command, args []string) error {
 	}
 	if switchDryRun {
 		fmt.Printf("%s -> %s: %d turns extracted; %d turns would be injected into %s\n", from, to, len(t.Turns), len(t.TargetTurns()), to)
-		fmt.Println(t.Prompt())
+		fmt.Println(t.PromptWithArtifact(""))
 		return nil
 	}
 
@@ -80,6 +86,11 @@ func runSwitch(cmd *cobra.Command, args []string) error {
 		}
 		artifactPath = path
 		fmt.Printf("extracted %d turns from %s (%s)\n", len(t.Turns), from, path)
+		// A failed prune leaves extra artifacts behind, which costs disk and
+		// nothing else, so it must not abort a switch that already wrote one.
+		if err := handoff.Prune(handoffDir(), p.Name, keepHandoffs); err != nil {
+			fmt.Fprintf(os.Stderr, "warning: prune handoff artifacts: %v\n", err)
+		}
 	}
 
 	// Translate before touching anything live: a failed write leaves the

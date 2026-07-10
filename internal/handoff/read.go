@@ -139,7 +139,7 @@ func ReadCodex(path, cwd string) (*Transcript, error) {
 // ReadAgy builds an IR from agy's history.jsonl, which records one line per
 // prompt with the workspace it ran in. Assistant replies live only in agy's
 // protobuf conversation store and are not recoverable, so the transcript
-// carries user prompts alone; Prompt() output still orients the target tool.
+// carries user prompts alone; the rendered prompt still orients the target tool.
 func ReadAgy(historyPath, cwd string) (*Transcript, error) {
 	var turns []Turn
 	err := scanLines(historyPath, func(line []byte) {

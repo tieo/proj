@@ -211,25 +211,45 @@ func TestWriteClaude(t *testing.T) {
 }
 
 func TestPromptAndCaps(t *testing.T) {
-	p := testTranscript().Prompt()
+	p := testTranscript().PromptWithArtifact("")
 	for _, want := range []string{"taking over", "[User] fix the bug", "[claude ran Bash]", "[claude] done"} {
 		if !strings.Contains(p, want) {
 			t.Errorf("prompt missing %q:\n%s", want, p)
 		}
 	}
-	long := make([]Turn, 200)
-	for i := range long {
-		long[i] = Turn{Role: "user", Text: strings.Repeat("x", 3000)}
-	}
-	if capped := capTurns(long); len(capped) != 40 {
-		t.Errorf("char-budget cap: got %d turns, want 40", len(capped))
-	}
-	manyShort := make([]Turn, 500)
+	// Short turns are never dropped just for being numerous.
+	manyShort := make([]Turn, 5000)
 	for i := range manyShort {
-		manyShort[i] = Turn{Role: "user", Text: "x"}
+		manyShort[i] = Turn{Role: "tool", Text: "x"}
 	}
-	if capped := capTurns(manyShort); len(capped) != maxTurns {
-		t.Errorf("turn cap: got %d, want %d", len(capped), maxTurns)
+	if capped := capTurns(manyShort); len(capped) != len(manyShort) {
+		t.Errorf("count alone must not evict: got %d, want %d", len(capped), len(manyShort))
+	}
+
+	// Over budget, tool calls go before assistant replies and user turns stay.
+	var mixed []Turn
+	for i := 0; i < 200; i++ {
+		mixed = append(mixed,
+			Turn{Role: "user", Text: strings.Repeat("u", 100)},
+			Turn{Role: "assistant", Text: strings.Repeat("a", 1000)},
+			Turn{Role: "tool", Text: strings.Repeat("t", 1000)},
+		)
+	}
+	capped := capTurns(mixed)
+	got := map[string]int{}
+	chars := 0
+	for _, turn := range capped {
+		got[turn.Role]++
+		chars += len(turn.Text)
+	}
+	if got["user"] != 200 {
+		t.Errorf("user turns evicted: kept %d of 200", got["user"])
+	}
+	if chars > maxTranscriptChars {
+		t.Errorf("over budget: %d chars", chars)
+	}
+	if got["tool"] >= got["assistant"] {
+		t.Errorf("tool calls must be evicted first: tool=%d assistant=%d", got["tool"], got["assistant"])
 	}
 	if got := capText(strings.Repeat("x", 5000)); len(got) > maxTurnText+20 {
 		t.Errorf("text cap: %d", len(got))
@@ -239,17 +259,17 @@ func TestPromptAndCaps(t *testing.T) {
 func TestTargetContextCutoffKeepsSavedTurns(t *testing.T) {
 	turns := make([]Turn, 500)
 	for i := range turns {
-		turns[i] = Turn{Role: "user", Text: "x"}
+		turns[i] = Turn{Role: "tool", Text: strings.Repeat("x", 1000)}
 	}
 	tr := newTranscript("claude", "/p/api", turns)
 	if len(tr.Turns) != 500 {
 		t.Fatalf("saved turns = %d, want 500", len(tr.Turns))
 	}
-	if got := len(tr.TargetTurns()); got != maxTurns {
-		t.Fatalf("target turns = %d, want %d", got, maxTurns)
+	if got := len(tr.TargetTurns()); got >= 500 || got == 0 {
+		t.Fatalf("target turns = %d, want a cut below 500", got)
 	}
 	note := tr.HandoffNote("/tmp/full.json")
-	for _, want := range []string{"250 older extracted turns", "/tmp/full.json"} {
+	for _, want := range []string{"older extracted turns", "/tmp/full.json"} {
 		if !strings.Contains(note, want) {
 			t.Errorf("note missing %q: %s", want, note)
 		}
@@ -257,5 +277,96 @@ func TestTargetContextCutoffKeepsSavedTurns(t *testing.T) {
 	prompt := tr.PromptWithArtifact("/tmp/full.json")
 	if !strings.Contains(prompt, "bounded recent-history cutoff") || !strings.Contains(prompt, "/tmp/full.json") {
 		t.Errorf("prompt missing cutoff/path:\n%s", prompt)
+	}
+}
+
+// A cutoff notice that names no artifact leaves the target model told that
+// turns are missing with no way to reach them.
+func TestCutoffNoticeAlwaysResolves(t *testing.T) {
+	long := &Transcript{SourceTool: "codex", ExtractedAt: "now"}
+	for i := 0; i < 500; i++ {
+		long.Turns = append(long.Turns, Turn{Role: "tool", Text: strings.Repeat("x", 1000)})
+	}
+	if long.omittedTurns() == 0 {
+		t.Fatal("fixture must exceed the char budget")
+	}
+	cases := []struct {
+		name     string
+		render   func(string) string
+		artifact string
+		want     string
+	}{
+		{"prompt with artifact", long.PromptWithArtifact, "/tmp/h.json", "/tmp/h.json"},
+		{"prompt without artifact", long.PromptWithArtifact, "", "cannot be recovered"},
+		{"note with artifact", long.HandoffNote, "/tmp/h.json", "/tmp/h.json"},
+		{"note without artifact", long.HandoffNote, "", "cannot be recovered"},
+	}
+	for _, tc := range cases {
+		out := tc.render(tc.artifact)
+		if !strings.Contains(out, "omitted") {
+			t.Errorf("%s: no cutoff notice:\n%s", tc.name, out)
+		}
+		if !strings.Contains(out, tc.want) {
+			t.Errorf("%s: missing %q:\n%s", tc.name, tc.want, out)
+		}
+	}
+}
+
+// Notes left by earlier switches must not ride along into the next target, or
+// each hop would carry one more of them forever.
+func TestHandoffNotesDoNotAccumulate(t *testing.T) {
+	prior := &Transcript{SourceTool: "claude", ExtractedAt: "then"}
+	note := prior.HandoffNote("/tmp/hop1.json")
+
+	tr := newTranscript("codex", "/p/api", []Turn{
+		{Role: "user", Text: note},
+		{Role: "user", Text: "real instruction"},
+		{Role: "assistant", Text: "done"},
+	})
+	if len(tr.Turns) != 3 {
+		t.Fatalf("saved IR must keep the note for audit: %d turns", len(tr.Turns))
+	}
+	target := tr.TargetTurns()
+	if len(target) != 2 {
+		t.Fatalf("target turns = %d, want 2", len(target))
+	}
+	for _, turn := range target {
+		if strings.Contains(turn.Text, "translated from") {
+			t.Errorf("prior handoff note survived into target: %q", turn.Text)
+		}
+	}
+	if tr.omittedTurns() != 0 {
+		t.Errorf("stripping a note is not an omission, got %d", tr.omittedTurns())
+	}
+	if !strings.Contains(tr.PromptWithArtifact(""), "real instruction") {
+		t.Error("real user turn lost")
+	}
+}
+
+func TestPruneKeepsNewest(t *testing.T) {
+	dir := t.TempDir()
+	for _, stamp := range []string{"100", "200", "300", "400"} {
+		writeFile(t, filepath.Join(dir, "api-"+stamp+".json"), "{}")
+	}
+	writeFile(t, filepath.Join(dir, "other-100.json"), "{}")
+
+	if err := Prune(dir, "api", 2); err != nil {
+		t.Fatal(err)
+	}
+	left, _ := filepath.Glob(filepath.Join(dir, "api-*.json"))
+	if len(left) != 2 {
+		t.Fatalf("kept %d, want 2: %v", len(left), left)
+	}
+	for _, want := range []string{"api-300.json", "api-400.json"} {
+		if _, err := os.Stat(filepath.Join(dir, want)); err != nil {
+			t.Errorf("newest artifact %s pruned", want)
+		}
+	}
+	// Another project's artifacts are untouched.
+	if _, err := os.Stat(filepath.Join(dir, "other-100.json")); err != nil {
+		t.Error("pruned a different project")
+	}
+	if err := Prune(dir, "api", 0); err == nil {
+		t.Error("keep=0 would delete every artifact; want error")
 	}
 }
