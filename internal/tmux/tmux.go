@@ -333,6 +333,30 @@ func RenameSession(oldName, newName string) error {
 	return err
 }
 
+// RespawnSession replaces the program running in a session's only pane,
+// killing the old one and its children. The session and pane keep their ids,
+// so clients stay attached across the swap; killing the session instead would
+// detach every client watching it. The pane's scrollback does not survive.
+//
+// The pane is addressed by id: "=name" is an exact-match session target and
+// respawn-pane rejects it, while the bare name would match by prefix.
+func RespawnSession(name, dir, command string) error {
+	pane := firstLine(shellout.Run("tmux", "list-panes", "-t", "="+name, "-F", "#{pane_id}"))
+	if pane == "" {
+		return fmt.Errorf("session %q has no pane", name)
+	}
+	_, err := shellout.RunErr("tmux", "respawn-pane", "-k", "-t", pane, "-c", dir, command)
+	return err
+}
+
+func firstLine(s string) string {
+	s = strings.TrimSpace(s)
+	if i := strings.IndexByte(s, '\n'); i >= 0 {
+		return s[:i]
+	}
+	return s
+}
+
 // Attach switches the current tmux client (if inside tmux) or execs `tmux
 // attach`, replacing this process so the terminal hands off cleanly.
 func Attach(name string) error {

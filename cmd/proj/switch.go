@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"time"
 
 	"github.com/spf13/cobra"
 
@@ -119,39 +118,51 @@ func runSwitch(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
-	if err := reg.SetTool(p.Name, to); err != nil {
-		return err
-	}
 
 	session := projects.SessionName(p.Name, p.Tags)
-	if live := tmux.SessionForPath(p.Dir); live != "" {
-		if err := closeSession(live, false); err != nil {
-			return err
-		}
-		// tmux tears the session down asynchronously; a beat keeps the
-		// relaunch from colliding with the dying one over the session name.
-		time.Sleep(500 * time.Millisecond)
+	live := tmux.SessionForPath(p.Dir)
+
+	// With a prompt there is no native store to resume from, so the transcript
+	// rides in as the initial prompt; otherwise the tool's own resume command
+	// picks up the session that was just written for it.
+	cmdLine := daemon.LaunchCommand(spec, cfg.Claude.Home, p.Name, session, p.Dir)
+	handoffVia := ""
+	if prompt != "" {
+		cmdLine = daemon.PromptLaunchCommand(spec, p.Name, session, p.Dir, prompt)
+		handoffVia = " (handoff via initial prompt)"
 	}
 
-	if prompt != "" {
-		// No native store to translate into: fresh launch with the transcript
-		// as the initial prompt.
-		cmdLine := daemon.PromptLaunchCommand(spec, p.Name, session, p.Dir, prompt)
+	if live == "" {
 		if _, err := tmux.NewSession(session, p.Dir, cmdLine); err != nil {
 			return fmt.Errorf("create tmux session: %w", err)
 		}
-		fmt.Printf("switched %s to %s (handoff via initial prompt)\n", p.Name, to)
-		if headless {
-			return nil
+	} else {
+		// Swap the tool inside the session rather than killing it: a kill
+		// detaches every client watching the project, and the tags in the
+		// session name may have drifted since it was created. Respawning keeps
+		// the session and pane ids, so an attached terminal follows the project
+		// across the switch.
+		if live != session {
+			if err := tmux.RenameSession(live, session); err != nil {
+				return fmt.Errorf("rename session %q: %w", live, err)
+			}
 		}
-		return tmux.Attach(session)
+		if err := tmux.RespawnSession(session, p.Dir, cmdLine); err != nil {
+			return fmt.Errorf("respawn session %q: %w", session, err)
+		}
 	}
 
-	// Native translation (or nothing to carry): the normal open path resumes
-	// the freshly written session via the tool's own resume command.
-	p.Tool = to
-	fmt.Printf("switched %s to %s\n", p.Name, to)
-	return openInTmux(cfg, p)
+	// Record the new tool only once the pane actually runs it. Recording first
+	// leaves the registry naming a tool the session never launched when the
+	// swap fails, and the next switch then refuses as already on that tool.
+	if err := reg.SetTool(p.Name, to); err != nil {
+		return err
+	}
+	fmt.Printf("switched %s to %s%s\n", p.Name, to, handoffVia)
+	if headless {
+		return nil
+	}
+	return tmux.Attach(session)
 }
 
 func handoffDir() string {

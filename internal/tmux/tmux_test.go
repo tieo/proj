@@ -95,3 +95,18 @@ func TestDetectWSL(t *testing.T) {
 		})
 	}
 }
+
+func TestFirstLine(t *testing.T) {
+	cases := map[string]string{
+		"%33\n%34\n": "%33", // list-panes on a multi-pane session
+		"  %7  \n":   "%7",
+		"%1":         "%1",
+		"\n":         "",
+		"":           "",
+	}
+	for in, want := range cases {
+		if got := firstLine(in); got != want {
+			t.Errorf("firstLine(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
