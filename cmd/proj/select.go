@@ -245,7 +245,7 @@ func selectRange(title string, lines []string, height int) (start, end int, ok b
 	draw := func() {
 		var b strings.Builder
 		b.WriteString("\033[H\033[K  \033[1m" + title + "\033[0m\r\n")
-		status := fmt.Sprintf("keep #%d → #%d   ·   %d of %d messages", start+1, end+1, end-start+1, n)
+		status := fmt.Sprintf("first #%d … last #%d (both kept)   ·   %d of %d messages   ·   cursor #%d", start+1, end+1, end-start+1, n, sel+1)
 		b.WriteString("\033[K  \033[36m" + status + "\033[0m\r\n")
 		for i := top; i < top+height; i++ {
 			b.WriteString("\033[K")

@@ -12,6 +12,7 @@ import (
 	"crypto/rand"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -437,20 +438,41 @@ func Adopt(home string, sess Session, targetCwd string, move bool) (newID string
 // conversation still carries the context a resume needs. Offsets come from
 // Prompts (At / CutAt); keepFrom<=0 keeps from the top, keepTo<=0 to the end.
 func ForkRange(home string, sess Session, targetCwd string, keepFrom, keepTo, headerEnd int) (newID string, report []string, err error) {
-	data, err := os.ReadFile(sess.Path)
+	f, err := os.Open(sess.Path)
 	if err != nil {
 		return "", nil, err
 	}
-	if keepTo <= 0 || keepTo > len(data) {
-		keepTo = len(data)
+	defer f.Close()
+	fi, err := f.Stat()
+	if err != nil {
+		return "", nil, err
+	}
+	size := int(fi.Size())
+	if keepTo <= 0 || keepTo > size {
+		keepTo = size
+	}
+	// Read only the kept byte ranges rather than the whole file: a session
+	// transcript can be tens of megabytes on a slow mount, but a fork keeps just
+	// a slice of it plus the small leading header.
+	readAt := func(off, n int) ([]byte, error) {
+		b := make([]byte, n)
+		if _, err := io.ReadFull(io.NewSectionReader(f, int64(off), int64(n)), b); err != nil {
+			return nil, err
+		}
+		return b, nil
 	}
 	var body []byte
 	if keepFrom <= 0 {
-		body = data[:keepTo]
+		body, err = readAt(0, keepTo)
 	} else {
-		body = make([]byte, 0, headerEnd+(keepTo-keepFrom))
-		body = append(body, data[:headerEnd]...)
-		body = append(body, data[keepFrom:keepTo]...)
+		var head, mid []byte
+		if head, err = readAt(0, headerEnd); err == nil {
+			mid, err = readAt(keepFrom, keepTo-keepFrom)
+			body = append(head, mid...)
+		}
+	}
+	if err != nil {
+		return "", nil, err
 	}
 	return transplant(home, sess, targetCwd, body, false)
 }

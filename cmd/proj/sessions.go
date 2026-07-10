@@ -85,8 +85,13 @@ func runSessions(cmd *cobra.Command, args []string) error {
 				fmt.Fprintf(os.Stderr, "adopt: %v\n", err)
 			}
 		case 'f':
-			if err := forkSessionInteractive(cfg, home, all, s); err != nil {
+			// Fork hands off to the new project's session (like resume); a cancel or
+			// a failure before the hand-off stays in the list for another pick.
+			opened, err := forkSessionInteractive(cfg, home, all, s)
+			if err != nil {
 				fmt.Fprintf(os.Stderr, "fork: %v\n", err)
+			} else if opened {
+				return nil
 			}
 		case 's':
 			if err := stopSessionInteractive(cfg, all, s); err != nil {
@@ -168,17 +173,17 @@ func adoptSessionInteractive(cfg config.Config, home string, all []sessions.Sess
 	return nil
 }
 
-// forkSessionInteractive branches s at a user-chosen message into a new project.
-// It lists s's prompts, cuts after the selected one (keeping that turn and its
-// reply), creates the chosen project, and copies the truncated history in via
-// sessions.Fork. The source session is left untouched.
-func forkSessionInteractive(cfg config.Config, home string, all []sessions.Session, s sessions.Session) error {
+// forkSessionInteractive branches s over a user-chosen message range into a new
+// project, then opens that project so the user lands in the forked session. It
+// reports opened=true only once it has handed off, so the caller can leave the
+// list; a cancel returns (false, nil) to stay. The source session is untouched.
+func forkSessionInteractive(cfg config.Config, home string, all []sessions.Session, s sessions.Session) (opened bool, err error) {
 	prompts, err := sessions.Prompts(s.Path)
 	if err != nil {
-		return err
+		return false, err
 	}
 	if len(prompts) == 0 {
-		return fmt.Errorf("session %s has no user messages to fork from", s.ID[:8])
+		return false, fmt.Errorf("session %s has no user messages to fork from", s.ID[:8])
 	}
 	rows, cols := termSize()
 	w := cols - 12
@@ -192,29 +197,33 @@ func forkSessionInteractive(cfg config.Config, home string, all []sessions.Sessi
 	}
 	start, end, ok := selectRange(fmt.Sprintf("fork %s — pick the range of messages to transfer", s.ID[:8]), lines, h)
 	if !ok {
-		return nil
+		return false, nil
 	}
 	p, err := pickProject(cfg, "")
 	if err != nil {
-		return err
+		return false, err
 	}
 	targetCwd := sessions.CwdForDir(p.Dir, all)
 	if s.Cwd == targetCwd {
-		return fmt.Errorf("cannot fork a session into its own project")
+		return false, fmt.Errorf("cannot fork a session into its own project")
 	}
 	keepFrom := 0
 	if start > 0 {
 		keepFrom = prompts[start].At
 	}
+	fmt.Printf("forking messages %d–%d into %s…\n", start+1, end+1, p.Name)
 	newID, report, err := sessions.ForkRange(home, s, targetCwd, keepFrom, prompts[end].CutAt, prompts[0].At)
 	if err != nil {
-		return err
+		return false, err
 	}
 	fmt.Printf("forked %s messages %d–%d into %s as new session %s\n", s.ID[:8], start+1, end+1, p.Name, newID[:8])
 	for _, line := range report {
 		fmt.Printf("  %s\n", line)
 	}
-	return nil
+	// Land in the forked session: its continue pointer already points at the new
+	// transcript, so opening the project resumes into the branched history, the
+	// same handoff `proj new` and resume do.
+	return true, openInTmux(cfg, p)
 }
 
 // stopSessionInteractive stops (closes) the live tmux session for s, using the
