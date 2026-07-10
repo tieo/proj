@@ -82,11 +82,18 @@ func closeSession(name string, unpin bool) error {
 }
 
 // resolveCloseSession returns the tmux session name to close. With an argument
-// it is treated as a project name or unique prefix (like `proj` open) and
-// resolved to that project's open session; with no argument it is the current
-// tmux session.
+// it is a live session name, or else a project name or unique prefix (like
+// `proj` open) resolved to that project's open session; with no argument it is
+// the current tmux session. A session outside base_dir belongs to no project,
+// so matching the live name first is what makes it closable at all: without it
+// keep-alive recreates the session every tick and nothing can retire it.
 func resolveCloseSession(baseDir string, args []string) (string, error) {
 	if len(args) > 0 && args[0] != "" {
+		for _, s := range tmux.ListSessions() {
+			if s.Name == args[0] {
+				return s.Name, nil
+			}
+		}
 		p, err := projects.Resolve(baseDir, args[0])
 		if err != nil {
 			return "", err
