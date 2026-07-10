@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -166,17 +167,20 @@ func runList(cmd *cobra.Command, args []string) error {
 	if listTagF == "" {
 		home := os.Getenv("HOME")
 		for _, s := range projects.OrphanSessions(cfg.BaseDir) {
+			if isScratchpadSession(s.Path) {
+				continue
+			}
 			ms, tracked := managed[s.Name]
 			label := labelBySession[s.Name]
-			rc := rcBySession[s.Name]
+			rc := ""
 			if rcConn != nil { // orphans are always alive
 				if rcConn[daemon.RCName(s.Name, host)] {
 					rc = "active"
-				} else {
-					rc = "offline"
 				}
+			} else if rcBySession[s.Name] == "active" {
+				rc = "active"
 			}
-			path := strings.Replace(s.Path, home, "~", 1)
+			path := shortPath(strings.Replace(s.Path, home, "~", 1), 48)
 			rows = append(rows, listRow{
 				indicator: buildIndicator(true, ms.Pinned, label, rc),
 				name:      s.Name,
@@ -238,18 +242,56 @@ func hasTag(tags []string, want string) bool {
 	return false
 }
 
+func shortPath(path string, max int) string {
+	if max <= 0 || len(path) <= max {
+		return path
+	}
+	clean := filepath.Clean(path)
+	parent := filepath.Base(filepath.Dir(clean))
+	base := filepath.Base(clean)
+	out := filepath.Join("...", parent, base)
+	if len(out) <= max {
+		return out
+	}
+	if len(base)+4 <= max {
+		return ".../" + base
+	}
+	if max <= 3 {
+		return path[:max]
+	}
+	return "..." + base[len(base)-(max-3):]
+}
+
+func isScratchpadSession(path string) bool {
+	return strings.Contains(filepath.ToSlash(path), "/scratchpad/")
+}
+
 // buildIndicator returns a 2-terminal-column-wide status symbol.
 //
 //	📌   pinned (alive or dead, emoji, 2 cols)
 //	● ·  alive; colored dot + space (1+1 cols)
 //	○ ·  dead ; grey circle + space (1+1 cols)
-// modelLabel fills the model column: the Claude model read from the session
-// transcript, or the tool name for projects running another tool.
+//
+// modelLabel fills the model column with the detected model when available.
 func modelLabel(p projects.Project, claudeHome string) string {
-	if daemon.ToolName(p.Tool) != config.DefaultTool {
-		return p.Tool
+	tool := daemon.ToolName(p.Tool)
+	switch tool {
+	case config.DefaultTool:
+		if model := daemon.ModelFromDir(claudeHome, p.Dir); model != "" {
+			return model
+		}
+	case "codex":
+		if model := daemon.CodexModelFromDir(p.Dir); model != "" {
+			return model
+		}
+		return tool
+	case "agy":
+		if model := daemon.AgyModelFromDir(p.Dir); model != "" {
+			return model
+		}
+		return tool
 	}
-	return daemon.ModelFromDir(claudeHome, p.Dir)
+	return ""
 }
 
 func buildIndicator(alive, pinned bool, label, rc string) string {
