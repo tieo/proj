@@ -167,9 +167,6 @@ func runList(cmd *cobra.Command, args []string) error {
 	if listTagF == "" {
 		home := os.Getenv("HOME")
 		for _, s := range projects.OrphanSessions(cfg.BaseDir) {
-			if isScratchpadSession(s.Path) {
-				continue
-			}
 			ms, tracked := managed[s.Name]
 			label := labelBySession[s.Name]
 			rc := ""
@@ -260,10 +257,6 @@ func shortPath(path string, max int) string {
 		return path[:max]
 	}
 	return "..." + base[len(base)-(max-3):]
-}
-
-func isScratchpadSession(path string) bool {
-	return strings.Contains(filepath.ToSlash(path), "/scratchpad/")
 }
 
 // buildIndicator returns a 2-terminal-column-wide status symbol.
