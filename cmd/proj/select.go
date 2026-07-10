@@ -197,16 +197,18 @@ func selectAction(header string, lines []string, footer string, actions string) 
 	}
 }
 
-// selectFromEnd renders a scrolling viewport of at most height rows over lines,
-// with the cursor starting on the last line (the newest message), for choosing
-// from a long list. Up/Down move and scroll one row; PageUp/PageDown move a
-// screenful; Home/End jump to the ends; Enter returns the index; q or Esc return
-// -1. Only the viewport is drawn, so a thousand-line list costs the same as a
-// short one. Non-interactive stdin falls back to a numbered prompt.
-func selectFromEnd(header string, lines []string, footer string, height int) int {
+// selectRange runs a full-screen picker over lines for choosing a contiguous
+// [start, end] range, with the cursor starting on the last line. It draws on the
+// alternate screen so it owns the whole terminal (no scrollback ghosting) and
+// restores the prior screen on exit. Up/Down (k/j) and PageUp/PageDown/Home/End
+// move the cursor; s sets the range start at the cursor, e sets the end; Enter
+// confirms (start, end, true); q or Esc cancel (_, _, false). Rows outside the
+// range are dimmed; the start and end carry ▶/◀ markers. height caps the visible
+// rows. Non-interactive stdin returns the whole range unchanged.
+func selectRange(title string, lines []string, height int) (start, end int, ok bool) {
 	n := len(lines)
 	if n == 0 {
-		return -1
+		return 0, 0, false
 	}
 	if height > n {
 		height = n
@@ -214,15 +216,16 @@ func selectFromEnd(header string, lines []string, footer string, height int) int
 	if height < 1 {
 		height = 1
 	}
-	restore, ok := sttyRaw()
-	if !ok {
-		return numberedSelect(header, lines)
+	restore, raw := sttyRaw()
+	if !raw {
+		return 0, n - 1, true
 	}
 	defer restore()
-	fmt.Print("\033[?25l")
-	defer fmt.Print("\033[?25h")
+	fmt.Print("\033[?1049h\033[?25l")       // alternate screen, hide cursor
+	defer fmt.Print("\033[?25h\033[?1049l") // restore cursor and prior screen
 
 	sel := n - 1
+	start, end = 0, n-1
 	top := n - height
 	clampTop := func() {
 		if sel < top {
@@ -238,81 +241,92 @@ func selectFromEnd(header string, lines []string, footer string, height int) int
 			top = 0
 		}
 	}
-	clampTop()
 
-	frame := func() string {
+	draw := func() {
 		var b strings.Builder
-		b.WriteString("\r\033[K  " + header + "\r\n")
+		b.WriteString("\033[H\033[K  \033[1m" + title + "\033[0m\r\n")
+		status := fmt.Sprintf("keep #%d → #%d   ·   %d of %d messages", start+1, end+1, end-start+1, n)
+		b.WriteString("\033[K  \033[36m" + status + "\033[0m\r\n")
 		for i := top; i < top+height; i++ {
-			b.WriteString("\r\033[K")
-			if i == sel {
-				b.WriteString(highlightRow("\033[36m❯\033[0m " + lines[i]))
-			} else {
-				b.WriteString("  " + lines[i])
+			b.WriteString("\033[K")
+			gutter := " "
+			switch {
+			case i == start && i == end:
+				gutter = "\033[32m◆\033[0m"
+			case i == start:
+				gutter = "\033[32m▶\033[0m"
+			case i == end:
+				gutter = "\033[32m◀\033[0m"
+			case i > start && i < end:
+				gutter = "\033[32m│\033[0m"
 			}
-			b.WriteString("\r\n")
+			cur := " "
+			if i == sel {
+				cur = "\033[36m❯\033[0m"
+			}
+			text := lines[i]
+			if i < start || i > end {
+				text = "\033[90m" + text + "\033[0m"
+			}
+			row := cur + gutter + " " + text
+			if i == sel {
+				row = highlightRow(row)
+			}
+			b.WriteString(row + "\r\n")
 		}
-		b.WriteString(fmt.Sprintf("\r\033[K  \033[90m%s   %d/%d\033[0m\r\n", footer, sel+1, n))
-		return b.String()
+		b.WriteString("\033[K  \033[90m↑/↓ move · pgup/pgdn · s set start · e set end · enter fork · esc cancel\033[0m")
+		b.WriteString("\033[J")
+		fmt.Print(b.String())
 	}
-	fmt.Print(frame())
-	total := height + 2 // header + rows + footer
-	repaint := func() {
-		fmt.Printf("\033[%dA", total)
-		fmt.Print(frame())
-	}
+	clampTop()
+	draw()
 
 	buf := make([]byte, 8)
 	for {
 		nr, err := os.Stdin.Read(buf)
 		if err != nil || nr == 0 {
-			fmt.Print("\r\n")
-			return -1
+			return 0, 0, false
 		}
 		k := buf[:nr]
-		esc := len(k) >= 3 && k[0] == 27 && k[1] == '['
+		esc := nr >= 3 && k[0] == 27 && k[1] == '['
 		switch {
-		case (esc && k[2] == 'A') || (nr == 1 && k[0] == 'k'): // up
+		case (esc && k[2] == 'A') || (nr == 1 && k[0] == 'k'):
 			if sel > 0 {
 				sel--
-				clampTop()
-				repaint()
 			}
-		case (esc && k[2] == 'B') || (nr == 1 && k[0] == 'j'): // down
+		case (esc && k[2] == 'B') || (nr == 1 && k[0] == 'j'):
 			if sel < n-1 {
 				sel++
-				clampTop()
-				repaint()
 			}
 		case esc && k[2] == '5': // PageUp
-			sel -= height
-			if sel < 0 {
+			if sel -= height; sel < 0 {
 				sel = 0
 			}
-			clampTop()
-			repaint()
 		case esc && k[2] == '6': // PageDown
-			sel += height
-			if sel > n-1 {
+			if sel += height; sel > n-1 {
 				sel = n - 1
 			}
-			clampTop()
-			repaint()
-		case (esc && (k[2] == 'H' || k[2] == '1')) || (nr == 1 && k[0] == 'g'): // Home
+		case (esc && (k[2] == 'H' || k[2] == '1')) || (nr == 1 && k[0] == 'g'):
 			sel = 0
-			clampTop()
-			repaint()
-		case (esc && (k[2] == 'F' || k[2] == '4')) || (nr == 1 && k[0] == 'G'): // End
+		case (esc && (k[2] == 'F' || k[2] == '4')) || (nr == 1 && k[0] == 'G'):
 			sel = n - 1
-			clampTop()
-			repaint()
+		case nr == 1 && k[0] == 's': // set start at cursor
+			start = sel
+			if end < start {
+				end = start
+			}
+		case nr == 1 && k[0] == 'e': // set end at cursor
+			end = sel
+			if start > end {
+				start = end
+			}
 		case nr == 1 && (k[0] == '\r' || k[0] == '\n'):
-			fmt.Print("\r\n")
-			return sel
+			return start, end, true
 		case nr == 1 && (k[0] == 'q' || k[0] == 3 || k[0] == 27):
-			fmt.Print("\r\n")
-			return -1
+			return 0, 0, false
 		}
+		clampTop()
+		draw()
 	}
 }
 

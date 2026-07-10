@@ -275,9 +275,9 @@ func lastAnswerText(lines [][]byte) string {
 // Prompt is one genuine user turn in a transcript, offered as a fork point.
 type Prompt struct {
 	Text  string // one-line cleaned preview of the user message
+	At    int    // byte offset of the start of this turn's line
 	CutAt int    // byte offset of the start of the next user turn (len(file) for
-	// the last one); truncating the transcript at CutAt keeps this turn and the
-	// assistant's reply to it
+	// the last one); the range [At, CutAt) is this turn plus the reply to it
 }
 
 // Prompts returns the real user prompts in a transcript, oldest first, each with
@@ -317,7 +317,7 @@ func Prompts(path string) ([]Prompt, error) {
 		if len(prompts) > 0 {
 			prompts[len(prompts)-1].CutAt = lineStart
 		}
-		prompts = append(prompts, Prompt{Text: text})
+		prompts = append(prompts, Prompt{Text: text, At: lineStart})
 	}
 	if len(prompts) > 0 {
 		prompts[len(prompts)-1].CutAt = len(data)
@@ -429,20 +429,30 @@ func Adopt(home string, sess Session, targetCwd string, move bool) (newID string
 	return transplant(home, sess, targetCwd, data, move)
 }
 
-// Fork writes the transcript of sess truncated to its first cutAt bytes as a new
-// session under targetCwd, performing the same rewrite as Adopt (cwd, session
-// id, sidecars, memory, continue pointer) but always as a copy: the source
-// session is left intact. cutAt must fall on a record boundary, as the offsets
-// from Prompts do; a cutAt of 0 or beyond the file keeps the whole transcript.
-func Fork(home string, sess Session, targetCwd string, cutAt int) (newID string, report []string, err error) {
+// ForkRange writes the byte range [keepFrom, keepTo) of sess's transcript as a
+// new session under targetCwd, the same rewrite as Adopt (cwd, session id,
+// sidecars, memory, continue pointer) but always as a copy: the source is left
+// intact. When keepFrom is past headerEnd the leading records before the first
+// turn (session meta and any summary) are prepended, so a slice that starts mid
+// conversation still carries the context a resume needs. Offsets come from
+// Prompts (At / CutAt); keepFrom<=0 keeps from the top, keepTo<=0 to the end.
+func ForkRange(home string, sess Session, targetCwd string, keepFrom, keepTo, headerEnd int) (newID string, report []string, err error) {
 	data, err := os.ReadFile(sess.Path)
 	if err != nil {
 		return "", nil, err
 	}
-	if cutAt > 0 && cutAt < len(data) {
-		data = data[:cutAt]
+	if keepTo <= 0 || keepTo > len(data) {
+		keepTo = len(data)
 	}
-	return transplant(home, sess, targetCwd, data, false)
+	var body []byte
+	if keepFrom <= 0 {
+		body = data[:keepTo]
+	} else {
+		body = make([]byte, 0, headerEnd+(keepTo-keepFrom))
+		body = append(body, data[:headerEnd]...)
+		body = append(body, data[keepFrom:keepTo]...)
+	}
+	return transplant(home, sess, targetCwd, body, false)
 }
 
 // transplant writes data (a full or truncated transcript of sess) as a new

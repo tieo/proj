@@ -181,20 +181,17 @@ func forkSessionInteractive(cfg config.Config, home string, all []sessions.Sessi
 		return fmt.Errorf("session %s has no user messages to fork from", s.ID[:8])
 	}
 	rows, cols := termSize()
-	w := cols - 8
+	w := cols - 12
 	lines := make([]string, len(prompts))
 	for i, p := range prompts {
-		lines[i] = fmt.Sprintf("\033[90m%4d\033[0m  %s", i+1, truncPad(p.Text, w))
+		lines[i] = fmt.Sprintf("%5d  %s", i+1, truncPad(p.Text, w))
 	}
-	h := rows - 6
+	h := rows - 4
 	if h < 8 {
 		h = 8
 	}
-	// Cursor starts on the newest message (bottom); arrow up walks back through
-	// the history to the branch point.
-	sel := selectFromEnd("fork after which message? (keeps it and its reply)",
-		lines, "↑/↓ move · pgup/pgdn · enter fork here · esc cancel", h)
-	if sel < 0 {
+	start, end, ok := selectRange(fmt.Sprintf("fork %s — pick the range of messages to transfer", s.ID[:8]), lines, h)
+	if !ok {
 		return nil
 	}
 	p, err := pickProject(cfg, "")
@@ -205,11 +202,15 @@ func forkSessionInteractive(cfg config.Config, home string, all []sessions.Sessi
 	if s.Cwd == targetCwd {
 		return fmt.Errorf("cannot fork a session into its own project")
 	}
-	newID, report, err := sessions.Fork(home, s, targetCwd, prompts[sel].CutAt)
+	keepFrom := 0
+	if start > 0 {
+		keepFrom = prompts[start].At
+	}
+	newID, report, err := sessions.ForkRange(home, s, targetCwd, keepFrom, prompts[end].CutAt, prompts[0].At)
 	if err != nil {
 		return err
 	}
-	fmt.Printf("forked %s after message %d into %s as new session %s\n", s.ID[:8], sel+1, p.Name, newID[:8])
+	fmt.Printf("forked %s messages %d–%d into %s as new session %s\n", s.ID[:8], start+1, end+1, p.Name, newID[:8])
 	for _, line := range report {
 		fmt.Printf("  %s\n", line)
 	}

@@ -99,10 +99,10 @@ func TestFork(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Fork after the second prompt: keep "two"/"reply-two", drop "three".
-	newID, _, err := Fork(home, Session{ID: "abc123", Cwd: oldCwd, Path: src}, newCwd, prompts[1].CutAt)
+	// Fork through the second prompt: keep "two"/"reply-two", drop "three".
+	newID, _, err := ForkRange(home, Session{ID: "abc123", Cwd: oldCwd, Path: src}, newCwd, 0, prompts[1].CutAt, prompts[0].At)
 	if err != nil {
-		t.Fatalf("Fork: %v", err)
+		t.Fatalf("ForkRange: %v", err)
 	}
 	if newID == "" || newID == "abc123" {
 		t.Errorf("expected a fresh session id, got %q", newID)
@@ -131,5 +131,43 @@ func TestFork(t *testing.T) {
 	}
 	if strings.Contains(got, `"sessionId":"abc123"`) {
 		t.Error("old session id still present in forked transcript")
+	}
+}
+
+func TestForkRange_MidStart(t *testing.T) {
+	base := t.TempDir()
+	home := filepath.Join(base, ".claude")
+	cwd := `/p/api`
+	srcDir := filepath.Join(home, "projects", EncodeCwd(cwd))
+	if err := os.MkdirAll(srcDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	body := forkTranscript(cwd, "abc123")
+	src := filepath.Join(srcDir, "abc123.jsonl")
+	if err := os.WriteFile(src, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(base, ".claude.json"), []byte(`{"projects":{}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	prompts, err := Prompts(src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Keep only the middle turn: start and end both the second prompt.
+	newID, _, err := ForkRange(home, Session{ID: "abc123", Cwd: cwd, Path: src}, cwd, prompts[1].At, prompts[1].CutAt, prompts[0].At)
+	if err != nil {
+		t.Fatalf("ForkRange: %v", err)
+	}
+	got, err := os.ReadFile(filepath.Join(srcDir, newID+".jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(got)
+	if !strings.Contains(s, "two") || !strings.Contains(s, "reply-two") {
+		t.Error("mid-start fork should keep the selected turn and its reply")
+	}
+	if strings.Contains(s, "one") || strings.Contains(s, "three") {
+		t.Errorf("mid-start fork must drop turns outside the range: %q", s)
 	}
 }
