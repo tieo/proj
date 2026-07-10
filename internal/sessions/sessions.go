@@ -387,7 +387,7 @@ func Adopt(home string, sess Session, targetCwd string, move bool) (newID string
 		// Encoded names are [A-Za-z0-9-] only, so a plain byte replace is safe.
 		data = bytes.ReplaceAll(data, []byte(EncodeCwd(sess.Cwd)), []byte(EncodeCwd(targetCwd)))
 	}
-	newID = newSessionID()
+	newID = NewSessionID()
 	// Replace every occurrence of the id, not just the "sessionId" key: the
 	// transcript also embeds it in sidecar paths (.claude/tasks/<id>/...) and
 	// memory frontmatter (originSessionId), which would otherwise point a
@@ -429,7 +429,7 @@ func Adopt(home string, sess Session, targetCwd string, move bool) (newID string
 		return "", nil, fmt.Errorf("could not carry over project memory; left the original in place: %w", err)
 	}
 	report = append(report, memNotes...)
-	if err := pointLastSession(home, targetCwd, newID); err != nil {
+	if err := PointLastSession(home, targetCwd, newID); err != nil {
 		rollback()
 		return "", nil, fmt.Errorf("could not update the continue pointer; left the original in place: %w", err)
 	}
@@ -635,9 +635,9 @@ func copyDir(src, dst string) error {
 	return nil
 }
 
-// newSessionID returns a random UUIDv4, matching the id format Claude gives
+// NewSessionID returns a random UUIDv4, matching the id format Claude gives
 // natively created sessions.
-func newSessionID() string {
+func NewSessionID() string {
 	var b [16]byte
 	_, _ = rand.Read(b[:])
 	b[6] = (b[6] & 0x0f) | 0x40 // version 4
@@ -695,10 +695,10 @@ func jsonInner(s string) string {
 	return string(b[1 : len(b)-1])
 }
 
-// pointLastSession sets projects[cwd].lastSessionId in <home>/../.claude.json.
+// PointLastSession sets projects[cwd].lastSessionId in <home>/../.claude.json.
 // It round-trips the file with json.Number so numeric fields are preserved; key
 // order is not (the app rewrites this file itself, so that is harmless).
-func pointLastSession(home, cwd, id string) error {
+func PointLastSession(home, cwd, id string) error {
 	path := filepath.Join(filepath.Dir(home), ".claude.json")
 	raw, err := os.ReadFile(path)
 	if err != nil {

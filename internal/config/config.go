@@ -33,6 +33,7 @@ type ClaudeConfig struct {
 type ToolConfig struct {
 	Command       string `toml:"command"`
 	ResumeCommand string `toml:"resume_command"` // full command used instead of command when the project has prior history
+	PromptFlag    string `toml:"prompt_flag"`    // flag that precedes an initial prompt argument; empty when the tool takes it positionally
 }
 
 // ToolSpec is a resolved launch recipe: the command templates a session is
@@ -42,6 +43,7 @@ type ToolSpec struct {
 	Name          string
 	Command       string
 	ResumeCommand string // empty: always launch fresh
+	PromptFlag    string // precedes an initial prompt argument; empty = positional
 }
 
 // DefaultTool is the tool used by projects with no tool set.
@@ -58,6 +60,7 @@ var defaultTools = map[string]ToolConfig{
 	"agy": {
 		Command:       "agy --dangerously-skip-permissions",
 		ResumeCommand: "agy --continue --dangerously-skip-permissions",
+		PromptFlag:    "--prompt-interactive",
 	},
 }
 
@@ -79,7 +82,7 @@ func (c Config) Tool(name string) (ToolSpec, error) {
 		return ToolSpec{}, fmt.Errorf("unknown tool %q; known: %s (add [tools.%s] to %s)",
 			name, strings.Join(c.ToolNames(), ", "), name, Path())
 	}
-	return ToolSpec{Name: name, Command: a.Command, ResumeCommand: a.ResumeCommand}, nil
+	return ToolSpec{Name: name, Command: a.Command, ResumeCommand: a.ResumeCommand, PromptFlag: a.PromptFlag}, nil
 }
 
 // ToolNames returns every resolvable tool name, claude first, the rest sorted.

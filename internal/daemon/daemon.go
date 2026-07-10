@@ -1132,18 +1132,43 @@ func ToolName(tool string) string {
 // close, then dropped and never recreated. Gating on a zero exit keeps a
 // signal death looking like what it is, leaving keep-alive to recreate it.
 func LaunchCommand(spec config.ToolSpec, claudeHome, projName, session, dir string) string {
-	host, _ := os.Hostname()
 	tpl := spec.Command
 	if spec.ResumeCommand != "" && ToolHasHistory(spec.Name, claudeHome, dir) {
 		tpl = spec.ResumeCommand
 	}
+	return renderLaunch(tpl, "", projName, session, dir)
+}
+
+// PromptLaunchCommand renders a fresh launch of spec's tool with an initial
+// prompt, for handoffs to tools whose native store cannot be written. The
+// prompt rides as a command-line argument (positional, or behind the tool's
+// PromptFlag), never as injected keystrokes.
+func PromptLaunchCommand(spec config.ToolSpec, projName, session, dir, prompt string) string {
+	extra := ""
+	if spec.PromptFlag != "" {
+		extra = " " + spec.PromptFlag
+	}
+	// The prompt is appended after placeholder substitution: it is conversation
+	// text and must never have {name}/{dir}/{rc} sequences rewritten inside it.
+	extra += " " + shellout.Quote(prompt)
+	return renderLaunch(spec.Command, extra, projName, session, dir)
+}
+
+func renderLaunch(tpl, extra, projName, session, dir string) string {
+	host, _ := os.Hostname()
 	cmdLine := strings.NewReplacer(
 		"{name}", shellout.Quote(projName),
 		"{dir}", shellout.Quote(dir),
 		"{host}", host,
 		"{rc}", shellout.Quote(RCName(session, host)),
 	).Replace(tpl)
-	return cmdLine + " && proj daemon mark-closed " + shellout.Quote(session)
+	return cmdLine + extra + " && proj daemon mark-closed " + shellout.Quote(session)
+}
+
+// RecentSessionFile exposes the newest Claude transcript for workDir to other
+// packages (the handoff reader resolves its source file through it).
+func RecentSessionFile(homeOverride, workDir string) string {
+	return recentSessionFile(homeOverride, workDir)
 }
 
 // ToolHasHistory reports whether the named tool has a prior session for dir.

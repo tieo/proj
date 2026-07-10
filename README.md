@@ -135,7 +135,7 @@ Optional. Defaults are usable. `~/.config/proj/config.toml`:
 base_dir = "~/projects/code"
 
 [claude]
-command     = "claude --dangerously-skip-permissions --remote-control --remote-control-session-name-prefix {name} -n {name}"
+command     = "claude --dangerously-skip-permissions --remote-control {rc} -n {rc}"
 resume_flag = "-c"
 
 # Other coding tools, selectable per project with `proj tool <name> <tool>`.
@@ -150,6 +150,7 @@ resume_command = "codex resume --last --dangerously-bypass-approvals-and-sandbox
 [tools.agy]
 command        = "agy --dangerously-skip-permissions"
 resume_command = "agy --continue --dangerously-skip-permissions"
+prompt_flag    = "--prompt-interactive"
 
 [daemon]
 poll_interval = "60s"
