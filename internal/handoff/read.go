@@ -178,7 +178,6 @@ func CodexHome() string {
 func RecentCodexRollout(cwd string) string {
 	root := filepath.Join(CodexHome(), "sessions")
 	var best string
-	var bestTime time.Time
 	_ = filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
 		if err != nil || d.IsDir() {
 			return nil
@@ -187,13 +186,13 @@ func RecentCodexRollout(cwd string) string {
 		if !strings.HasPrefix(name, "rollout-") || !strings.HasSuffix(name, ".jsonl") {
 			return nil
 		}
-		info, err := d.Info()
-		if err != nil || !info.ModTime().After(bestTime) {
+		// The rollout's date is in its path (sessions/YYYY/MM/DD/rollout-<ts>...),
+		// which orders chronologically; comparing paths is stable where mtimes
+		// tie (files written in the same instant on a fast filesystem).
+		if path <= best || rolloutCwd(path) != cwd {
 			return nil
 		}
-		if rolloutCwd(path) == cwd {
-			best, bestTime = path, info.ModTime()
-		}
+		best = path
 		return nil
 	})
 	return best
