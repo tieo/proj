@@ -445,19 +445,31 @@ func RCConnections(homeOverride string) (map[string]bool, error) {
 		return nil, fmt.Errorf("GET /v1/sessions: HTTP %d", resp.StatusCode)
 	}
 	var out struct {
-		Data []struct {
-			Title            string `json:"title"`
-			ConnectionStatus string `json:"connection_status"`
-		} `json:"data"`
+		Data []rcSession `json:"data"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
 		return nil, fmt.Errorf("decode /v1/sessions: %w", err)
 	}
-	m := make(map[string]bool, len(out.Data))
-	for _, s := range out.Data {
-		m[s.Title] = s.ConnectionStatus == "connected"
+	return rcConnected(out.Data), nil
+}
+
+// rcSession is one entry of the /v1/sessions payload.
+type rcSession struct {
+	Title            string `json:"title"`
+	ConnectionStatus string `json:"connection_status"`
+}
+
+// rcConnected folds sessions into title -> bridge connected. Titles are not
+// unique: the API retains sessions from every earlier run of a project, all
+// sharing the title proj derives from name, host and tags. A title therefore
+// counts as connected when any session under it holds a live bridge, so a
+// stale disconnected entry cannot mask the running session.
+func rcConnected(sessions []rcSession) map[string]bool {
+	m := make(map[string]bool, len(sessions))
+	for _, s := range sessions {
+		m[s.Title] = m[s.Title] || s.ConnectionStatus == "connected"
 	}
-	return m, nil
+	return m
 }
 
 // rcErrString renders an RCConnections error for a log attr, empty when the

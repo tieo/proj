@@ -1341,3 +1341,29 @@ func TestRCEnabled(t *testing.T) {
 		t.Error("rcEnabled should be false without --remote-control")
 	}
 }
+
+func TestRCConnectedAnyLiveBridgeWins(t *testing.T) {
+	// The API returns every past session under the same derived title. Order is
+	// not guaranteed to put the running one last.
+	sessions := []rcSession{
+		{Title: "proj @host [go]", ConnectionStatus: "connected"},
+		{Title: "proj @host [go]", ConnectionStatus: "disconnected"},
+		{Title: "notes @host [nix]", ConnectionStatus: "disconnected"},
+		{Title: "docs @host [python]", ConnectionStatus: "disconnected"},
+		{Title: "docs @host [python]", ConnectionStatus: "connected"},
+	}
+	got := rcConnected(sessions)
+	want := map[string]bool{
+		"proj @host [go]":     true,
+		"notes @host [nix]":   false,
+		"docs @host [python]": true,
+	}
+	if len(got) != len(want) {
+		t.Fatalf("rcConnected returned %d titles, want %d: %v", len(got), len(want), got)
+	}
+	for title, wantConn := range want {
+		if got[title] != wantConn {
+			t.Errorf("rcConnected[%q] = %v, want %v", title, got[title], wantConn)
+		}
+	}
+}
