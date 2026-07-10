@@ -19,6 +19,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"syscall"
@@ -55,6 +56,7 @@ type Tracked struct {
 type State map[string]Tracked
 
 type Config struct {
+	BaseDir     string
 	Poll        time.Duration
 	MaxWait     time.Duration // fallback retry interval when the banner has no parseable time
 	DismissGap  time.Duration // pause between Escape and "continue"
@@ -63,9 +65,9 @@ type Config struct {
 	ClearText   string // slash command to clear when compact itself fails
 	Capture     int
 	StatePath   string
-	KeepAlive   bool                        // recreate vanished sessions that weren't cleanly closed
+	KeepAlive   bool                       // recreate vanished sessions that weren't cleanly closed
 	Tools       map[string]config.ToolSpec // resolved launch recipes keyed by tool name, "claude" included
-	ClaudeHome  string                      // [claude] home override; where Claude Code keeps transcripts (the Windows home under WSL)
+	ClaudeHome  string                     // [claude] home override; where Claude Code keeps transcripts (the Windows home under WSL)
 }
 
 func DefaultConfig() Config {
@@ -186,6 +188,26 @@ var pickerOptionRE = regexp.MustCompile(`(?m)^\s*❯\s+\d+\.\s`)
 // user's input box, pasted TUI output or scrollback, not a live overlay, and
 // must not be dismissed.
 var inputBoxRE = regexp.MustCompile(`(?i)shift\+tab|\? for shortcuts|bypass permissions|accept edits|plan mode on`)
+
+var trustPromptRE = regexp.MustCompile(`(?is)Accessing workspace:\s+(.+?)\s+Quick safety check:\s+Is this a project you created or one you trust\?.*❯\s+1\.\s+Yes, I trust this folder`)
+
+func HasTrustPrompt(content string) bool {
+	return trustPromptRE.MatchString(content)
+}
+
+func autoTrustPath(baseDir, path string) bool {
+	if path == "" {
+		return false
+	}
+	clean := filepath.Clean(path)
+	if baseDir != "" {
+		if rel, err := filepath.Rel(filepath.Clean(baseDir), clean); err == nil && rel != "." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) && rel != ".." {
+			return true
+		}
+	}
+	slash := filepath.ToSlash(clean)
+	return strings.HasPrefix(slash, "/tmp/claude-") && strings.Contains(slash, "/scratchpad/")
+}
 
 // rcActiveRE matches Claude Code's status-bar marker shown while Remote Control
 // is bound ("Remote Control active" or "/rc active"). Its ABSENCE on a live
@@ -920,6 +942,68 @@ type transcriptRecord struct {
 	} `json:"message"`
 }
 
+type codexRolloutRecord struct {
+	Type    string `json:"type"`
+	Payload struct {
+		Type             string  `json:"type"`
+		Role             string  `json:"role"`
+		Message          string  `json:"message"`
+		LastAgentMessage *string `json:"last_agent_message"`
+		RateLimits       *struct {
+			LimitID string `json:"limit_id"`
+			Primary *struct {
+				UsedPercent float64 `json:"used_percent"`
+				ResetsAt    int64   `json:"resets_at"`
+			} `json:"primary"`
+			Credits *struct {
+				HasCredits bool `json:"has_credits"`
+				Unlimited  bool `json:"unlimited"`
+			} `json:"credits"`
+			RateLimitReachedType *string `json:"rate_limit_reached_type"`
+		} `json:"rate_limits"`
+	} `json:"payload"`
+}
+
+func (r *codexRolloutRecord) isUserTurn() bool {
+	return (r.Type == "event_msg" && r.Payload.Type == "user_message") ||
+		(r.Type == "response_item" && r.Payload.Type == "message" && r.Payload.Role == "user")
+}
+
+func (r *codexRolloutRecord) isAgentTurn() bool {
+	if r.Type == "event_msg" && r.Payload.Type == "agent_message" {
+		return r.Payload.Message != ""
+	}
+	if r.Type == "event_msg" && r.Payload.Type == "task_complete" {
+		return r.Payload.LastAgentMessage != nil && *r.Payload.LastAgentMessage != ""
+	}
+	if r.Type == "response_item" && r.Payload.Type == "message" && r.Payload.Role == "assistant" {
+		return true
+	}
+	return false
+}
+
+func (r *codexRolloutRecord) codexReset() time.Time {
+	rl := r.Payload.RateLimits
+	if rl == nil || rl.LimitID != "codex" || rl.Primary == nil || rl.Primary.ResetsAt == 0 {
+		return time.Time{}
+	}
+	return time.Unix(rl.Primary.ResetsAt, 0)
+}
+
+func (r *codexRolloutRecord) codexLimitReached() bool {
+	rl := r.Payload.RateLimits
+	if rl == nil {
+		return false
+	}
+	if rl.RateLimitReachedType != nil && *rl.RateLimitReachedType != "" {
+		return true
+	}
+	if rl.LimitID == "codex" && rl.Primary != nil && rl.Primary.UsedPercent >= 100 {
+		return true
+	}
+	return rl.LimitID == "premium" && rl.Credits != nil && !rl.Credits.HasCredits && !rl.Credits.Unlimited
+}
+
 // isRealTurn reports whether the record proves the session resumed past an
 // earlier error: a real-model assistant reply, and only that. The model
 // emitting output is the sole evidence the API served the session again.
@@ -1031,6 +1115,66 @@ func DetectFromTranscript(path string, now time.Time) *Banner {
 		}
 	}
 	return bannerFromErrorText(recordContentText(recs[lastErr].Message.Content), now)
+}
+
+// DetectCodexFromRollout reports a Codex session stalled on a rate-limit turn.
+// Codex records limits as structured token_count events. A real stalled turn is
+// the latest user turn followed by a reached-limit token_count and no later
+// agent_message/task_complete carrying an answer. The reset timestamp may sit
+// on the previous ordinary codex limit record; premium credit exhaustion reuses
+// that reset even though its own record has no primary window.
+func DetectCodexFromRollout(path string, now time.Time) *Banner {
+	if path == "" {
+		return nil
+	}
+	data := readFileTail(path, transcriptTailBytes)
+	if len(data) == 0 {
+		return nil
+	}
+	var lastReset time.Time
+	var candidate *Banner
+	inTurn := false
+	for _, ln := range strings.Split(string(data), "\n") {
+		if ln == "" {
+			continue
+		}
+		var rec codexRolloutRecord
+		if json.Unmarshal([]byte(ln), &rec) != nil {
+			continue
+		}
+		if reset := rec.codexReset(); !reset.IsZero() {
+			lastReset = reset
+		}
+		if rec.isUserTurn() {
+			inTurn = true
+			candidate = nil
+			continue
+		}
+		if !inTurn {
+			continue
+		}
+		if rec.isAgentTurn() {
+			inTurn = false
+			candidate = nil
+			continue
+		}
+		if rec.Type == "event_msg" && rec.Payload.Type == "token_count" && rec.codexLimitReached() {
+			reset := rec.codexReset()
+			if reset.IsZero() {
+				reset = lastReset
+			}
+			text := "Codex usage limit reached"
+			if rec.Payload.RateLimits != nil && rec.Payload.RateLimits.LimitID != "" {
+				text += " (" + rec.Payload.RateLimits.LimitID + ")"
+			}
+			if !reset.IsZero() && !now.Before(reset) {
+				candidate = &Banner{Backoff: transientShortBackoff, Text: text}
+			} else {
+				candidate = &Banner{Reset: reset, Text: text}
+			}
+		}
+	}
+	return candidate
 }
 
 // readFileTail returns the last n bytes of the file (all of it when smaller),
@@ -1274,6 +1418,59 @@ func CodexHasHistory(dir string) bool {
 	return found
 }
 
+// CodexModelFromDir reads the latest model recorded in Codex's rollout for dir.
+func CodexModelFromDir(dir string) string {
+	f := recentCodexRollout(dir)
+	if f == "" {
+		return ""
+	}
+	data, err := os.ReadFile(f)
+	if err != nil {
+		return ""
+	}
+	lines := strings.Split(strings.TrimRight(string(data), "\n"), "\n")
+	for i := len(lines) - 1; i >= 0; i-- {
+		line := lines[i]
+		if !strings.Contains(line, `"turn_context"`) || !strings.Contains(line, `"model"`) {
+			continue
+		}
+		var rec struct {
+			Type    string `json:"type"`
+			Payload struct {
+				Model string `json:"model"`
+			} `json:"payload"`
+		}
+		if json.Unmarshal([]byte(line), &rec) == nil && rec.Type == "turn_context" && rec.Payload.Model != "" {
+			return rec.Payload.Model
+		}
+	}
+	return ""
+}
+
+func recentCodexRollout(dir string) string {
+	root := filepath.Join(codexHome(), "sessions")
+	var best string
+	var bestTime time.Time
+	_ = filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return nil
+		}
+		name := d.Name()
+		if !strings.HasPrefix(name, "rollout-") || !strings.HasSuffix(name, ".jsonl") {
+			return nil
+		}
+		info, err := d.Info()
+		if err != nil || !info.ModTime().After(bestTime) {
+			return nil
+		}
+		if codexRolloutCwd(path) == dir {
+			best, bestTime = path, info.ModTime()
+		}
+		return nil
+	})
+	return best
+}
+
 // codexRolloutCwd extracts the cwd from a rollout's session_meta head line,
 // or "" when the head is unreadable or not a session_meta record.
 func codexRolloutCwd(path string) string {
@@ -1298,6 +1495,70 @@ func codexRolloutCwd(path string) string {
 		return ""
 	}
 	return rec.Payload.Cwd
+}
+
+func agyHome() string {
+	home, _ := os.UserHomeDir()
+	return filepath.Join(home, ".gemini", "antigravity-cli")
+}
+
+// AgyModelFromDir reads the latest selected Antigravity model label for dir.
+func AgyModelFromDir(dir string) string {
+	raw, err := os.ReadFile(filepath.Join(agyHome(), "cache", "last_conversations.json"))
+	if err != nil {
+		return ""
+	}
+	var byDir map[string]string
+	if json.Unmarshal(raw, &byDir) != nil {
+		return ""
+	}
+	conv := byDir[dir]
+	if conv == "" {
+		return ""
+	}
+
+	logs, _ := filepath.Glob(filepath.Join(agyHome(), "log", "cli-*.log"))
+	sort.Slice(logs, func(i, j int) bool {
+		ii, ierr := os.Stat(logs[i])
+		ji, jerr := os.Stat(logs[j])
+		if ierr != nil || jerr != nil {
+			return logs[i] > logs[j]
+		}
+		return ii.ModTime().After(ji.ModTime())
+	})
+
+	labelRE := regexp.MustCompile(`label="([^"]+)"`)
+	for _, path := range logs {
+		if label := agyModelFromLog(path, conv, labelRE); label != "" {
+			return label
+		}
+	}
+	return ""
+}
+
+func agyModelFromLog(path, conv string, labelRE *regexp.Regexp) string {
+	f, err := os.Open(path)
+	if err != nil {
+		return ""
+	}
+	defer f.Close()
+	sc := bufio.NewScanner(f)
+	sc.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+	active := false
+	latest := ""
+	for sc.Scan() {
+		line := sc.Text()
+		if strings.Contains(line, conv) {
+			active = true
+		}
+		if !active || !strings.Contains(line, "Propagating selected model override") {
+			continue
+		}
+		if m := labelRE.FindStringSubmatch(line); len(m) == 2 {
+			latest = m[1]
+		}
+	}
+	return latest
 }
 
 // claudeRoot returns the .claude directory Claude Code actually uses for a
@@ -2100,15 +2361,73 @@ func Tick(cfg Config, state State, errorState ErrorState, managed ManagedState, 
 	}
 
 	for _, p := range panes {
-		// Every detector and keystroke in this loop speaks Claude Code's TUI
-		// (its ⎿/● markers, /compact, /rc, "continue"); typing those into
-		// codex or agy would inject garbage into a live session. Non-claude
-		// panes only get the session-level keep-alive/pin handling above.
 		paneDir := tmux.PaneCurrentPath(p.ID)
-		if ToolName(reg.Tool(filepath.Base(paneDir))) != config.DefaultTool {
+		tool := ToolName(reg.Tool(filepath.Base(paneDir)))
+		if tool == "codex" {
+			b := DetectCodexFromRollout(recentCodexRollout(paneDir), now)
+			if b == nil {
+				if t, ok := state[p.ID]; ok {
+					reason := "banner cleared"
+					if t.Attempts > 0 {
+						reason = "resume succeeded"
+					}
+					slog.Info("drop tracked", "session", t.Session, "reason", reason, "attempts", t.Attempts)
+					delete(state, p.ID)
+				}
+				continue
+			}
+			prev := state[p.ID]
+			if b.Backoff > 0 {
+				b.Backoff = transientBackoff(b.Backoff, prev.Attempts, cfg.MaxWait)
+			}
+			switch Decide(b, prev, now) {
+			case ActWait:
+				hadReset := !prev.Reset.IsZero()
+				prev.LastSeen = now
+				prev.Banner = b.Text
+				prev.Reset = b.Reset
+				if b.Backoff > 0 && !prev.LastActed.IsZero() && (prev.NextAttempt.IsZero() || prev.NextAttempt.Before(now) || hadReset) {
+					prev.NextAttempt = prev.LastActed.Add(b.Backoff + jitter())
+				} else if prev.NextAttempt.IsZero() {
+					prev.NextAttempt = nextAttemptAfter(b, now, cfg)
+				}
+				state[p.ID] = prev
+			case ActResume:
+				slog.Info("resume codex",
+					"session", p.Session, "pane", p.ID,
+					"attempt", prev.Attempts+1, "banner", b.Text)
+				if err := tmux.SendKeys(p.ID, cfg.ResumeText); err != nil {
+					slog.Error("send-keys failed", "session", p.Session, "err", err)
+					continue
+				}
+				t := recordAction(prev, p, b, now, cfg)
+				state[p.ID] = t
+				slog.Info("deferred", "session", p.Session,
+					"next", t.NextAttempt.Format("Mon 15:04 MST"))
+			}
+			continue
+		}
+
+		// Every detector and keystroke below speaks Claude Code's TUI
+		// (its ⎿/● markers, /compact, /rc, "continue"); typing those into
+		// other tools would inject garbage into a live session. Non-claude
+		// panes only get the session-level keep-alive/pin handling above.
+		if tool != config.DefaultTool {
 			continue
 		}
 		content := tmux.CapturePane(p.ID, cfg.Capture)
+
+		if HasTrustPrompt(content) {
+			if autoTrustPath(cfg.BaseDir, paneDir) {
+				slog.Info("accept trust prompt", "session", p.Session, "pane", p.ID, "dir", paneDir)
+				if err := tmux.SendKey(p.ID, "Enter"); err != nil {
+					slog.Error("send Enter failed", "session", p.Session, "err", err)
+				}
+				continue
+			}
+			slog.Warn("trust prompt left for user", "session", p.Session, "pane", p.ID, "dir", paneDir)
+			continue
+		}
 
 		// 1) Dismiss any known Claude interactive picker. Independent of
 		//    banner state; a stuck prompt is itself something to resolve.
@@ -2179,7 +2498,7 @@ func Tick(cfg Config, state State, errorState ErrorState, managed ManagedState, 
 			} else {
 				time.Sleep(cfg.DismissGap)
 				content = tmux.CapturePane(p.ID, cfg.Capture) // re-read post-confirm
-				zone, zoneOk = rcTUIZone(content)              // refresh zone
+				zone, zoneOk = rcTUIZone(content)             // refresh zone
 			}
 		}
 
@@ -2386,12 +2705,15 @@ func Tick(cfg Config, state State, errorState ErrorState, managed ManagedState, 
 		}
 		switch Decide(b, prev, now) {
 		case ActWait:
+			hadReset := !prev.Reset.IsZero()
 			prev.LastSeen = now
 			prev.Banner = b.Text
 			prev.Reset = b.Reset
 			// Seed the scheduled retry on first sight so the wait is visible in
 			// status and survives to fire once the reset passes.
-			if prev.NextAttempt.IsZero() {
+			if b.Backoff > 0 && !prev.LastActed.IsZero() && (prev.NextAttempt.IsZero() || prev.NextAttempt.Before(now) || hadReset) {
+				prev.NextAttempt = prev.LastActed.Add(b.Backoff + jitter())
+			} else if prev.NextAttempt.IsZero() {
 				prev.NextAttempt = nextAttemptAfter(b, now, cfg)
 			}
 			state[p.ID] = prev

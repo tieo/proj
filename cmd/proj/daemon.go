@@ -353,6 +353,7 @@ func runDaemonForeground(cmd *cobra.Command, args []string) error {
 func daemonConfig() daemon.Config {
 	user, _ := config.Load()
 	out := daemon.DefaultConfig()
+	out.BaseDir = user.BaseDir
 	out.Poll = config.Duration(user.Daemon.PollInterval, out.Poll)
 	out.MaxWait = config.Duration(user.Daemon.MaxWait, out.MaxWait)
 	if user.Daemon.ResumeText != "" {

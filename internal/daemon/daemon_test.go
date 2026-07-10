@@ -1289,6 +1289,44 @@ func TestDetectFromTranscript_LimitLast(t *testing.T) {
 	}
 }
 
+func TestHasTrustPrompt(t *testing.T) {
+	content := `
+ Accessing workspace:
+
+ /tmp/claude-1000/-home-user-projects-code-proj/session/scratchpad/agytest
+
+ Quick safety check: Is this a project you created or one you trust?
+
+ ❯ 1. Yes, I trust this folder
+   2. No, exit
+`
+	if !HasTrustPrompt(content) {
+		t.Fatal("workspace trust prompt was not detected")
+	}
+	if HasTrustPrompt("❯ 1. Yes, I trust this folder\nplain prose") {
+		t.Fatal("option text alone must not count")
+	}
+}
+
+func TestAutoTrustPath(t *testing.T) {
+	base := filepath.Join(t.TempDir(), "code")
+	project := filepath.Join(base, "proj")
+	scratch := "/tmp/claude-1000/-home-user-projects-code-proj/session/scratchpad/agytest"
+	otherTmp := "/tmp/other/scratchpad/agytest"
+	if !autoTrustPath(base, project) {
+		t.Fatal("project dir under base must be trusted")
+	}
+	if !autoTrustPath(base, scratch) {
+		t.Fatal("proj scratchpad dir must be trusted")
+	}
+	if autoTrustPath(base, otherTmp) {
+		t.Fatal("unrelated scratchpad dir must be left alone")
+	}
+	if autoTrustPath(base, filepath.Dir(base)) {
+		t.Fatal("parent of base must be left alone")
+	}
+}
+
 func TestRCEnabled(t *testing.T) {
 	on := Config{Tools: map[string]config.ToolSpec{
 		"claude": {Name: "claude", Command: "claude --dangerously-skip-permissions --remote-control --remote-control-session-name-prefix {name} -n {name}"},
