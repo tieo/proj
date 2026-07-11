@@ -15,7 +15,6 @@ import (
 	"io"
 	"log/slog"
 	"math/rand"
-	"net/http"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -390,23 +389,21 @@ var rcPaneFirstSeen = map[string]time.Time{}
 // that bound before it. The watchdog ORs the two.
 var rcEverActive = map[string]bool{}
 
-// rcConnLastGood holds the last successful RCConnections result and when it was
-// fetched. RCConnections returns nil on any transient failure (a 4s timeout, a
-// momentary network blip), and a nil result makes the watchdog fall back to the
-// unreliable chrome marker and nudge - popping the /rc picker over live input on
-// a session that is actually connected. Trusting the last good API snapshot for
-// a short window absorbs those blips: a genuine drop is still recovered once the
-// snapshot ages past rcConnCacheTTL and the chrome fallback takes over. Tick is
-// single-threaded, so no mutex.
+// rcConnLastGood holds the last non-nil RCBridges result and when it was read.
+// RCBridges returns nil only if the sessions directory is momentarily unreadable;
+// a nil result would make the watchdog fall back to the chrome marker and nudge -
+// popping the /rc picker over live input on a session that is actually connected.
+// Trusting the last good snapshot for a short window absorbs those blips: a
+// genuine drop is still recovered once the snapshot ages past rcConnCacheTTL.
+// Tick is single-threaded, so no mutex.
 var (
 	rcConnLastGood   map[string]bool
 	rcConnLastGoodAt time.Time
 )
 
-// rcConnCacheTTL bounds how long a transient RCConnections failure keeps
-// trusting the last good snapshot before the watchdog falls back to the chrome
-// marker. Long enough to ride out a network blip, short enough that a real drop
-// during a sustained API outage still recovers.
+// rcConnCacheTTL bounds how long an unreadable-directory blip keeps trusting the
+// last good bridge snapshot before the watchdog falls back to the chrome marker.
+// Long enough to ride out a blip, short enough that a real drop still recovers.
 const rcConnCacheTTL = 3 * time.Minute
 
 // rcEnabled reports whether the configured claude launch command opts into
@@ -441,9 +438,9 @@ func RCName(session, host string) string {
 // bridgeSessionId: a session_... id while the bridge is bound, null when it is
 // not. This is a local, network-free, non-rotating signal - unlike the sessions
 // API (unreachable from some networks) and the TUI /rc marker (rotates with
-// slash-hints). The title matches RCName, so it keys the same way RCConnections
-// does. A nil map (unreadable dir) tells callers to fall back. Titles are not
-// unique across a session's restarts, so any live bridge under a title wins.
+// slash-hints). The title is keyed by RCName, matching how list and the watchdog
+// look it up. A nil map (unreadable dir) tells callers to fall back. Titles are
+// not unique across a session's restarts, so any live bridge under a title wins.
 func RCBridges(homeOverride string) map[string]bool {
 	dir := filepath.Join(claudeRoot(homeOverride), "sessions")
 	entries, err := os.ReadDir(dir)
@@ -469,91 +466,6 @@ func RCBridges(homeOverride string) map[string]bool {
 		out[s.Name] = out[s.Name] || (s.BridgeSessionID != nil && *s.BridgeSessionID != "")
 	}
 	return out
-}
-
-// RCConnections returns a best-effort map of Remote Control session title to
-// whether its bridge is currently connected, read from the Anthropic sessions
-// API. That API is the authoritative source: the TUI status-line marker is
-// unreliable (it rotates with slash-hints and shows "connecting…"), so reading
-// RC state from the pane gives false "offline" on live, connected sessions.
-// Returns a nil map on any failure (no creds, offline, bad response, non-200)
-// so callers degrade quietly to no RC info rather than wrong info. The error
-// names which of those failures occurred: the watchdog logs it when it falls
-// back to the chrome marker and nudges, so a spurious /rc popup on a live
-// session can be traced to its cause (expired token vs network vs 401) instead
-// of a bare "api_known=false".
-func RCConnections(homeOverride string) (map[string]bool, error) {
-	// Resolve .claude the WSL-aware way: under WSL claude.exe writes creds to the
-	// Windows home, so os.UserHomeDir() (Linux $HOME) points at a .claude that
-	// does not exist - which silently disabled this whole API path, falling back
-	// to the unreliable TUI marker (every session showed "RC offline").
-	credPath := filepath.Join(claudeRoot(homeOverride), ".credentials.json")
-	raw, err := os.ReadFile(credPath)
-	if err != nil {
-		return nil, fmt.Errorf("read creds %s: %w", credPath, err)
-	}
-	var creds struct {
-		ClaudeAiOauth struct {
-			AccessToken string `json:"accessToken"`
-		} `json:"claudeAiOauth"`
-	}
-	if err := json.Unmarshal(raw, &creds); err != nil {
-		return nil, fmt.Errorf("parse creds: %w", err)
-	}
-	if creds.ClaudeAiOauth.AccessToken == "" {
-		return nil, fmt.Errorf("creds have empty accessToken")
-	}
-	req, err := http.NewRequest("GET", "https://api.anthropic.com/v1/sessions?limit=100", nil)
-	if err != nil {
-		return nil, fmt.Errorf("build request: %w", err)
-	}
-	req.Header.Set("Authorization", "Bearer "+creds.ClaudeAiOauth.AccessToken)
-	req.Header.Set("anthropic-version", "2023-06-01")
-	req.Header.Set("anthropic-beta", "ccr-byoc-2025-07-29")
-	resp, err := (&http.Client{Timeout: 10 * time.Second}).Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("GET /v1/sessions: %w", err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("GET /v1/sessions: HTTP %d", resp.StatusCode)
-	}
-	var out struct {
-		Data []rcSession `json:"data"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
-		return nil, fmt.Errorf("decode /v1/sessions: %w", err)
-	}
-	return rcConnected(out.Data), nil
-}
-
-// rcSession is one entry of the /v1/sessions payload.
-type rcSession struct {
-	Title            string `json:"title"`
-	ConnectionStatus string `json:"connection_status"`
-}
-
-// rcConnected folds sessions into title -> bridge connected. Titles are not
-// unique: the API retains sessions from every earlier run of a project, all
-// sharing the title proj derives from name, host and tags. A title therefore
-// counts as connected when any session under it holds a live bridge, so a
-// stale disconnected entry cannot mask the running session.
-func rcConnected(sessions []rcSession) map[string]bool {
-	m := make(map[string]bool, len(sessions))
-	for _, s := range sessions {
-		m[s.Title] = m[s.Title] || s.ConnectionStatus == "connected"
-	}
-	return m
-}
-
-// rcErrString renders an RCConnections error for a log attr, empty when the
-// call succeeded (so a nudge that fired because the API genuinely reported the
-// session disconnected logs api_err="" rather than "<nil>").
-func rcErrString(err error) string {
-	if err == nil {
-		return ""
-	}
-	return err.Error()
 }
 
 // sp matches any mix of regular spaces and the non-breaking spaces (U+00A0)
@@ -2435,7 +2347,6 @@ func Tick(cfg Config, state State, errorState ErrorState, managed ManagedState, 
 	// only if the directory is unreadable, in which case the watchdog falls back
 	// to the chrome-marker rules below and holds off (never nudges on unknown).
 	rcConn := RCBridges(cfg.ClaudeHome)
-	var rcErr error
 	rcHost, _ := os.Hostname()
 	// Keep the last good snapshot so an unreadable-dir blip doesn't flip a live
 	// session to "unknown" for one tick. rcConnStale marks a cached snapshot.
@@ -2643,9 +2554,8 @@ func Tick(cfg Config, state State, errorState ErrorState, managed ManagedState, 
 					"session", p.Session, "pane", p.ID,
 					"reason", map[bool]string{true: "failed", false: "drop"}[failed],
 					"ever_active", everActive,
-					"api_known", rcConn != nil,
-					"api_stale", rcConnStale,
-					"api_err", rcErrString(rcErr),
+					"bridge_known", rcConn != nil,
+					"bridge_stale", rcConnStale,
 					"status_line", strconv.Quote(statusLine),
 					"zone", strconv.Quote(zone))
 				if err := tmux.SendKeys(p.ID, "/rc"); err != nil {

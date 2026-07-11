@@ -215,8 +215,15 @@ func TestRCBridges(t *testing.T) {
 	}
 	write("1", "proj @lwenb4004 [go,tools]", `"session_abc"`)
 	write("2", "devtools @lwenb4004 [vscode]", `null`)
+	// A restarted session leaves two files under one title (old pid null, new pid
+	// bound); any live bridge under the title wins.
+	write("3", "notes @lwenb4004 [nix]", `null`)
+	write("4", "notes @lwenb4004 [nix]", `"session_def"`)
 
 	m := RCBridges(home)
+	if !m["notes @lwenb4004 [nix]"] {
+		t.Error("any live bridge under a title must win over a null sibling")
+	}
 	if m == nil {
 		t.Fatal("RCBridges returned nil for a readable dir")
 	}
@@ -234,7 +241,6 @@ func TestRCBridges(t *testing.T) {
 		t.Error("an unreadable dir must return nil so callers fall back")
 	}
 }
-
 
 // rcConnectedZone is a bottom-chrome capture (escapes preserved) of a session
 // with Remote Control bound: "/rc" is an OSC 8 hyperlink to its claude.ai/code
@@ -1410,31 +1416,5 @@ func TestRCEnabled(t *testing.T) {
 	}}
 	if rcEnabled(off) {
 		t.Error("rcEnabled should be false without --remote-control")
-	}
-}
-
-func TestRCConnectedAnyLiveBridgeWins(t *testing.T) {
-	// The API returns every past session under the same derived title. Order is
-	// not guaranteed to put the running one last.
-	sessions := []rcSession{
-		{Title: "proj @host [go]", ConnectionStatus: "connected"},
-		{Title: "proj @host [go]", ConnectionStatus: "disconnected"},
-		{Title: "notes @host [nix]", ConnectionStatus: "disconnected"},
-		{Title: "docs @host [python]", ConnectionStatus: "disconnected"},
-		{Title: "docs @host [python]", ConnectionStatus: "connected"},
-	}
-	got := rcConnected(sessions)
-	want := map[string]bool{
-		"proj @host [go]":     true,
-		"notes @host [nix]":   false,
-		"docs @host [python]": true,
-	}
-	if len(got) != len(want) {
-		t.Fatalf("rcConnected returned %d titles, want %d: %v", len(got), len(want), got)
-	}
-	for title, wantConn := range want {
-		if got[title] != wantConn {
-			t.Errorf("rcConnected[%q] = %v, want %v", title, got[title], wantConn)
-		}
 	}
 }
