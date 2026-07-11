@@ -2501,24 +2501,15 @@ func Tick(cfg Config, state State, errorState ErrorState, managed ManagedState, 
 
 		// 1b) Remote-Control watchdog. Claude Code's RC has no auto-reconnect:
 		//     after a >10min network gap or a stale poll, the binding drops and
-		//     the session disappears from claude.ai/code, even though the
-		//     process is alive. The only recovery is the /rc slash command. If
-		//     this is a live claude pane (input box present) whose RC marker is
-		//     gone, re-send /rc. Cooldown-gated so a session that can't bind
-		//     isn't hammered. Only acts when the launch command opted into RC.
-		//     RC state is checked against the two-line TUI chrome zone (rcTUIZone):
-		//     the ⏵⏵ status line and the session-context line above it. Both are
-		//     below the conversation separator and are never user input or prose.
-		//     This catches the intermediate connecting state (/rc active on the
-		//     context line) that appears during --remote-control auto-bind, and
-		//     Remote Control active on the status line when fully bound. rcFailedRE
-		//     is checked against the status line only (failure is always on ⏵⏵).
-		//     rcPickerRE guards against re-sending /rc while the binding dialog is
-		//     already open (the 1b-pre block above is handling it with Enter).
-		//     rcStartupGrace holds off on freshly-seen panes: --remote-control
-		//     auto-binds RC during startup; the binding completes a few seconds
-		//     after the input box appears, so the first tick after Claude is ready
-		//     must not fire /rc into an already-binding session.
+		//     the session disappears from claude.ai/code, even though the process
+		//     is alive. This block DETECTS a drop and logs it; it deliberately does
+		//     not keystroke a recovery (see the detection-only note below - the /rc
+		//     keystroke submits as a chat message in current Claude builds). The
+		//     drop is confirmed from RCBridges (bridgeSessionId null) or an explicit
+		//     "/rc failed" on the status line; rcStartupGrace holds off on
+		//     freshly-seen panes so a session mid auto-bind is not flagged, and the
+		//     guards below skip a pane that is not a live claude input or already
+		//     has the RC picker open.
 		if rcEnabled(cfg) && zoneOk &&
 			!rcActiveRE.MatchString(zone) && !HasSelector(content) &&
 			!rcPickerRE.MatchString(rcChromeTail(content)) {
@@ -2550,7 +2541,15 @@ func Tick(cfg Config, state State, errorState ErrorState, managed ManagedState, 
 			bridgeDropped := rcConn != nil && !rcConn[RCName(p.Session, rcHost)]
 			trigger := failed || (bridgeDropped && now.Sub(rcNudgedAt[p.ID]) >= rcNudgeCooldown)
 			if pastGrace && trigger {
-				slog.Info("remote-control inactive, re-binding",
+				// Detection only - the daemon does NOT keystroke /rc. In Claude Code
+				// 2.1.206+ typing "/rc"+Enter no longer runs the slash command: the
+				// autocomplete expands it to "/remote-control" and Enter submits that
+				// as a chat message. Auto-nudging therefore spammed live sessions with
+				// "/remote-control" turns and, by disrupting them, dropped their RC
+				// further - a rebind death-spiral. Surface the drop (rate-limited by
+				// rcNudgedAt); the user rebinds with /rc manually until a reliable
+				// programmatic invocation exists.
+				slog.Info("remote-control dropped (auto-rebind disabled; rebind with /rc)",
 					"session", p.Session, "pane", p.ID,
 					"reason", map[bool]string{true: "failed", false: "drop"}[failed],
 					"ever_active", everActive,
@@ -2558,9 +2557,6 @@ func Tick(cfg Config, state State, errorState ErrorState, managed ManagedState, 
 					"bridge_stale", rcConnStale,
 					"status_line", strconv.Quote(statusLine),
 					"zone", strconv.Quote(zone))
-				if err := tmux.SendKeys(p.ID, "/rc"); err != nil {
-					slog.Error("send /rc failed", "session", p.Session, "err", err)
-				}
 				rcNudgedAt[p.ID] = now
 			}
 		}
