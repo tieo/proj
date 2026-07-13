@@ -2163,11 +2163,17 @@ func transientBackoff(base time.Duration, attempts int, max time.Duration) time.
 	return d
 }
 
-// nextAttemptAfter computes when the next retry should fire if this one
-// fails. Trust the banner's time: explicit dates are used as-is; clock-only
-// banners are advanced to the next future occurrence of that clock. If the
-// banner had no parseable time at all, fall back to a fixed retry after
-// MaxWait.
+// resetPassedRetry is the retry delay when a usage-limit reset time has already
+// elapsed. A reset in the past means the limit has lifted, so a resume that
+// still fails is a transient hiccup (server-side reset lag), retried soon -
+// rather than rolling a clock-only reset a full day forward to its next daily
+// occurrence and leaving the session stuck for ~24h.
+const resetPassedRetry = 5 * time.Minute
+
+// nextAttemptAfter computes when the next retry should fire if this one fails.
+// A transient backoff schedules a short retry; an unparseable reset falls back
+// to MaxWait. A reset still ahead is waited for as-is (trusting the parsed time,
+// no cap). A reset already elapsed retries after resetPassedRetry.
 func nextAttemptAfter(b *Banner, now time.Time, cfg Config) time.Time {
 	if b.Backoff > 0 {
 		return now.Add(b.Backoff + jitter())
@@ -2175,11 +2181,10 @@ func nextAttemptAfter(b *Banner, now time.Time, cfg Config) time.Time {
 	if b.Reset.IsZero() {
 		return now.Add(cfg.MaxWait + jitter())
 	}
-	next := b.Reset
-	for !next.After(now) {
-		next = next.AddDate(0, 0, 1)
+	if b.Reset.After(now) {
+		return b.Reset.Add(jitter())
 	}
-	return next.Add(jitter())
+	return now.Add(resetPassedRetry + jitter())
 }
 
 // jitter returns a random delay in [0, jitterMax). The reset minute is

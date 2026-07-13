@@ -431,20 +431,19 @@ func TestDecide_RetriesOnceScheduledTimeArrives(t *testing.T) {
 
 // ---------- nextAttemptAfter ----------
 
-func TestNextAttemptAfter_UsesParsedFutureOccurrence(t *testing.T) {
+func TestNextAttemptAfter_PastResetRetriesSoon(t *testing.T) {
 	berlin := mustLoad(t, "Europe/Berlin")
 	now := time.Date(2026, 5, 21, 11, 0, 0, 0, berlin)
-	// Banner says "3am"; nearest-to-now is today's 3am which is in the past.
-	// nextAttemptAfter must advance to tomorrow's 3am, plus a random offset
-	// derived from the wait so deferred clients don't stack on the reset
-	// minute. The jitter ceiling is wait/jitterFraction, capped at jitterMax.
+	// "3am" resolves to today's 3am, already 8h past - the limit has lifted. A
+	// failed resume must retry after a short delay, not roll to tomorrow's 3am
+	// (which would strand the session for ~24h). Also covers the boundary case
+	// of acting seconds after the reset minute.
 	reset := time.Date(2026, 5, 21, 3, 0, 0, 0, berlin)
 	cfg := Config{MaxWait: 24 * time.Hour}
-	wantBase := time.Date(2026, 5, 22, 3, 0, 0, 0, berlin)
+	wantBase := now.Add(resetPassedRetry)
 	got := nextAttemptAfter(&Banner{Reset: reset}, now, cfg)
-	maxJ := jitterMax
-	if got.Before(wantBase) || got.After(wantBase.Add(maxJ)) {
-		t.Errorf("got %v, want in [%v, %v]", got, wantBase, wantBase.Add(maxJ))
+	if got.Before(wantBase) || got.After(wantBase.Add(jitterMax)) {
+		t.Errorf("got %v, want in [%v, %v] (short retry after a passed reset)", got, wantBase, wantBase.Add(jitterMax))
 	}
 }
 
