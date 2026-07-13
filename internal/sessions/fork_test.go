@@ -134,6 +134,44 @@ func TestFork(t *testing.T) {
 	}
 }
 
+func TestForkDropsBridgeRecords(t *testing.T) {
+	base := t.TempDir()
+	home := filepath.Join(base, ".claude")
+	oldCwd := `C:\Users\u\scratch`
+	newCwd := `C:\Users\u\projects\sorden`
+
+	srcDir := filepath.Join(home, "projects", EncodeCwd(oldCwd))
+	if err := os.MkdirAll(srcDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	bridge := `{"type":"bridge-session","sessionId":"abc123","bridgeSessionId":"cse_01QeKDQ","lastSequenceNum":8140}`
+	body := forkTranscript(`C:\\Users\\u\\scratch`, "abc123")
+	body = bridge + "\n" + body + bridge + "\n"
+	src := filepath.Join(srcDir, "abc123.jsonl")
+	if err := os.WriteFile(src, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(base, ".claude.json"), []byte(`{"projects":{}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	newID, _, err := ForkRange(home, Session{ID: "abc123", Cwd: oldCwd, Path: src}, newCwd, 0, len(body), 0)
+	if err != nil {
+		t.Fatalf("ForkRange: %v", err)
+	}
+	data, err := os.ReadFile(filepath.Join(home, "projects", EncodeCwd(newCwd), newID+".jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := string(data)
+	if strings.Contains(got, "bridge-session") || strings.Contains(got, "cse_01QeKDQ") {
+		t.Error("forked transcript still binds the copy to the source's claude.ai conversation")
+	}
+	if !strings.Contains(got, "reply-three") {
+		t.Error("dropping bridge records must not drop conversation turns")
+	}
+}
+
 func TestForkRange_MidStart(t *testing.T) {
 	base := t.TempDir()
 	home := filepath.Join(base, ".claude")

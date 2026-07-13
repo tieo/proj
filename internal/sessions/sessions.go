@@ -494,6 +494,27 @@ func ForkRange(home string, sess Session, targetCwd string, keepFrom, keepTo, he
 	return transplant(home, sess, targetCwd, body, false)
 }
 
+// stripBridgeRecords drops the transcript's remote-control checkpoints:
+// {"type":"bridge-session","bridgeSessionId":"cse_...","lastSequenceNum":N}.
+// They name the claude.ai conversation the source session is bound to. Copied
+// into a new transcript they bind the copy to that same conversation, so two
+// local sessions post into one web session and overwrite each other. A copy
+// starts unbound and gets its own conversation on the next /rc.
+func stripBridgeRecords(data []byte) []byte {
+	lines := bytes.Split(data, []byte("\n"))
+	kept := lines[:0]
+	for _, line := range lines {
+		var rec struct {
+			Type string `json:"type"`
+		}
+		if json.Unmarshal(line, &rec) == nil && rec.Type == "bridge-session" {
+			continue
+		}
+		kept = append(kept, line)
+	}
+	return bytes.Join(kept, []byte("\n"))
+}
+
 // transplant writes data (a full or truncated transcript of sess) as a new
 // session under targetCwd, rewriting the embedded cwd, session id, sidecars,
 // memory, and continue pointer. With move set it deletes the source once the
@@ -513,6 +534,7 @@ func transplant(home string, sess Session, targetCwd string, data []byte, move b
 		// Encoded names are [A-Za-z0-9-] only, so a plain byte replace is safe.
 		data = bytes.ReplaceAll(data, []byte(EncodeCwd(sess.Cwd)), []byte(EncodeCwd(targetCwd)))
 	}
+	data = stripBridgeRecords(data)
 	newID = NewSessionID()
 	// Replace every occurrence of the id, not just the "sessionId" key: the
 	// transcript also embeds it in sidecar paths (.claude/tasks/<id>/...) and
