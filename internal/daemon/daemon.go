@@ -357,6 +357,49 @@ func rcChromeTail(content string) string {
 	return strings.Join(lines, "\n")
 }
 
+// dimSpanRE matches a Claude ghost span: SGR-dim (ESC[2m) text up to its reset
+// (ESC[22m or ESC[0m). Placeholder suggestions and other hints render dim; a
+// real user draft is normal-weight, so removing dim spans leaves only a draft.
+var dimSpanRE = regexp.MustCompile(`\x1b\[2m.*?(?:\x1b\[22m|\x1b\[0m)`)
+
+// sgrRE matches any SGR (color/style) escape sequence.
+var sgrRE = regexp.MustCompile(`\x1b\[[0-9;]*m`)
+
+// osc8RE matches an OSC 8 hyperlink introducer or terminator (ESC]8;...ST).
+var osc8RE = regexp.MustCompile(`\x1b\]8;[^\x1b]*\x1b\\`)
+
+// composerHasDraft reports whether Claude's input composer holds a real user
+// draft (normal-weight text the user typed and has not sent), as opposed to
+// being empty or showing only a dim ghost placeholder. It reads an
+// escape-preserving capture (CapturePaneEsc): ghost text is SGR-dim, a draft is
+// not. Typing into a draft would corrupt it and submit garbage, so the RC
+// rebind fires only when this is false. Conservative: an input line it cannot
+// read, or an open picker, reports true so the daemon skips rather than
+// keystroke into a live session.
+func composerHasDraft(escContent string) bool {
+	lines := strings.Split(escContent, "\n")
+	for i := len(lines) - 1; i >= 0; i-- {
+		plain := sgrRE.ReplaceAllString(lines[i], "")
+		if !strings.ContainsRune(plain, '❯') {
+			continue
+		}
+		if pickerOptionRE.MatchString(plain) {
+			return true // a numbered picker is open; do not type
+		}
+		s := dimSpanRE.ReplaceAllString(lines[i], "") // drop ghost placeholders
+		s = osc8RE.ReplaceAllString(s, "")
+		s = sgrRE.ReplaceAllString(s, "")
+		if idx := strings.IndexRune(s, '❯'); idx >= 0 {
+			s = s[idx+len("❯"):]
+		}
+		s = strings.TrimFunc(s, func(r rune) bool {
+			return r == ' ' || r == ' ' || r == '\t'
+		})
+		return s != ""
+	}
+	return true // no input line found: treat as unsafe
+}
+
 // rcNudgeCooldown bounds how often the watchdog re-sends /rc to one pane, so a
 // session that genuinely can't bind (or one mid-restart) isn't spammed.
 const rcNudgeCooldown = 5 * time.Minute
@@ -373,6 +416,18 @@ const rcStartupGrace = 2 * time.Minute
 // rcNudgedAt tracks the last /rc nudge per pane id. Tick runs single-threaded
 // from Run, so no mutex is needed. Pruned alongside dead panes each tick.
 var rcNudgedAt = map[string]time.Time{}
+
+// rcRebindTries counts consecutive auto-rebind attempts per pane that have not
+// yet restored the bridge. It bounds the recovery: after maxRebindTries the
+// daemon stops keystroking and leaves the drop for a manual /rc, so a session
+// whose /rc does not take (e.g. a Claude build where the keystroke submits as a
+// chat message) cannot be driven into a rebind death-spiral. Reset to zero the
+// moment the bridge is seen bound again, so a later drop gets a fresh budget.
+var rcRebindTries = map[string]int{}
+
+// maxRebindTries caps auto-rebind attempts before the daemon gives up and waits
+// for a manual /rc.
+const maxRebindTries = 3
 
 // rcPaneFirstSeen tracks when each pane was first observed by the watchdog.
 // Used to enforce rcStartupGrace. Pruned alongside dead panes each tick.
@@ -2332,6 +2387,11 @@ func Tick(cfg Config, state State, errorState ErrorState, managed ManagedState, 
 			delete(rcNudgedAt, id)
 		}
 	}
+	for id := range rcRebindTries {
+		if _, ok := live[id]; !ok {
+			delete(rcRebindTries, id)
+		}
+	}
 	for id := range rcPaneFirstSeen {
 		if _, ok := live[id]; !ok {
 			delete(rcPaneFirstSeen, id)
@@ -2470,6 +2530,7 @@ func Tick(cfg Config, state State, errorState ErrorState, managed ManagedState, 
 		// would be treated as never-bound forever and never recovered.
 		if zoneOk && rcActiveRE.MatchString(zone) {
 			rcEverActive[p.ID] = true
+			delete(rcRebindTries, p.ID) // bound again: reset the rebind budget
 			if ms, ok := managed[p.Session]; ok && !ms.RCEverActive {
 				ms.RCEverActive = true
 				managed[p.Session] = ms
@@ -2546,23 +2607,55 @@ func Tick(cfg Config, state State, errorState ErrorState, managed ManagedState, 
 			bridgeDropped := rcConn != nil && !rcConn[RCName(p.Session, rcHost)]
 			trigger := failed || (bridgeDropped && now.Sub(rcNudgedAt[p.ID]) >= rcNudgeCooldown)
 			if pastGrace && trigger {
-				// Detection only - the daemon does NOT keystroke /rc. In Claude Code
-				// 2.1.206+ typing "/rc"+Enter no longer runs the slash command: the
-				// autocomplete expands it to "/remote-control" and Enter submits that
-				// as a chat message. Auto-nudging therefore spammed live sessions with
-				// "/remote-control" turns and, by disrupting them, dropped their RC
-				// further - a rebind death-spiral. Surface the drop (rate-limited by
-				// rcNudgedAt); the user rebinds with /rc manually until a reliable
-				// programmatic invocation exists.
-				slog.Info("remote-control dropped (auto-rebind disabled; rebind with /rc)",
+				// Re-bind the dropped RC by running /rc, but only into a safe
+				// composer and only for a bounded number of tries. The recovery
+				// keystroke is what the old detection-only mode gave up on after it
+				// caused a death-spiral: typing "/rc"+Enter as one burst let the
+				// autocomplete expand to "/remote-control" and Enter submit it as a
+				// chat message. Three guards make it safe now:
+				//   1. Never type into a real draft. composerHasDraft reads a colour
+				//      capture: a ghost placeholder is SGR-dim, a draft is not.
+				//      Typing "/rc" onto a draft would send "<draft>/rc" as a message.
+				//   2. Type "/rc" and Enter as SEPARATE keystrokes with a settle gap,
+				//      so the slash command runs instead of being merged with the
+				//      autocomplete expansion.
+				//   3. Bound the attempts (maxRebindTries): if the bridge does not
+				//      come back, stop and log for a manual /rc, so a Claude build
+				//      where the keystroke cannot rebind cannot spiral. The counter
+				//      resets to zero the moment RC is seen bound again.
+				logArgs := []any{
 					"session", p.Session, "pane", p.ID,
 					"reason", map[bool]string{true: "failed", false: "drop"}[failed],
 					"ever_active", everActive,
 					"bridge_known", rcConn != nil,
 					"bridge_stale", rcConnStale,
+					"tries", rcRebindTries[p.ID],
 					"status_line", strconv.Quote(statusLine),
-					"zone", strconv.Quote(zone))
-				rcNudgedAt[p.ID] = now
+				}
+				switch {
+				case rcRebindTries[p.ID] >= maxRebindTries:
+					slog.Warn("remote-control dropped; auto-rebind gave up, rebind with /rc", logArgs...)
+					rcNudgedAt[p.ID] = now
+				case composerHasDraft(tmux.CapturePaneEsc(p.ID)):
+					slog.Info("remote-control dropped; composer busy, leaving for manual /rc", logArgs...)
+					rcNudgedAt[p.ID] = now
+				default:
+					// Type "/rc" and Enter as separate keystrokes with a settle gap
+					// between, so the slash command runs rather than merging with the
+					// autocomplete expansion. No leading Escape: at a live input box
+					// (zoneOk) Claude may be mid-generation, and Escape would interrupt
+					// the turn.
+					slog.Info("remote-control dropped; rebinding with /rc", logArgs...)
+					if err := tmux.SendLiteral(p.ID, "/rc"); err != nil {
+						slog.Error("send /rc failed", "session", p.Session, "err", err)
+					}
+					time.Sleep(cfg.DismissGap)
+					if err := tmux.SendKey(p.ID, "Enter"); err != nil {
+						slog.Error("send Enter failed", "session", p.Session, "err", err)
+					}
+					rcRebindTries[p.ID]++
+					rcNudgedAt[p.ID] = now
+				}
 			}
 		}
 

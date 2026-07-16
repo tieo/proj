@@ -1417,3 +1417,34 @@ func TestRCEnabled(t *testing.T) {
 		t.Error("rcEnabled should be false without --remote-control")
 	}
 }
+
+func TestComposerHasDraft(t *testing.T) {
+	const esc = "\x1b" // for readability in cases
+	cases := []struct {
+		name string
+		line string
+		want bool
+	}{
+		// tv@nix: prompt then nothing.
+		{"empty", esc + "[39m❯  ", false},
+		// Arbay@Kotlin: dim ghost placeholder after the prompt.
+		{"ghost dim", esc + "[39m❯ " + esc + "[2mphone's on VPN now, install it" + esc + "[0m", false},
+		// A real draft: normal-weight text the user typed.
+		{"real draft", esc + "[39m❯ restart the deploy now", true},
+		// Numbered picker open: never type.
+		{"picker", "❯ 1. Yes, continue", true},
+		// Ghost reset with [22m instead of [0m.
+		{"ghost 22m", "❯ " + esc + "[2mWrite tests for @filename" + esc + "[22m", false},
+	}
+	for _, c := range cases {
+		// Embed the input line in a realistic multi-line chrome tail.
+		content := "some earlier output\n" + c.line + "\n" + esc + "[2m  ⏵⏵ bypass permissions on" + esc + "[0m"
+		if got := composerHasDraft(content); got != c.want {
+			t.Errorf("%s: composerHasDraft = %v, want %v", c.name, got, c.want)
+		}
+	}
+	// No input line at all: unsafe (true).
+	if !composerHasDraft("no prompt here\njust prose") {
+		t.Error("missing input line should report busy")
+	}
+}
