@@ -2572,15 +2572,19 @@ func Tick(cfg Config, state State, errorState ErrorState, managed ManagedState, 
 		// 1b) Remote-Control watchdog. Claude Code's RC has no auto-reconnect:
 		//     after a >10min network gap or a stale poll, the binding drops and
 		//     the session disappears from claude.ai/code, even though the process
-		//     is alive. This block DETECTS a drop and logs it; it deliberately does
-		//     not keystroke a recovery (see the detection-only note below - the /rc
-		//     keystroke submits as a chat message in current Claude builds). The
-		//     drop is confirmed from RCBridges (bridgeSessionId null) or an explicit
-		//     "/rc failed" on the status line; rcStartupGrace holds off on
-		//     freshly-seen panes so a session mid auto-bind is not flagged, and the
-		//     guards below skip a pane that is not a live claude input or already
-		//     has the RC picker open.
-		if rcEnabled(cfg) && zoneOk &&
+		//     is alive. This block confirms a drop and rebinds it with /rc (the
+		//     keystroke and its safety are handled in the switch below).
+		//     The drop is confirmed from RCBridges (bridgeSessionId null) or an
+		//     explicit "/rc failed"; rcStartupGrace holds off on freshly-seen panes
+		//     so a session mid auto-bind is not flagged.
+		//     No zoneOk (status-line) requirement: RCBridges is the authoritative
+		//     drop signal, and a near-context-full session hides the ⏵⏵ status line
+		//     behind a "/clear to save" hint, which used to make the watchdog skip
+		//     it. The real "safe to type" gate is composerHasDraft in the switch,
+		//     which needs the ❯ input line present and empty (or a dim ghost). When
+		//     the status line IS visible and shows RC active, rcActiveRE skips it;
+		//     when it is absent, zone is "" and that check passes harmlessly.
+		if rcEnabled(cfg) &&
 			!rcActiveRE.MatchString(zone) && !HasSelector(content) &&
 			!rcPickerRE.MatchString(rcChromeTail(content)) {
 			statusLine, _ := rcStatusLine(content)
