@@ -55,19 +55,23 @@ func runGC(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
+	// A session is dead when its bridge is down (disconnected) or it has been
+	// retired (archived - a stale "connected" flag often lingers on these, so
+	// filtering on connection_status alone misses them). Live sessions are
+	// connected and running or idle; those are never touched.
 	var dead []claudeapi.Session
 	for _, s := range sessions {
-		if s.ConnectionStatus == "disconnected" {
+		if s.ConnectionStatus == "disconnected" || s.SessionStatus == "archived" {
 			dead = append(dead, s)
 		}
 	}
 	if len(dead) == 0 {
-		fmt.Println("no disconnected Remote Control sessions")
+		fmt.Println("no disconnected or archived Remote Control sessions")
 		return nil
 	}
 
 	if gcDryRun {
-		fmt.Printf("would delete %d disconnected session(s):\n", len(dead))
+		fmt.Printf("would delete %d dead session(s):\n", len(dead))
 		printByHost(dead)
 		if tooMany {
 			fmt.Println("note: the account has 100+ sessions; only the first page was read")
@@ -84,7 +88,7 @@ func runGC(cmd *cobra.Command, args []string) error {
 		}
 		deleted++
 	}
-	fmt.Printf("deleted %d disconnected session(s)", deleted)
+	fmt.Printf("deleted %d dead session(s)", deleted)
 	if failed > 0 {
 		fmt.Printf(", %d failed", failed)
 	}
