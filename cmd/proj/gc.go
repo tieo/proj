@@ -12,36 +12,29 @@ import (
 	"github.com/tieo/proj/internal/daemon"
 )
 
-var (
-	gcRemote bool
-	gcDryRun bool
-)
+var gcDryRun bool
 
 var gcCmd = &cobra.Command{
 	Use:   "gc",
-	Short: "garbage-collect stale state",
-	Long: `Garbage-collect stale state.
+	Short: "purge dead Remote Control sessions from the Claude account",
+	Long: `Purge dead Remote Control sessions from the Claude account (claude.ai/code).
 
---remote purges disconnected Remote Control sessions from the Claude account
-(claude.ai/code). Only the cloud entry is deleted; Claude Code's local
-transcripts under ~/.claude are never touched. A disconnected session is a dead
-bridge - its local process has exited or its RC dropped - so the entry only
-clutters the account and the phone app. --dry-run lists what would go without
+A session is dead when its bridge is down (disconnected) or it has been archived
+- test runs, exited processes and retired sessions that only clutter the account
+and the phone app. Only the cloud entry is deleted; Claude Code's local
+transcripts under ~/.claude are never touched, and a live session (connected and
+running or idle) is never removed. --dry-run lists what would go without
 deleting.`,
 	Args: cobra.NoArgs,
 	RunE: runGC,
 }
 
 func init() {
-	gcCmd.Flags().BoolVar(&gcRemote, "remote", false, "purge disconnected Remote Control sessions from the Claude account")
 	gcCmd.Flags().BoolVar(&gcDryRun, "dry-run", false, "list what would be deleted without deleting")
 	rootCmd.AddCommand(gcCmd)
 }
 
 func runGC(cmd *cobra.Command, args []string) error {
-	if !gcRemote {
-		return fmt.Errorf("nothing to do; the only mode is --remote (purge disconnected Claude Remote Control sessions)")
-	}
 	cfg, err := config.Load()
 	if err != nil {
 		return err
