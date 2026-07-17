@@ -1640,6 +1640,10 @@ func claudeRoot(homeOverride string) string {
 	return filepath.Join(home, ".claude")
 }
 
+// ClaudeRoot exposes claudeRoot for commands outside the daemon (e.g. the
+// gc command reading the oauth token from <root>/.credentials.json).
+func ClaudeRoot(homeOverride string) string { return claudeRoot(homeOverride) }
+
 // locateProjectDir returns the existing Claude Code project directory for
 // workDir under root, or "" if none exists. On bare Linux the directory name is
 // a direct encoding of workDir. Under WSL, claude.exe keys history on the
