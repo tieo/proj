@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"strconv"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -51,12 +52,7 @@ func runOverseer(cmd *cobra.Command, args []string) error {
 	}
 	ov := &cfg.Daemon.Overseer
 	if len(args) == 0 {
-		state := "off"
-		if ov.Enabled {
-			state = "on"
-		}
-		fmt.Printf("overseer: %s  (model=%s interval=%s max_nudges=%d max_tokens=%d)\n",
-			state, ov.Model, ov.Interval, ov.MaxNudges, ov.MaxTokens)
+		printOverseerReport(cfg)
 		return nil
 	}
 	switch args[0] {
@@ -102,13 +98,8 @@ func runOverseerRun(cmd *cobra.Command, args []string) error {
 	}
 
 	u := res.Usage
-	// Effective tokens against the plan: fresh input + output at full weight,
-	// cache reads at 0.1x, cache writes at ~1.25x. The prefix (Claude Code system
-	// + CLAUDE.md) is warm when cache_read is high; cache_create is dominated by
-	// the fresh snapshot, which caching cannot avoid.
-	eff := u.Input + u.Output + u.CacheRead/10 + u.CacheCreate*5/4
 	fmt.Printf("usage: judged=%d input=%d output=%d cache_read=%d cache_create=%d  ~effective=%d\n",
-		len(res.Sessions), u.Input, u.Output, u.CacheRead, u.CacheCreate, eff)
+		len(res.Sessions), u.Input, u.Output, u.CacheRead, u.CacheCreate, overseer.Effective(u))
 	if u.CacheRead < 15000 {
 		fmt.Printf("note: cache_read=%d low — the system/CLAUDE.md prefix did not cache (cold or evicted this look)\n", u.CacheRead)
 	}
@@ -117,4 +108,101 @@ func runOverseerRun(cmd *cobra.Command, args []string) error {
 		fmt.Printf("warning: could not log usage: %v\n", err)
 	}
 	return nil
+}
+
+// printOverseerReport is the no-argument `proj daemon overseer` view: the
+// enabled state and settings, then what the overseer has actually done -
+// its last look, today's token spend against the budget, the warmth of the
+// last call's cache, per-session nudge memory, and a tail of recent looks.
+func printOverseerReport(cfg config.Config) {
+	ov := cfg.Daemon.Overseer
+	state := "off"
+	if ov.Enabled {
+		state = "on"
+	}
+	fmt.Printf("overseer: %s   model=%s interval=%s max_nudges=%d max_tokens=%d ntfy=%s\n",
+		state, ov.Model, ov.Interval, ov.MaxNudges, ov.MaxTokens, orNone(ov.NtfyTopic))
+
+	recs := overseer.ReadUsageLog()
+	lastLook, sessions := overseer.ReadLookState()
+	if len(recs) == 0 && lastLook.IsZero() {
+		fmt.Println("  no looks recorded yet — run one with `proj daemon overseer run`")
+		return
+	}
+	now := time.Now()
+
+	if !lastLook.IsZero() {
+		fmt.Printf("  last look:  %s (%s ago)\n", lastLook.Format("Mon 15:04:05"), formatAgo(now.Sub(lastLook)))
+	}
+	looks, eff := overseer.TodayUsage(recs, now)
+	pct := 0
+	if overseer.DayBudget > 0 {
+		pct = eff * 100 / overseer.DayBudget
+	}
+	fmt.Printf("  today:      %d looks · ~%s effective / %s budget (%d%%)\n",
+		looks, formatK(eff), formatK(overseer.DayBudget), pct)
+
+	if n := len(recs); n > 0 {
+		last := recs[n-1]
+		warm := "cold — prefix not cached"
+		if last.CacheRead >= 15000 {
+			warm = "warm"
+		}
+		fmt.Printf("  last usage: judged=%d in=%d out=%d cache_read=%s cache_create=%s ~eff=%s (%s)\n",
+			last.Judged, last.Input, last.Output,
+			formatK(last.CacheRead), formatK(last.CacheCreate), formatK(last.Effective()), warm)
+	}
+
+	if len(sessions) > 0 {
+		pending := 0
+		for _, s := range sessions {
+			if s.Nudges > 0 || s.Notified {
+				pending++
+			}
+		}
+		fmt.Printf("  sessions:   %d tracked", len(sessions))
+		if pending > 0 {
+			fmt.Printf(", %d with pending nudge/notify", pending)
+		}
+		fmt.Println()
+		for _, s := range sessions {
+			if s.Nudges == 0 && !s.Notified {
+				continue
+			}
+			flag := ""
+			if s.Notified {
+				flag = " · user notified"
+			}
+			fmt.Printf("    ● %-22s nudges %d/%d%s\n", s.Name, s.Nudges, ov.MaxNudges, flag)
+		}
+	}
+
+	fmt.Println("  recent looks:")
+	start := len(recs) - 8
+	if start < 0 {
+		start = 0
+	}
+	for _, r := range recs[start:] {
+		fmt.Printf("    %s  judged %-2d  eff %-6s read %-6s create %s\n",
+			r.At.Format("01-02 15:04"), r.Judged, formatK(r.Effective()), formatK(r.CacheRead), formatK(r.CacheCreate))
+	}
+}
+
+// formatK abbreviates a token count: 940, 3.2k, 122k.
+func formatK(n int) string {
+	switch {
+	case n < 1000:
+		return strconv.Itoa(n)
+	case n < 10000:
+		return fmt.Sprintf("%.1fk", float64(n)/1000)
+	default:
+		return fmt.Sprintf("%dk", n/1000)
+	}
+}
+
+func orNone(s string) string {
+	if s == "" {
+		return "(none)"
+	}
+	return s
 }

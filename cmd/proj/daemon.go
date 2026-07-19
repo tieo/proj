@@ -258,6 +258,48 @@ func renderManaged(cfg daemon.Config) {
 	}
 }
 
+// renderOverseer prints the daemon status's overseer block: one line when off,
+// and when on, its cadence, last look, and today's spend against the budget, so
+// the fleet judge is visible in the same view as the resume watchdog. Full
+// detail (per-session nudges, recent looks) lives in `proj daemon overseer`.
+func renderOverseer() {
+	cfg, err := config.Load()
+	if err != nil {
+		return
+	}
+	ov := cfg.Daemon.Overseer
+	fmt.Println()
+	if !ov.Enabled {
+		fmt.Printf("   Overseer: off  (model=%s interval=%s; enable with `proj daemon overseer on`)\n",
+			ov.Model, ov.Interval)
+		return
+	}
+	recs := overseer.ReadUsageLog()
+	lastLook, sessions := overseer.ReadLookState()
+	now := time.Now()
+	last := "none yet"
+	if !lastLook.IsZero() {
+		last = formatAgo(now.Sub(lastLook)) + " ago"
+	}
+	looks, eff := overseer.TodayUsage(recs, now)
+	pct := 0
+	if overseer.DayBudget > 0 {
+		pct = eff * 100 / overseer.DayBudget
+	}
+	fmt.Printf("   Overseer: on · model=%s interval=%s · last look %s\n", ov.Model, ov.Interval, last)
+	fmt.Printf("             today %d looks · ~%s eff (%d%% of %s budget)\n",
+		looks, formatK(eff), pct, formatK(overseer.DayBudget))
+	pending := 0
+	for _, s := range sessions {
+		if s.Nudges > 0 || s.Notified {
+			pending++
+		}
+	}
+	if pending > 0 {
+		fmt.Printf("             %d session(s) with pending nudge/notify\n", pending)
+	}
+}
+
 func runDaemonStatus(cmd *cobra.Command, args []string) error {
 	cfg := daemonConfig()
 	state := daemon.LoadState(cfg.StatePath)
@@ -304,6 +346,7 @@ func runDaemonStatus(cmd *cobra.Command, args []string) error {
 		fmt.Printf("  Next tick: in %s (%s)\n", formatAgo(time.Until(next)), next.Format("15:04:05"))
 	}
 	renderManaged(cfg)
+	renderOverseer()
 
 	now := time.Now()
 	deferredCount := 0
