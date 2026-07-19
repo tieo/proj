@@ -75,7 +75,7 @@ func init() {
 	rootCmd.AddCommand(daemonCmd)
 	daemonCmd.AddCommand(daemonRunCmd, daemonStartCmd, daemonStopCmd,
 		daemonRestartCmd, daemonEnableCmd, daemonDisableCmd, daemonLogsCmd,
-		daemonKeepAliveCmd, daemonMarkClosedCmd)
+		daemonKeepAliveCmd, daemonMarkClosedCmd, overseerCmd)
 }
 
 // ----- status output -----

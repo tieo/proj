@@ -14,11 +14,11 @@ import (
 )
 
 type Config struct {
-	BaseDir string                 `toml:"base_dir"`
-	Claude  ClaudeConfig           `toml:"claude"`
+	BaseDir string                `toml:"base_dir"`
+	Claude  ClaudeConfig          `toml:"claude"`
 	Tools   map[string]ToolConfig `toml:"tools"`
-	Daemon  DaemonConfig           `toml:"daemon"`
-	List    ListConfig             `toml:"list"`
+	Daemon  DaemonConfig          `toml:"daemon"`
+	List    ListConfig            `toml:"list"`
 }
 
 type ClaudeConfig struct {
@@ -106,15 +106,29 @@ func (c Config) ToolNames() []string {
 }
 
 type DaemonConfig struct {
-	PollInterval string `toml:"poll_interval"`
-	MaxWait      string `toml:"max_wait"`
-	ResumeText   string `toml:"resume_text"`
-	CaptureLines int    `toml:"capture_lines"`
-	KeepAlive    bool   `toml:"keep_alive"`
+	PollInterval string         `toml:"poll_interval"`
+	MaxWait      string         `toml:"max_wait"`
+	ResumeText   string         `toml:"resume_text"`
+	CaptureLines int            `toml:"capture_lines"`
+	KeepAlive    bool           `toml:"keep_alive"`
+	Overseer     OverseerConfig `toml:"overseer"`
 }
 
 type ListConfig struct {
 	MaxAgeDays int `toml:"max_age_days"` // hide inactive projects older than this; 0 = show all
+}
+
+// OverseerConfig configures the fleet overseer: a standing agent that judges
+// whether idle sessions reached their goal and nudges the ones that stopped
+// short. Off by default; nothing runs until Enabled is set.
+type OverseerConfig struct {
+	Enabled   bool   `toml:"enabled"`
+	Model     string `toml:"model"`      // model for the judge (default sonnet, far cheaper than opus)
+	Interval  string `toml:"interval"`   // minimum time between looks (default 15m)
+	CacheTTL  string `toml:"cache_ttl"`  // prompt-cache TTL; must be >= interval or the cache is cold every look (default 1h)
+	MaxNudges int    `toml:"max_nudges"` // consecutive nudges to one session without progress before giving up
+	MaxTokens int    `toml:"max_tokens"` // per-look context budget; the delta fed to the judge is trimmed to this (default 4000)
+	NtfyTopic string `toml:"ntfy_topic"` // ntfy topic for the rare user-decision notification; empty disables push
 }
 
 func Default() Config {
@@ -130,6 +144,14 @@ func Default() Config {
 			MaxWait:      "5h",
 			ResumeText:   "continue",
 			CaptureLines: 300,
+			Overseer: OverseerConfig{
+				Enabled:   false,
+				Model:     "sonnet",
+				Interval:  "15m",
+				CacheTTL:  "1h",
+				MaxNudges: 3,
+				MaxTokens: 4000,
+			},
 		},
 		List: ListConfig{
 			MaxAgeDays: 14,
