@@ -221,6 +221,8 @@ func stateBadge(state string) (glyph, label string) {
 		return aYellow + "▲" + aReset, "short"
 	case "blocked":
 		return aRed + "■" + aReset, "blocked"
+	case overseer.StateNoGoal:
+		return aDim + "·" + aReset, "no goal"
 	default:
 		return aDim + "·" + aReset, "-"
 	}

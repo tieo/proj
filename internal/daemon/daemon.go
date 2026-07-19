@@ -2951,7 +2951,11 @@ func overseeClaude(cfg Config, p tmux.Pane, dir, content, sessFile string, now t
 	// stored in the transcript as a goal_status sentinel attachment; skip a
 	// session with no open goal so the judge never touches it.
 	if cfg.Overseer.RequiresGoal() && !sessionHasActiveGoal(sessFile) {
+		// Replace whatever the judge last said with no_goal: a verdict from a
+		// goal the session has since met or cleared would otherwise linger in
+		// the report and the list, describing work nothing is judging any more.
 		slog.Debug("overseer skip: no /goal set", "session", p.Session)
+		mem.Sessions[p.Session] = overseer.SessionMemory{Sig: sig, State: overseer.StateNoGoal}
 		return
 	}
 	ss, ok := overseerSession(p.Session, config.DefaultTool, sessFile, dir)

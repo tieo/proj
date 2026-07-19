@@ -7,6 +7,11 @@ import (
 	"time"
 )
 
+// StateNoGoal marks a session the overseer declined to judge because on_goal
+// mode is set and the session has no open /goal. The daemon assigns it; the
+// judge never returns it, so it stays out of the four verdict states.
+const StateNoGoal = "no_goal"
+
 // SessionMemory is the overseer's carried state for one session between judges:
 // the transcript signature at the last judge (so a session is judged once per
 // stop, not every tick), its last verdict, and the nudge/notify bookkeeping.
@@ -14,7 +19,7 @@ type SessionMemory struct {
 	Sig         string    `json:"sig"`
 	Nudges      int       `json:"nudges"`
 	Notified    bool      `json:"notified"`
-	State       string    `json:"state"`        // last judged: working | done | stopped_short | blocked
+	State       string    `json:"state"`        // last judged: working | done | stopped_short | blocked, or no_goal when not judged
 	Goal        string    `json:"goal"`         // last inferred goal
 	Reason      string    `json:"reason"`       // why the judge chose that state
 	NextRecheck time.Time `json:"next_recheck"` // when to re-judge a blocked session even with no new work; zero = only on new work
