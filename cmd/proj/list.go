@@ -12,6 +12,7 @@ import (
 
 	"github.com/tieo/proj/internal/config"
 	"github.com/tieo/proj/internal/daemon"
+	"github.com/tieo/proj/internal/overseer"
 	"github.com/tieo/proj/internal/projects"
 )
 
@@ -61,6 +62,14 @@ func runList(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("managed state unreadable (pins are only stored there): %w", err)
 	}
+
+	// Overseer verdicts, shown in the note column. Only when the overseer is on:
+	// its memory is otherwise stale and would mislabel a session's state.
+	oversMem := overseer.Memory{Sessions: map[string]overseer.SessionMemory{}}
+	if cfg.Daemon.Overseer.Enabled {
+		oversMem = overseer.LoadMemory()
+	}
+	maxNudges := cfg.Daemon.Overseer.MaxNudges
 
 	// Scan panes for label (banner/error/selector state) and, as a fallback, RC
 	// status per session. Model is read from JSONL session files instead; more
@@ -157,8 +166,8 @@ func runList(cmd *cobra.Command, args []string) error {
 			tags:      strings.Join(p.Tags, " "),
 			model:     modelLabel(p, cfg.Claude.Home),
 			ts:        sessionTS(p, alive),
-			note:      buildNote(label, rc, ms, tracked, alive, unrCfg.KeepAlive),
-			noteColor: noteColor(label, rc, alive),
+			note:      buildNote(label, rc, ms, tracked, alive, unrCfg.KeepAlive, oversMem.Sessions[sessName], maxNudges),
+			noteColor: noteColor(label, rc, alive, oversMem.Sessions[sessName]),
 		})
 	}
 
@@ -182,8 +191,8 @@ func runList(cmd *cobra.Command, args []string) error {
 				tags:      path,
 				model:     "", // orphan: no known project dir for JSONL lookup
 				ts:        s.Activity,
-				note:      buildNote(label, rc, ms, tracked, true, unrCfg.KeepAlive),
-				noteColor: noteColor(label, rc, true),
+				note:      buildNote(label, rc, ms, tracked, true, unrCfg.KeepAlive, oversMem.Sessions[s.Name], maxNudges),
+				noteColor: noteColor(label, rc, true, oversMem.Sessions[s.Name]),
 			})
 		}
 	}
@@ -304,7 +313,7 @@ func buildIndicator(alive, pinned bool, label, rc string) string {
 	return ansiGreen + "●" + ansiReset + " " // "active" or "" (no zone yet — starting up)
 }
 
-func buildNote(label, rc string, ms daemon.ManagedSession, tracked, alive, globalKeepAlive bool) string {
+func buildNote(label, rc string, ms daemon.ManagedSession, tracked, alive, globalKeepAlive bool, om overseer.SessionMemory, maxNudges int) string {
 	// Only the daemon's tracked sessions get recreated. globalKeepAlive on its
 	// own must not paint every dead project as "restarting".
 	if !alive && tracked && (ms.Pinned || ms.KeepAlive || globalKeepAlive) && !ms.ExitedCleanly {
@@ -321,10 +330,26 @@ func buildNote(label, rc string, ms daemon.ManagedSession, tracked, alive, globa
 	if rc == "offline" {
 		return "RC offline"
 	}
+	// Overseer verdict, shown when nothing more urgent is: a session that stopped
+	// short of its goal (nudged or not) or one blocked waiting on something.
+	if alive {
+		switch om.State {
+		case "stopped_short":
+			if om.Nudges > 0 {
+				return fmt.Sprintf("nudged %d/%d", om.Nudges, maxNudges)
+			}
+			return "stopped short"
+		case "blocked":
+			if om.Notified {
+				return "waiting on you"
+			}
+			return "blocked"
+		}
+	}
 	return ""
 }
 
-func noteColor(label, rc string, alive bool) string {
+func noteColor(label, rc string, alive bool, om overseer.SessionMemory) string {
 	if !alive {
 		return ansiDim
 	}
@@ -335,6 +360,15 @@ func noteColor(label, rc string, alive bool) string {
 		return ansiYellow
 	}
 	if rc == "offline" {
+		return ansiYellow
+	}
+	switch om.State {
+	case "stopped_short":
+		return ansiYellow
+	case "blocked":
+		if om.Notified {
+			return ansiRed
+		}
 		return ansiYellow
 	}
 	return ansiDim
