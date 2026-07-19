@@ -178,6 +178,10 @@ Each user message is a JSON array of sessions, each with a name, tool, and a rec
 Reply with ONLY a JSON array, one object per session, no prose, no markdown fences:
 [{"name":"...","goal":"...","state":"working|done|stopped_short|blocked","callout":"...","needs_user":false,"user_reason":""}]`
 
+// promptContract is appended to every user turn to hold a resumed session to the
+// output format (see the note in Look).
+const promptContract = `Judge these sessions. Reply with ONLY the JSON array of verdicts, one object per session, no prose, no markdown fences.`
+
 // Look builds the snapshot, runs one overseer call, and returns the verdicts and
 // usage. It takes no action on the sessions; the daemon acts on the returned
 // verdicts. sessions may be passed pre-built (the daemon filters to newly-idle
@@ -195,7 +199,12 @@ func Look(cfg config.Config, sessions []SessionState) (LookResult, error) {
 	if err != nil {
 		return res, err
 	}
-	prompt := string(payload)
+	// Re-assert the output contract on every turn. On a resumed session the
+	// system prompt is fixed at creation and not re-sent, so across turns the
+	// model drifts from judging into conversational prose (echoing the tails it
+	// is shown). This one line rides in the fresh, uncached delta and holds it to
+	// the JSON array.
+	prompt := string(payload) + "\n\n" + promptContract
 
 	dir := ScratchDir()
 	if err := os.MkdirAll(dir, 0o755); err != nil {
