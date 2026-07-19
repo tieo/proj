@@ -111,23 +111,33 @@ func BuildSnapshot(cfg config.Config) []SessionState {
 	return out
 }
 
+// transcriptPath resolves the newest transcript file for a session's tool, or
+// "" when the tool has no reader or no history. The overseer stats this path to
+// tell whether a session did new work since the last look.
+func transcriptPath(cfg config.Config, tool, dir string) string {
+	switch tool {
+	case config.DefaultTool:
+		return daemon.RecentSessionFile(cfg.Claude.Home, dir)
+	case "codex":
+		return handoff.RecentCodexRollout(dir)
+	default:
+		return ""
+	}
+}
+
 // transcriptTail returns the last tailTurns of a session's transcript as
 // role-prefixed lines, or "" when there is no readable transcript.
 func transcriptTail(cfg config.Config, tool, dir string) string {
+	path := transcriptPath(cfg, tool, dir)
+	if path == "" {
+		return ""
+	}
 	var tr *handoff.Transcript
 	var err error
 	switch tool {
 	case config.DefaultTool:
-		path := daemon.RecentSessionFile(cfg.Claude.Home, dir)
-		if path == "" {
-			return ""
-		}
 		tr, err = handoff.ReadClaude(path, dir)
 	case "codex":
-		path := handoff.RecentCodexRollout(dir)
-		if path == "" {
-			return ""
-		}
 		tr, err = handoff.ReadCodex(path, dir)
 	default:
 		return ""

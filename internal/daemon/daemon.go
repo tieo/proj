@@ -69,6 +69,13 @@ type Config struct {
 	ClaudeHome  string                     // [claude] home override; where Claude Code keeps transcripts (the Windows home under WSL)
 }
 
+// PostTick, when non-nil, is invoked once per poll after the main tick, with
+// the tick's wall-clock time. The overseer wires it here (via cmd/proj) instead
+// of daemon importing the overseer package, which would cycle: overseer already
+// imports daemon for its pane scan and transcript readers. It runs inside the
+// tick's recover guard, so a panic in the pass is contained like any other.
+var PostTick func(now time.Time)
+
 func DefaultConfig() Config {
 	return Config{
 		Poll:        60 * time.Second,
@@ -399,6 +406,11 @@ func composerHasDraft(escContent string) bool {
 	}
 	return true // no input line found: treat as unsafe
 }
+
+// ComposerHasDraft reports whether a pane's input composer holds an unsent user
+// draft, from an escape-preserving capture (tmux.CapturePaneEsc). The overseer
+// reuses this guard so a nudge never types over text the user is composing.
+func ComposerHasDraft(escContent string) bool { return composerHasDraft(escContent) }
 
 // rcNudgeCooldown bounds how often the watchdog re-sends /rc to one pane, so a
 // session that genuinely can't bind (or one mid-restart) isn't spammed.
@@ -2906,6 +2918,9 @@ func Run(ctx context.Context, cfg Config) error {
 				if err := CommitManagedState(cfg.StatePath, base, managed); err != nil {
 					slog.Error("save managed state failed", "err", err)
 				}
+			}
+			if PostTick != nil {
+				PostTick(time.Now())
 			}
 		}()
 		tick++

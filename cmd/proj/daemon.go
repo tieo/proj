@@ -18,6 +18,7 @@ import (
 
 	"github.com/tieo/proj/internal/config"
 	"github.com/tieo/proj/internal/daemon"
+	"github.com/tieo/proj/internal/overseer"
 	"github.com/tieo/proj/internal/tmux"
 )
 
@@ -347,6 +348,17 @@ func runDaemonForeground(cmd *cobra.Command, args []string) error {
 	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stdout, nil)))
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
+	// The overseer runs as a per-tick pass; wiring it through daemon.PostTick
+	// keeps the daemon package unaware of the overseer (which imports it). It
+	// reloads config each look so `overseer on/off` takes effect without a
+	// restart, and no-ops while disabled.
+	daemon.PostTick = func(now time.Time) {
+		cfg, err := config.Load()
+		if err != nil {
+			return
+		}
+		overseer.Pass(cfg, now)
+	}
 	return daemon.Run(ctx, daemonConfig())
 }
 
