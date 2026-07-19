@@ -9,28 +9,28 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/tieo/proj/internal/config"
+	"github.com/tieo/proj/internal/daemon"
 	"github.com/tieo/proj/internal/overseer"
 )
 
 // overseerCmd manages the daemon's fleet overseer, mirroring the keep-alive
-// command: no argument shows status, on/off toggles [daemon.overseer].enabled
-// in config.toml. Model, interval, and the other knobs are config.toml fields.
-// Registered under daemonCmd in daemon.go.
+// command: no argument shows the status report, on/off toggles
+// [daemon.overseer].enabled in config.toml. Registered under daemonCmd.
 var overseerCmd = &cobra.Command{
 	Use:   "overseer [on|off]",
-	Short: "show or set the fleet overseer, or run one look (overseer run)",
+	Short: "show the fleet overseer, or turn it on/off (overseer run for a dry-run)",
 	Long: `Show or set the daemon's fleet overseer.
 
-With no argument, prints whether the overseer is enabled and its settings. "on"
-and "off" toggle [daemon.overseer].enabled in config.toml; the daemon picks the
-change up on its next tick. Other settings (model, interval, max_nudges,
-max_tokens, ntfy_topic) are edited directly under [daemon.overseer] in
-config.toml.
+With no argument, prints the overseer's status: whether it's on, today's token
+spend against the budget, and each watched session's judged state. "on" and
+"off" toggle [daemon.overseer].enabled in config.toml; the daemon picks the
+change up on its next tick. Other settings (model, max_nudges, max_tokens,
+ntfy_topic) are edited directly under [daemon.overseer] in config.toml.
 
-The overseer reads each idle session's recent transcript and judges whether it
-reached its goal or stopped short. "overseer run" does one look now and prints
-the verdicts plus token usage, without acting - the dry-run for validating it
-before enabling.`,
+As each session goes idle the daemon judges whether it reached its goal or
+stopped short, and nudges the ones that stopped short. "overseer run" judges
+every session once now and prints the verdicts, without acting - the dry-run for
+validating it before enabling.`,
 	Args: cobra.MaximumNArgs(1),
 	RunE: runOverseer,
 }
@@ -72,11 +72,7 @@ func runOverseer(cmd *cobra.Command, args []string) error {
 }
 
 func runOverseerRun(cmd *cobra.Command, args []string) error {
-	cfg, err := config.Load()
-	if err != nil {
-		return err
-	}
-	res, err := overseer.Look(cfg, nil)
+	res, err := daemon.OverseerDryRun(daemonConfig())
 	if err != nil {
 		return err
 	}
@@ -137,9 +133,9 @@ func printOverseerReport(cfg config.Config) {
 		badge = aGreen + aBold + "● on" + aReset
 	}
 	fmt.Println()
-	fmt.Printf("  %s⬢ Overseer%s  %s   %smodel %s · every %s · budget %s/day%s\n",
-		aBold, aReset, badge, aDim, ov.Model, ov.Interval, formatK(overseer.DayBudget), aReset)
-	fmt.Printf("  %sNudges idle sessions that stopped short of their goal; pings you only\n  when a decision genuinely needs you.%s\n\n", aDim, aReset)
+	fmt.Printf("  %s⬢ Overseer%s  %s   %smodel %s · budget %s/day%s\n",
+		aBold, aReset, badge, aDim, ov.Model, formatK(overseer.DayBudget), aReset)
+	fmt.Printf("  %sAs each session goes idle, judges whether it hit its goal; nudges the\n  ones that stopped short, pings you only when a decision needs you.%s\n\n", aDim, aReset)
 
 	if len(recs) == 0 && lastLook.IsZero() {
 		how := "run one now with `proj daemon overseer run`"
@@ -181,30 +177,43 @@ func printOverseerReport(cfg config.Config) {
 			"Cost/look", aCyan, sparkline(effs), aReset, aDim, formatK(effs[len(effs)-1]), aReset)
 	}
 
-	// Sessions the overseer is currently acting on. Ones it has judged on track
-	// carry no nudge memory and are omitted; the interesting rows are the ones it
-	// nudged or pinged about.
-	var flagged []overseer.SessionMemory
-	for _, s := range sessions {
-		if s.Nudges > 0 || s.Notified {
-			flagged = append(flagged, s)
-		}
-	}
+	// Every judged session with the state the overseer last gave it and the goal
+	// it inferred, so the whole fleet's status is visible at a glance.
 	fmt.Println()
-	if len(flagged) == 0 {
-		fmt.Printf("  %sFlagged now%s   %snone — every session on track or still working%s\n",
-			aBold, aReset, aDim, aReset)
+	if len(sessions) == 0 {
+		fmt.Printf("  %sSessions%s   %snone judged yet%s\n", aBold, aReset, aDim, aReset)
 	} else {
-		fmt.Printf("  %sFlagged now%s\n", aBold, aReset)
-		for _, s := range flagged {
-			state := fmt.Sprintf("%snudged %d/%d, still short%s", aYellow, s.Nudges, ov.MaxNudges, aReset)
-			if s.Notified {
-				state = aRed + "waiting on you" + aReset
+		fmt.Printf("  %sSessions%s\n", aBold, aReset)
+		for _, s := range sessions {
+			glyph, label := stateBadge(s.State)
+			note := ""
+			if s.Nudges > 0 {
+				note = fmt.Sprintf("  %snudged %d/%d%s", aDim, s.Nudges, ov.MaxNudges, aReset)
 			}
-			fmt.Printf("    ● %-22s %s\n", s.Name, state)
+			if s.Notified {
+				note = "  " + aRed + "waiting on you" + aReset
+			}
+			fmt.Printf("    %s %-8s %-20s %s%.58s%s%s\n",
+				glyph, label, s.Name, aDim, s.Goal, aReset, note)
 		}
 	}
 	fmt.Println()
+}
+
+// stateBadge maps a judged state to a coloured glyph and a short label.
+func stateBadge(state string) (glyph, label string) {
+	switch state {
+	case "working":
+		return aCyan + "●" + aReset, "working"
+	case "done":
+		return aGreen + "✓" + aReset, "done"
+	case "stopped_short":
+		return aYellow + "▲" + aReset, "short"
+	case "blocked":
+		return aRed + "■" + aReset, "blocked"
+	default:
+		return aDim + "·" + aReset, "-"
+	}
 }
 
 // budgetBar draws a width-cell meter filled to pct, coloured by headroom.

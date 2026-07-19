@@ -69,24 +69,22 @@ func ReadUsageLog() []UsageRecord {
 	return out
 }
 
-// SessionMemory is the overseer's carried state for one session, exposed for the
-// status report.
-type SessionMemory struct {
-	Name     string
-	Nudges   int
-	Notified bool
+// NamedMemory is one session's stored memory with its name, for the report.
+type NamedMemory struct {
+	Name string
+	SessionMemory
 }
 
-// ReadLookState returns the time of the last look and the per-session memory,
-// sorted by name. A zero time means no look has run yet.
-func ReadLookState() (time.Time, []SessionMemory) {
-	st := loadLookState()
-	out := make([]SessionMemory, 0, len(st.Sessions))
-	for name, sl := range st.Sessions {
-		out = append(out, SessionMemory{Name: name, Nudges: sl.Nudges, Notified: sl.Notified})
+// ReadLookState returns the time of the last judge and the per-session memory,
+// sorted by name. A zero time means nothing has been judged yet.
+func ReadLookState() (time.Time, []NamedMemory) {
+	m := LoadMemory()
+	out := make([]NamedMemory, 0, len(m.Sessions))
+	for name, sl := range m.Sessions {
+		out = append(out, NamedMemory{Name: name, SessionMemory: sl})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
-	return st.LastLook, out
+	return m.LastLook, out
 }
 
 // TodayUsage sums looks and effective tokens for records on the same calendar

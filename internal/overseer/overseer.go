@@ -1,11 +1,12 @@
-// Package overseer is the fleet overseer: it reads each idle coding session's
-// recent transcript, asks the overseer whether the session reached its goal or
-// stopped short, and reports a verdict per session. The daemon runs it as a
-// gated pass; `proj overseer once` runs the same Look() manually for a dry-run.
+// Package overseer is the fleet judge. Given each session's recent transcript
+// tail it asks, through `claude -p` on the subscription (not the paid API),
+// whether the session reached its goal or stopped short, and returns a verdict
+// per session. It is a pure judge: the daemon owns which sessions to look at,
+// when, and what to do with the verdicts; this package only reads tails it is
+// handed, calls the model, and keeps the per-session and usage state files.
 //
-// The overseer runs through `claude -p` (the subscription, not the paid API) in a
-// fixed scratch directory so Claude Code's own context stays prompt-cached
-// across looks. Every look records its token usage - including cache_read vs
+// The call runs in a fixed scratch directory so Claude Code's own context stays
+// prompt-cached across looks. Every look records its token usage - cache_read vs
 // cache_creation - so cache warmth can be watched over real use.
 package overseer
 
@@ -17,19 +18,15 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
-
-	"github.com/tieo/proj/internal/config"
-	"github.com/tieo/proj/internal/daemon"
-	"github.com/tieo/proj/internal/handoff"
-	"github.com/tieo/proj/internal/projects"
-	"github.com/tieo/proj/internal/tmux"
 )
 
-// SessionState is one session's input to the overseer: its name, tool, and a
-// recent slice of its transcript.
+// SessionState is one session's input to the overseer: its name, tool, the
+// original task (the first user turn, when it can be read), and a recent slice
+// of its transcript.
 type SessionState struct {
 	Name string `json:"name"`
 	Tool string `json:"tool"`
+	Task string `json:"task,omitempty"` // the session's original goal, first user turn
 	Tail string `json:"tail"`
 }
 
@@ -61,11 +58,7 @@ type LookResult struct {
 	Raw      string // the overseer's raw text, kept when the JSON fails to parse
 }
 
-const (
-	tailTurns    = 12  // recent turns per session fed to the overseer
-	tailTurnCap  = 500 // chars per turn in the tail
-	scratchDirRC = "overseer"
-)
+const scratchDirRC = "overseer"
 
 // ScratchDir is the fixed non-git directory the overseer runs in, so Claude Code's
 // system-prompt prefix (which embeds the working directory) stays identical
@@ -79,98 +72,13 @@ func ScratchDir() string {
 	return filepath.Join(base, "proj", scratchDirRC)
 }
 
-// BuildSnapshot reads the recent transcript tail of every live claude or codex
-// session under baseDir. Sessions whose tool has no transcript reader, or whose
-// transcript can't be read, are skipped.
-func BuildSnapshot(cfg config.Config) []SessionState {
-	reg, _ := projects.LoadRegistry()
-	// Budget the whole snapshot to max_tokens (~4 chars/token). The judge reads
-	// this fresh each look, so an unbounded snapshot is the per-look cost.
-	budget := cfg.Daemon.Overseer.MaxTokens
-	if budget <= 0 {
-		budget = 4000
-	}
-	remaining := budget * 4
-	var out []SessionState
-	for _, s := range tmux.ListSessions() {
-		if remaining <= 0 {
-			break
-		}
-		dir := s.Path
-		tool := daemon.ToolName(reg.Tool(filepath.Base(dir)))
-		tail := transcriptTail(cfg, tool, dir)
-		if tail == "" {
-			continue
-		}
-		if len(tail) > remaining {
-			tail = "…" + tail[len(tail)-remaining:]
-		}
-		remaining -= len(tail)
-		out = append(out, SessionState{Name: s.Name, Tool: tool, Tail: tail})
-	}
-	return out
-}
-
-// transcriptPath resolves the newest transcript file for a session's tool, or
-// "" when the tool has no reader or no history. The overseer stats this path to
-// tell whether a session did new work since the last look.
-func transcriptPath(cfg config.Config, tool, dir string) string {
-	switch tool {
-	case config.DefaultTool:
-		return daemon.RecentSessionFile(cfg.Claude.Home, dir)
-	case "codex":
-		return handoff.RecentCodexRollout(dir)
-	default:
-		return ""
-	}
-}
-
-// transcriptTail returns the last tailTurns of a session's transcript as
-// role-prefixed lines, or "" when there is no readable transcript.
-func transcriptTail(cfg config.Config, tool, dir string) string {
-	path := transcriptPath(cfg, tool, dir)
-	if path == "" {
-		return ""
-	}
-	var tr *handoff.Transcript
-	var err error
-	switch tool {
-	case config.DefaultTool:
-		tr, err = handoff.ReadClaude(path, dir)
-	case "codex":
-		tr, err = handoff.ReadCodex(path, dir)
-	default:
-		return ""
-	}
-	if err != nil || tr == nil || len(tr.Turns) == 0 {
-		return ""
-	}
-	turns := tr.Turns
-	if len(turns) > tailTurns {
-		turns = turns[len(turns)-tailTurns:]
-	}
-	var b strings.Builder
-	for _, t := range turns {
-		text := t.Text
-		if len(text) > tailTurnCap {
-			text = text[:tailTurnCap] + "…"
-		}
-		role := t.Role
-		if t.Name != "" {
-			role += ":" + t.Name
-		}
-		fmt.Fprintf(&b, "[%s] %s\n", role, text)
-	}
-	return b.String()
-}
-
 // overseerSystemPrompt is the overseer's role, passed as the session's system
 // prompt (--system-prompt) so it defines the overseer role at the system level rather
 // than competing with Claude Code's coding-agent framing in a user turn.
 const overseerSystemPrompt = `You are the overseer of a fleet of autonomous coding-agent sessions. You do not write code or use tools. Your only job: read each session's recent transcript and judge whether it reached its goal or stopped short.
 
-Each user message is a JSON array of sessions, each with a name, tool, and a recent transcript tail. For each session:
-- infer its goal from the tail,
+Each user message is a JSON array of sessions, each with a name, tool, an optional task (the session's original goal, from its first message), and a recent transcript tail. For each session:
+- take its goal from task when present, otherwise infer it from the tail,
 - judge its state: "working" (actively mid-task), "done" (goal met), "stopped_short" (idle with the goal unmet and a path still open), or "blocked" (needs something it cannot get itself),
 - if stopped_short, write callout: one imperative sentence telling the agent to continue toward the goal,
 - set needs_user true ONLY when a real decision is required that the agent cannot make on its own.
@@ -182,14 +90,11 @@ Reply with ONLY a JSON array, one object per session, no prose, no markdown fenc
 // output format (see the note in Look).
 const promptContract = `Judge these sessions. Reply with ONLY the JSON array of verdicts, one object per session, no prose, no markdown fences.`
 
-// Look builds the snapshot, runs one overseer call, and returns the verdicts and
-// usage. It takes no action on the sessions; the daemon acts on the returned
-// verdicts. sessions may be passed pre-built (the daemon filters to newly-idle
-// ones); when nil, Look builds the full fleet snapshot itself.
-func Look(cfg config.Config, sessions []SessionState) (LookResult, error) {
-	if sessions == nil {
-		sessions = BuildSnapshot(cfg)
-	}
+// Look runs one overseer call over the given session tails and returns the
+// verdicts and token usage. It takes no action; the daemon acts on the verdicts.
+// The sessions are built by the caller (the daemon, from transcripts it already
+// reads). An empty model defaults to sonnet.
+func Look(model string, sessions []SessionState) (LookResult, error) {
 	res := LookResult{Sessions: sessions}
 	if len(sessions) == 0 {
 		return res, nil
@@ -211,7 +116,6 @@ func Look(cfg config.Config, sessions []SessionState) (LookResult, error) {
 		return res, fmt.Errorf("overseer scratch dir: %w", err)
 	}
 
-	model := cfg.Daemon.Overseer.Model
 	if model == "" {
 		model = "sonnet"
 	}

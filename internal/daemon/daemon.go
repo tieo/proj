@@ -15,6 +15,7 @@ import (
 	"io"
 	"log/slog"
 	"math/rand"
+	"net/http"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -25,6 +26,8 @@ import (
 	"time"
 
 	"github.com/tieo/proj/internal/config"
+	"github.com/tieo/proj/internal/handoff"
+	"github.com/tieo/proj/internal/overseer"
 	"github.com/tieo/proj/internal/projects"
 	"github.com/tieo/proj/internal/shellout"
 	"github.com/tieo/proj/internal/tmux"
@@ -67,14 +70,8 @@ type Config struct {
 	KeepAlive   bool                       // recreate vanished sessions that weren't cleanly closed
 	Tools       map[string]config.ToolSpec // resolved launch recipes keyed by tool name, "claude" included
 	ClaudeHome  string                     // [claude] home override; where Claude Code keeps transcripts (the Windows home under WSL)
+	Overseer    config.OverseerConfig      // fleet judge: nudge sessions that stopped short of their goal
 }
-
-// PostTick, when non-nil, is invoked once per poll after the main tick, with
-// the tick's wall-clock time. The overseer wires it here (via cmd/proj) instead
-// of daemon importing the overseer package, which would cycle: overseer already
-// imports daemon for its pane scan and transcript readers. It runs inside the
-// tick's recover guard, so a panic in the pass is contained like any other.
-var PostTick func(now time.Time)
 
 func DefaultConfig() Config {
 	return Config{
@@ -406,11 +403,6 @@ func composerHasDraft(escContent string) bool {
 	}
 	return true // no input line found: treat as unsafe
 }
-
-// ComposerHasDraft reports whether a pane's input composer holds an unsent user
-// draft, from an escape-preserving capture (tmux.CapturePaneEsc). The overseer
-// reuses this guard so a nudge never types over text the user is composing.
-func ComposerHasDraft(escContent string) bool { return composerHasDraft(escContent) }
 
 // rcNudgeCooldown bounds how often the watchdog re-sends /rc to one pane, so a
 // session that genuinely can't bind (or one mid-restart) isn't spammed.
@@ -2438,6 +2430,13 @@ func Tick(cfg Config, state State, errorState ErrorState, managed ManagedState, 
 		rcConn, rcConnStale = rcConnLastGood, true
 	}
 
+	// Overseer memory, loaded once per tick and saved after the pane loop. The
+	// judge fires per session as it goes idle (see overseeClaude), not on a timer.
+	var oversMem overseer.Memory
+	if cfg.Overseer.Enabled {
+		oversMem = overseer.LoadMemory()
+	}
+
 	for _, p := range panes {
 		paneDir := tmux.PaneCurrentPath(p.ID)
 		tool := ToolName(reg.Tool(filepath.Base(paneDir)))
@@ -2806,6 +2805,11 @@ func Tick(cfg Config, state State, errorState ErrorState, managed ManagedState, 
 				slog.Info("drop tracked", "session", t.Session, "reason", reason, "attempts", t.Attempts)
 				delete(state, p.ID)
 			}
+			// No stall: the session is either working or has gone idle. If idle and
+			// it stopped short of its goal, the overseer nudges it.
+			if cfg.Overseer.Enabled {
+				overseeClaude(cfg, p, paneDir, content, sessFile, now, &oversMem)
+			}
 			continue
 		}
 		prev := state[p.ID]
@@ -2849,6 +2853,249 @@ func Tick(cfg Config, state State, errorState ErrorState, managed ManagedState, 
 				"next", t.NextAttempt.Format("Mon 15:04 MST"))
 		}
 	}
+
+	if cfg.Overseer.Enabled {
+		live := make(map[string]bool, len(panes))
+		for _, p := range panes {
+			live[p.Session] = true
+		}
+		oversMem.Prune(live)
+		if err := oversMem.Save(); err != nil {
+			slog.Error("overseer state save failed", "err", err)
+		}
+	}
+}
+
+// overseerTailTurns and overseerTailCap bound the transcript slice handed to the
+// judge; overseerRecheck is how long after judging a session "blocked" the
+// overseer re-looks even with no new work, in case the thing it waited on cleared.
+const (
+	overseerTailTurns = 12
+	overseerTailCap   = 500
+	overseerTaskCap   = 400
+	overseerRecheck   = 30 * time.Minute
+)
+
+// overseeClaude judges one idle claude session and acts on the verdict. It fires
+// only on a real stop: the pane sits at the input prompt (not generating), and
+// either the transcript changed since the last judge or a blocked session is due
+// for a re-look. A session that stopped short of its goal is nudged (bounded by
+// max_nudges, never over a user draft); one that needs a decision pings the user;
+// working and done are left alone. mem is updated in place.
+func overseeClaude(cfg Config, p tmux.Pane, dir, content, sessFile string, now time.Time, mem *overseer.Memory) {
+	if sessFile == "" {
+		return
+	}
+	// Idle gate: skip a session still generating (spinner / "esc to interrupt")
+	// or one with no live input prompt (starting up, in a picker).
+	if connDropBusyRE.MatchString(content) || !inputPromptRE.MatchString(content) {
+		return
+	}
+	sig := fileSig(sessFile)
+	prev := mem.Sessions[p.Session]
+	recheckDue := !prev.NextRecheck.IsZero() && !now.Before(prev.NextRecheck)
+	if sig == "" || (sig == prev.Sig && !recheckDue) {
+		return // nothing new since the last judge, and no recheck due
+	}
+	ss, ok := overseerSession(p.Session, config.DefaultTool, sessFile, dir)
+	if !ok {
+		return
+	}
+	res, err := overseer.Look(cfg.Overseer.Model, []overseer.SessionState{ss})
+	if err != nil {
+		slog.Error("overseer look failed", "session", p.Session, "err", err)
+		return
+	}
+	_ = overseer.LogUsage(now, res)
+	mem.LastLook = now
+	if len(res.Verdicts) == 0 {
+		prev.Sig = sig
+		mem.Sessions[p.Session] = prev
+		slog.Warn("overseer returned no verdict", "session", p.Session)
+		return
+	}
+
+	v := res.Verdicts[0]
+	action, m := overseer.Decide(v, prev, cfg.Overseer.MaxNudges)
+	m.Sig, m.State, m.Goal = sig, v.State, v.Goal
+	if v.State == "blocked" {
+		m.NextRecheck = now.Add(overseerRecheck)
+	} else {
+		m.NextRecheck = time.Time{}
+	}
+	switch action {
+	case overseer.ActNudge:
+		if composerHasDraft(tmux.CapturePaneEsc(p.ID)) {
+			break // user is typing; do not nudge over a draft
+		}
+		if err := submitPrompt(cfg, p.ID, v.Callout); err != nil {
+			slog.Error("overseer nudge failed", "session", p.Session, "err", err)
+		} else {
+			m.Nudges++
+			slog.Info("overseer nudged", "session", p.Session,
+				"nudges", m.Nudges, "goal", v.Goal, "callout", v.Callout)
+		}
+	case overseer.ActNotify:
+		if notifyUser(cfg.Overseer.NtfyTopic, p.Session, v) {
+			m.Notified = true
+			slog.Info("overseer notified user", "session", p.Session, "reason", v.UserReason)
+		}
+	default:
+		slog.Info("overseer judged", "session", p.Session, "state", v.State, "goal", v.Goal)
+	}
+	mem.Sessions[p.Session] = m
+}
+
+// fileSig is a cheap fingerprint of a transcript file (size and mtime); it
+// changes whenever the session writes a turn, so a session is judged once per
+// stop rather than every tick.
+func fileSig(path string) string {
+	info, err := os.Stat(path)
+	if err != nil {
+		return ""
+	}
+	return fmt.Sprintf("%d:%d", info.Size(), info.ModTime().UnixNano())
+}
+
+// overseerSession reads a session's transcript once and returns the input for
+// the judge: the original task (its first user turn, the goal) and a recent
+// role-prefixed tail. ok is false when there is no readable transcript.
+func overseerSession(name, tool, path, dir string) (s overseer.SessionState, ok bool) {
+	if path == "" {
+		return s, false
+	}
+	var tr *handoff.Transcript
+	var err error
+	switch tool {
+	case config.DefaultTool:
+		tr, err = handoff.ReadClaude(path, dir)
+	case "codex":
+		tr, err = handoff.ReadCodex(path, dir)
+	default:
+		return s, false
+	}
+	if err != nil || tr == nil || len(tr.Turns) == 0 {
+		return s, false
+	}
+	return overseer.SessionState{
+		Name: name,
+		Tool: tool,
+		Task: firstUserTurn(tr.Turns),
+		Tail: formatTail(tr.Turns),
+	}, true
+}
+
+// firstUserTurn returns the text of the first user turn - the session's original
+// task - truncated, or "" if none.
+func firstUserTurn(turns []handoff.Turn) string {
+	for _, t := range turns {
+		if t.Role != "user" || t.Text == "" {
+			continue
+		}
+		text := strings.Join(strings.Fields(t.Text), " ")
+		if len(text) > overseerTaskCap {
+			text = text[:overseerTaskCap] + "…"
+		}
+		return text
+	}
+	return ""
+}
+
+// formatTail renders the last overseerTailTurns of a transcript as role-prefixed
+// lines for the judge.
+func formatTail(turns []handoff.Turn) string {
+	if len(turns) > overseerTailTurns {
+		turns = turns[len(turns)-overseerTailTurns:]
+	}
+	var b strings.Builder
+	for _, t := range turns {
+		text := t.Text
+		if len(text) > overseerTailCap {
+			text = text[:overseerTailCap] + "…"
+		}
+		role := t.Role
+		if t.Name != "" {
+			role += ":" + t.Name
+		}
+		fmt.Fprintf(&b, "[%s] %s\n", role, text)
+	}
+	return b.String()
+}
+
+// notifyUser pushes one ntfy message for a session that needs a user decision.
+// No topic means no push. Reports whether it sent.
+func notifyUser(topic, session string, v overseer.Verdict) bool {
+	if topic == "" {
+		return false
+	}
+	reason := v.UserReason
+	if reason == "" {
+		reason = v.Callout
+	}
+	req, err := http.NewRequest(http.MethodPost, "https://ntfy.sh/"+topic, strings.NewReader(reason))
+	if err != nil {
+		return false
+	}
+	req.Header.Set("Title", "proj overseer: "+session)
+	client := &http.Client{Timeout: 5 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		slog.Error("overseer notify failed", "session", session, "err", err)
+		return false
+	}
+	resp.Body.Close()
+	return true
+}
+
+// OverseerDryRun judges every readable session once and returns the result,
+// taking no action on the sessions. It records the verdicts (state and goal)
+// into the overseer's memory so the status report reflects a manual look.
+// Backs `proj daemon overseer run`.
+func OverseerDryRun(cfg Config) (overseer.LookResult, error) {
+	reg, _ := projects.LoadRegistry()
+	budget := cfg.Overseer.MaxTokens
+	if budget <= 0 {
+		budget = 4000
+	}
+	remaining := budget * 4
+	var sessions []overseer.SessionState
+	for _, s := range tmux.ListSessions() {
+		if remaining <= 0 {
+			break
+		}
+		tool := ToolName(reg.Tool(filepath.Base(s.Path)))
+		var path string
+		switch tool {
+		case config.DefaultTool:
+			path = recentSessionFile(cfg.ClaudeHome, s.Path)
+		case "codex":
+			path = recentCodexRollout(s.Path)
+		default:
+			continue
+		}
+		ss, ok := overseerSession(s.Name, tool, path, s.Path)
+		if !ok {
+			continue
+		}
+		if len(ss.Tail) > remaining {
+			ss.Tail = "…" + ss.Tail[len(ss.Tail)-remaining:]
+		}
+		remaining -= len(ss.Tail)
+		sessions = append(sessions, ss)
+	}
+	res, err := overseer.Look(cfg.Overseer.Model, sessions)
+	if err != nil {
+		return res, err
+	}
+	mem := overseer.LoadMemory()
+	for _, v := range res.Verdicts {
+		m := mem.Sessions[v.Name]
+		m.State, m.Goal = v.State, v.Goal
+		mem.Sessions[v.Name] = m
+	}
+	mem.LastLook = time.Now()
+	_ = mem.Save()
+	return res, nil
 }
 
 func recordAction(prev Tracked, p tmux.Pane, b *Banner, now time.Time, cfg Config) Tracked {
@@ -2918,9 +3165,6 @@ func Run(ctx context.Context, cfg Config) error {
 				if err := CommitManagedState(cfg.StatePath, base, managed); err != nil {
 					slog.Error("save managed state failed", "err", err)
 				}
-			}
-			if PostTick != nil {
-				PostTick(time.Now())
 			}
 		}()
 		tick++

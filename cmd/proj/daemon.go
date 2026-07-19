@@ -270,8 +270,7 @@ func renderOverseer() {
 	ov := cfg.Daemon.Overseer
 	fmt.Println()
 	if !ov.Enabled {
-		fmt.Printf("   Overseer: off  (model=%s interval=%s; enable with `proj daemon overseer on`)\n",
-			ov.Model, ov.Interval)
+		fmt.Printf("   Overseer: off  (model=%s; enable with `proj daemon overseer on`)\n", ov.Model)
 		return
 	}
 	recs := overseer.ReadUsageLog()
@@ -286,17 +285,20 @@ func renderOverseer() {
 	if overseer.DayBudget > 0 {
 		pct = eff * 100 / overseer.DayBudget
 	}
-	fmt.Printf("   Overseer: on · model=%s interval=%s · last look %s\n", ov.Model, ov.Interval, last)
+	fmt.Printf("   Overseer: on · model=%s · last judge %s\n", ov.Model, last)
 	fmt.Printf("             today %d looks · ~%s eff (%d%% of %s budget)\n",
 		looks, formatK(eff), pct, formatK(overseer.DayBudget))
-	pending := 0
+	var short, blocked int
 	for _, s := range sessions {
-		if s.Nudges > 0 || s.Notified {
-			pending++
+		switch s.State {
+		case "stopped_short":
+			short++
+		case "blocked":
+			blocked++
 		}
 	}
-	if pending > 0 {
-		fmt.Printf("             %d session(s) with pending nudge/notify\n", pending)
+	if short > 0 || blocked > 0 {
+		fmt.Printf("             %d stopped short · %d blocked (see `proj daemon overseer`)\n", short, blocked)
 	}
 }
 
@@ -391,17 +393,6 @@ func runDaemonForeground(cmd *cobra.Command, args []string) error {
 	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stdout, nil)))
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
-	// The overseer runs as a per-tick pass; wiring it through daemon.PostTick
-	// keeps the daemon package unaware of the overseer (which imports it). It
-	// reloads config each look so `overseer on/off` takes effect without a
-	// restart, and no-ops while disabled.
-	daemon.PostTick = func(now time.Time) {
-		cfg, err := config.Load()
-		if err != nil {
-			return
-		}
-		overseer.Pass(cfg, now)
-	}
 	return daemon.Run(ctx, daemonConfig())
 }
 
@@ -425,6 +416,7 @@ func daemonConfig() daemon.Config {
 		}
 	}
 	out.ClaudeHome = user.Claude.Home
+	out.Overseer = user.Daemon.Overseer
 	return out
 }
 
