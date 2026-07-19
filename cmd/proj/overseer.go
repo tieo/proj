@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -110,82 +111,164 @@ func runOverseerRun(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-// printOverseerReport is the no-argument `proj daemon overseer` view: the
-// enabled state and settings, then what the overseer has actually done -
-// its last look, today's token spend against the budget, the warmth of the
-// last call's cache, per-session nudge memory, and a tail of recent looks.
+// ANSI styles for the overseer report.
+const (
+	aReset  = "\033[0m"
+	aBold   = "\033[1m"
+	aDim    = "\033[90m"
+	aGreen  = "\033[32m"
+	aYellow = "\033[33m"
+	aRed    = "\033[31m"
+	aCyan   = "\033[36m"
+)
+
+// printOverseerReport is the no-argument `proj daemon overseer` view: a
+// human-readable dashboard of the fleet judge - whether it's on, what it does,
+// today's token spend against the budget, when it last looked, the cost pattern
+// of recent looks, and which sessions it is currently acting on.
 func printOverseerReport(cfg config.Config) {
 	ov := cfg.Daemon.Overseer
-	state := "off"
-	if ov.Enabled {
-		state = "on"
-	}
-	fmt.Printf("overseer: %s   model=%s interval=%s max_nudges=%d max_tokens=%d ntfy=%s\n",
-		state, ov.Model, ov.Interval, ov.MaxNudges, ov.MaxTokens, orNone(ov.NtfyTopic))
-
+	now := time.Now()
 	recs := overseer.ReadUsageLog()
 	lastLook, sessions := overseer.ReadLookState()
+
+	badge := aDim + "○ off" + aReset
+	if ov.Enabled {
+		badge = aGreen + aBold + "● on" + aReset
+	}
+	fmt.Println()
+	fmt.Printf("  %s⬢ Overseer%s  %s   %smodel %s · every %s · budget %s/day%s\n",
+		aBold, aReset, badge, aDim, ov.Model, ov.Interval, formatK(overseer.DayBudget), aReset)
+	fmt.Printf("  %sNudges idle sessions that stopped short of their goal; pings you only\n  when a decision genuinely needs you.%s\n\n", aDim, aReset)
+
 	if len(recs) == 0 && lastLook.IsZero() {
-		fmt.Println("  no looks recorded yet — run one with `proj daemon overseer run`")
+		how := "run one now with `proj daemon overseer run`"
+		if ov.Enabled {
+			how = "the daemon will look on its next round of new work"
+		}
+		fmt.Printf("  %sNo looks yet — %s.%s\n\n", aDim, how, aReset)
 		return
 	}
-	now := time.Now()
 
-	if !lastLook.IsZero() {
-		fmt.Printf("  last look:  %s (%s ago)\n", lastLook.Format("Mon 15:04:05"), formatAgo(now.Sub(lastLook)))
-	}
+	// Budget bar.
 	looks, eff := overseer.TodayUsage(recs, now)
 	pct := 0
 	if overseer.DayBudget > 0 {
 		pct = eff * 100 / overseer.DayBudget
 	}
-	fmt.Printf("  today:      %d looks · ~%s effective / %s budget (%d%%)\n",
-		looks, formatK(eff), formatK(overseer.DayBudget), pct)
+	fmt.Printf("  %-13s %s  %s%d%%%s   %s of %s tokens\n",
+		"Budget today", budgetBar(pct, 22), budgetColor(pct), pct, aReset,
+		formatK(eff), formatK(overseer.DayBudget))
+	fmt.Printf("  %-13s %d\n", "Looks today", looks)
 
-	if n := len(recs); n > 0 {
-		last := recs[n-1]
-		warm := "cold — prefix not cached"
-		if last.CacheRead >= 15000 {
-			warm = "warm"
+	// Last look, with cache warmth in plain words.
+	if !lastLook.IsZero() {
+		warm := aYellow + "cold, prefix rebuilt" + aReset
+		if n := len(recs); n > 0 && recs[n-1].CacheRead >= 15000 {
+			warm = aGreen + "warm, reads cheap" + aReset
 		}
-		fmt.Printf("  last usage: judged=%d in=%d out=%d cache_read=%s cache_create=%s ~eff=%s (%s)\n",
-			last.Judged, last.Input, last.Output,
-			formatK(last.CacheRead), formatK(last.CacheCreate), formatK(last.Effective()), warm)
+		judged := ""
+		if n := len(recs); n > 0 {
+			judged = fmt.Sprintf(" · %d judged", recs[n-1].Judged)
+		}
+		fmt.Printf("  %-13s %s %s(%s ago)%s%s · %s\n",
+			"Last look", lastLook.Format("15:04"), aDim, formatAgo(now.Sub(lastLook)), aReset, judged, warm)
 	}
 
-	if len(sessions) > 0 {
-		pending := 0
-		for _, s := range sessions {
-			if s.Nudges > 0 || s.Notified {
-				pending++
-			}
+	// Cost pattern of recent looks as a sparkline, newest on the right.
+	if effs := recentEffective(recs, 16); len(effs) > 0 {
+		fmt.Printf("  %-13s %s%s%s  %s%s last%s\n",
+			"Cost/look", aCyan, sparkline(effs), aReset, aDim, formatK(effs[len(effs)-1]), aReset)
+	}
+
+	// Sessions the overseer is currently acting on. Ones it has judged on track
+	// carry no nudge memory and are omitted; the interesting rows are the ones it
+	// nudged or pinged about.
+	var flagged []overseer.SessionMemory
+	for _, s := range sessions {
+		if s.Nudges > 0 || s.Notified {
+			flagged = append(flagged, s)
 		}
-		fmt.Printf("  sessions:   %d tracked", len(sessions))
-		if pending > 0 {
-			fmt.Printf(", %d with pending nudge/notify", pending)
-		}
-		fmt.Println()
-		for _, s := range sessions {
-			if s.Nudges == 0 && !s.Notified {
-				continue
-			}
-			flag := ""
+	}
+	fmt.Println()
+	if len(flagged) == 0 {
+		fmt.Printf("  %sFlagged now%s   %snone — every session on track or still working%s\n",
+			aBold, aReset, aDim, aReset)
+	} else {
+		fmt.Printf("  %sFlagged now%s\n", aBold, aReset)
+		for _, s := range flagged {
+			state := fmt.Sprintf("%snudged %d/%d, still short%s", aYellow, s.Nudges, ov.MaxNudges, aReset)
 			if s.Notified {
-				flag = " · user notified"
+				state = aRed + "waiting on you" + aReset
 			}
-			fmt.Printf("    ● %-22s nudges %d/%d%s\n", s.Name, s.Nudges, ov.MaxNudges, flag)
+			fmt.Printf("    ● %-22s %s\n", s.Name, state)
 		}
 	}
+	fmt.Println()
+}
 
-	fmt.Println("  recent looks:")
-	start := len(recs) - 8
+// budgetBar draws a width-cell meter filled to pct, coloured by headroom.
+func budgetBar(pct, width int) string {
+	if pct < 0 {
+		pct = 0
+	}
+	fill := pct * width / 100
+	if fill > width {
+		fill = width
+	}
+	return budgetColor(pct) + strings.Repeat("█", fill) + aDim + strings.Repeat("░", width-fill) + aReset
+}
+
+func budgetColor(pct int) string {
+	switch {
+	case pct >= 90:
+		return aRed
+	case pct >= 70:
+		return aYellow
+	default:
+		return aGreen
+	}
+}
+
+// sparkline renders values as eighth-block bars, scaled between their own min
+// and max.
+func sparkline(vals []int) string {
+	if len(vals) == 0 {
+		return ""
+	}
+	blocks := []rune("▁▂▃▄▅▆▇█")
+	min, max := vals[0], vals[0]
+	for _, v := range vals {
+		if v < min {
+			min = v
+		}
+		if v > max {
+			max = v
+		}
+	}
+	var b strings.Builder
+	for _, v := range vals {
+		idx := 0
+		if max > min {
+			idx = (v - min) * (len(blocks) - 1) / (max - min)
+		}
+		b.WriteRune(blocks[idx])
+	}
+	return b.String()
+}
+
+// recentEffective returns the effective-token cost of up to the last n looks,
+// oldest first.
+func recentEffective(recs []overseer.UsageRecord, n int) []int {
+	start := len(recs) - n
 	if start < 0 {
 		start = 0
 	}
+	out := make([]int, 0, len(recs)-start)
 	for _, r := range recs[start:] {
-		fmt.Printf("    %s  judged %-2d  eff %-6s read %-6s create %s\n",
-			r.At.Format("01-02 15:04"), r.Judged, formatK(r.Effective()), formatK(r.CacheRead), formatK(r.CacheCreate))
+		out = append(out, r.Effective())
 	}
+	return out
 }
 
 // formatK abbreviates a token count: 940, 3.2k, 122k.
@@ -198,11 +281,4 @@ func formatK(n int) string {
 	default:
 		return fmt.Sprintf("%dk", n/1000)
 	}
-}
-
-func orNone(s string) string {
-	if s == "" {
-		return "(none)"
-	}
-	return s
 }
