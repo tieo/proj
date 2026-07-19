@@ -2483,7 +2483,7 @@ func Tick(cfg Config, state State, errorState ErrorState, managed ManagedState, 
 	// Overseer memory, loaded once per tick and saved after the pane loop. The
 	// judge fires per session as it goes idle (see overseeClaude), not on a timer.
 	var oversMem overseer.Memory
-	if cfg.Overseer.Enabled {
+	if cfg.Overseer.Active() {
 		oversMem = overseer.LoadMemory()
 	}
 
@@ -2857,7 +2857,7 @@ func Tick(cfg Config, state State, errorState ErrorState, managed ManagedState, 
 			}
 			// No stall: the session is either working or has gone idle. If idle and
 			// it stopped short of its goal, the overseer nudges it.
-			if cfg.Overseer.Enabled {
+			if cfg.Overseer.Active() {
 				overseeClaude(cfg, p, paneDir, content, sessFile, now, &oversMem)
 			}
 			continue
@@ -2904,7 +2904,7 @@ func Tick(cfg Config, state State, errorState ErrorState, managed ManagedState, 
 		}
 	}
 
-	if cfg.Overseer.Enabled {
+	if cfg.Overseer.Active() {
 		live := make(map[string]bool, len(panes))
 		for _, p := range panes {
 			live[p.Session] = true
@@ -2946,6 +2946,13 @@ func overseeClaude(cfg Config, p tmux.Pane, dir, content, sessFile string, now t
 	recheckDue := !prev.NextRecheck.IsZero() && !now.Before(prev.NextRecheck)
 	if sig == "" || (sig == prev.Sig && !recheckDue) {
 		return // nothing new since the last judge, and no recheck due
+	}
+	// on_goal mode judges only sessions the user pinned a /goal on. The goal is
+	// stored in the transcript as a goal_status sentinel attachment; skip a
+	// session with no open goal so the judge never touches it.
+	if cfg.Overseer.RequiresGoal() && !sessionHasActiveGoal(sessFile) {
+		slog.Debug("overseer skip: no /goal set", "session", p.Session)
+		return
 	}
 	ss, ok := overseerSession(p.Session, config.DefaultTool, sessFile, dir)
 	if !ok {
@@ -3005,6 +3012,44 @@ func overseeClaude(cfg Config, p tmux.Pane, dir, content, sessFile string, now t
 		slog.Info("overseer judged", "session", p.Session, "state", v.State, "goal", v.Goal)
 	}
 	mem.Sessions[p.Session] = m
+}
+
+// goalStatusLine is the slice of a transcript record the daemon needs to tell
+// whether a /goal is still open: the goal_status attachment's met/failed flags.
+type goalStatusLine struct {
+	Attachment struct {
+		Type   string `json:"type"`
+		Met    bool   `json:"met"`
+		Failed bool   `json:"failed"`
+	} `json:"attachment"`
+}
+
+// sessionHasActiveGoal reports whether the session has an open /goal, read from
+// its transcript. Claude Code's /goal writes a goal_status attachment when the
+// goal is armed and again each time it judges; the goal is open until one lands
+// with met or failed set. The last such attachment wins, so a session that met
+// or abandoned its goal reads as having none.
+func sessionHasActiveGoal(sessFile string) bool {
+	f, err := os.Open(sessFile)
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+	active := false
+	r := bufio.NewReader(f)
+	for {
+		line, err := r.ReadBytes('\n')
+		if bytes.Contains(line, []byte(`"type":"goal_status"`)) {
+			var g goalStatusLine
+			if json.Unmarshal(bytes.TrimSpace(line), &g) == nil && g.Attachment.Type == "goal_status" {
+				active = !g.Attachment.Met && !g.Attachment.Failed
+			}
+		}
+		if err != nil {
+			break
+		}
+	}
+	return active
 }
 
 // fileSig is a cheap fingerprint of a transcript file (size and mtime); it

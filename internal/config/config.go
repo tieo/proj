@@ -120,14 +120,22 @@ type ListConfig struct {
 
 // OverseerConfig configures the fleet overseer: as each session goes idle the
 // daemon judges whether it reached its goal, and nudges the ones that stopped
-// short. Off by default; nothing runs until Enabled is set.
+// short. Mode gates it: "off" runs nothing, "on_goal" judges only sessions with
+// a /goal set (the default), "on" judges every session.
 type OverseerConfig struct {
-	Enabled   bool   `toml:"enabled"`
+	Mode      string `toml:"mode"`       // off | on_goal | on
 	Model     string `toml:"model"`      // model for the judge (default sonnet, far cheaper than opus)
 	MaxNudges int    `toml:"max_nudges"` // consecutive nudges to one session without progress before giving up
 	MaxTokens int    `toml:"max_tokens"` // per-session transcript budget fed to the judge (default 4000)
 	NtfyTopic string `toml:"ntfy_topic"` // ntfy topic for the rare user-decision notification; empty disables push
 }
+
+// Active reports whether the overseer runs at all.
+func (o OverseerConfig) Active() bool { return o.Mode == "on" || o.Mode == "on_goal" }
+
+// RequiresGoal reports whether the overseer judges only sessions that have a
+// /goal set (on_goal mode).
+func (o OverseerConfig) RequiresGoal() bool { return o.Mode == "on_goal" }
 
 func Default() Config {
 	home, _ := os.UserHomeDir()
@@ -143,7 +151,7 @@ func Default() Config {
 			ResumeText:   "continue",
 			CaptureLines: 300,
 			Overseer: OverseerConfig{
-				Enabled:   false,
+				Mode:      "on_goal",
 				Model:     "sonnet",
 				MaxNudges: 3,
 				MaxTokens: 4000,

@@ -66,7 +66,7 @@ func runList(cmd *cobra.Command, args []string) error {
 	// Overseer verdicts, shown in the note column. Only when the overseer is on:
 	// its memory is otherwise stale and would mislabel a session's state.
 	oversMem := overseer.Memory{Sessions: map[string]overseer.SessionMemory{}}
-	if cfg.Daemon.Overseer.Enabled {
+	if cfg.Daemon.Overseer.Active() {
 		oversMem = overseer.LoadMemory()
 	}
 	maxNudges := cfg.Daemon.Overseer.MaxNudges

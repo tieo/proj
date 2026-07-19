@@ -269,7 +269,7 @@ func renderOverseer() {
 	}
 	ov := cfg.Daemon.Overseer
 	fmt.Println()
-	if !ov.Enabled {
+	if !ov.Active() {
 		fmt.Printf("   Overseer: off  (model=%s; enable with `proj daemon overseer on`)\n", ov.Model)
 		return
 	}
@@ -390,7 +390,11 @@ func runDaemonStatus(cmd *cobra.Command, args []string) error {
 }
 
 func runDaemonForeground(cmd *cobra.Command, args []string) error {
-	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stdout, nil)))
+	lvl := slog.LevelInfo
+	if os.Getenv("PROJ_LOG") == "debug" {
+		lvl = slog.LevelDebug
+	}
+	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: lvl})))
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
 	return daemon.Run(ctx, daemonConfig())

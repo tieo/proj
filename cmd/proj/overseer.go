@@ -17,8 +17,8 @@ import (
 // command: no argument shows the status report, on/off toggles
 // [daemon.overseer].enabled in config.toml. Registered under daemonCmd.
 var overseerCmd = &cobra.Command{
-	Use:   "overseer [on|off]",
-	Short: "show the fleet overseer, or turn it on/off (overseer run for a dry-run)",
+	Use:   "overseer [on|off|on_goal]",
+	Short: "show the fleet overseer, or set its mode (on_goal judges only /goal sessions; overseer run for a dry-run)",
 	Long: `Show or set the daemon's fleet overseer.
 
 With no argument, prints the overseer's status: whether it's on, today's token
@@ -58,11 +58,13 @@ func runOverseer(cmd *cobra.Command, args []string) error {
 	}
 	switch args[0] {
 	case "on":
-		ov.Enabled = true
+		ov.Mode = "on"
 	case "off":
-		ov.Enabled = false
+		ov.Mode = "off"
+	case "on_goal", "goal":
+		ov.Mode = "on_goal"
 	default:
-		return fmt.Errorf("expected on or off, got %q", args[0])
+		return fmt.Errorf("expected on, off, or on_goal, got %q", args[0])
 	}
 	if err := config.Write(cfg); err != nil {
 		return err
@@ -130,8 +132,12 @@ func printOverseerReport(cfg config.Config) {
 	lastLook, sessions := overseer.ReadLookState()
 
 	badge := aDim + "○ off" + aReset
-	if ov.Enabled {
-		badge = aGreen + aBold + "● on" + aReset
+	if ov.Active() {
+		label := "on"
+		if ov.RequiresGoal() {
+			label = "on (goal-only)"
+		}
+		badge = aGreen + aBold + "● " + label + aReset
 	}
 	fmt.Println()
 	fmt.Printf("  %s⬢ Overseer%s  %s   %smodel %s · budget %s/day%s\n",
@@ -140,7 +146,7 @@ func printOverseerReport(cfg config.Config) {
 
 	if len(recs) == 0 && lastLook.IsZero() {
 		how := "run one now with `proj daemon overseer run`"
-		if ov.Enabled {
+		if ov.Active() {
 			how = "the daemon will look on its next round of new work"
 		}
 		fmt.Printf("  %sNo looks yet — %s.%s\n\n", aDim, how, aReset)
