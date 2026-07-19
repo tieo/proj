@@ -404,6 +404,56 @@ func composerHasDraft(escContent string) bool {
 	return true // no input line found: treat as unsafe
 }
 
+// composerState returns what sits in a pane's input box from an escape-
+// preserving capture: the text, and whether it is a real user draft (normal
+// weight) versus the agent's dim ghost suggestion. Empty text means an empty
+// box. A picker counts as a draft (unsafe to type). It shares composerHasDraft's
+// dim-vs-normal logic; the overseer feeds the text to the judge and uses the
+// draft flag to know the user is engaged.
+func composerState(escContent string) (text string, draft bool) {
+	lines := strings.Split(escContent, "\n")
+	for i := len(lines) - 1; i >= 0; i-- {
+		plain := sgrRE.ReplaceAllString(lines[i], "")
+		if !strings.ContainsRune(plain, '❯') {
+			continue
+		}
+		if pickerOptionRE.MatchString(plain) {
+			return "", true // a numbered picker is open; not a composer
+		}
+		// Normal-weight text after dropping the dim ghost span is a real draft.
+		nodim := sgrRE.ReplaceAllString(osc8RE.ReplaceAllString(dimSpanRE.ReplaceAllString(lines[i], ""), ""), "")
+		if idx := strings.IndexRune(nodim, '❯'); idx >= 0 {
+			nodim = nodim[idx+len("❯"):]
+		}
+		if d := strings.TrimSpace(nodim); d != "" {
+			return d, true
+		}
+		// Empty of draft: the ghost placeholder is the agent's suggested next step.
+		full := sgrRE.ReplaceAllString(osc8RE.ReplaceAllString(lines[i], ""), "")
+		if idx := strings.IndexRune(full, '❯'); idx >= 0 {
+			full = full[idx+len("❯"):]
+		}
+		return strings.TrimSpace(full), false
+	}
+	return "", false
+}
+
+// pendingNote describes the composer contents for the judge: a ghost suggestion
+// is the agent's proposed next step (it is not done); a real draft means the
+// user is replying. "" when the box is empty.
+func pendingNote(text string, draft bool) string {
+	if text == "" {
+		return ""
+	}
+	if len(text) > overseerTaskCap {
+		text = text[:overseerTaskCap] + "…"
+	}
+	if draft {
+		return "user is typing a reply: " + text
+	}
+	return "agent's suggested next step: " + text
+}
+
 // rcNudgeCooldown bounds how often the watchdog re-sends /rc to one pane, so a
 // session that genuinely can't bind (or one mid-restart) isn't spammed.
 const rcNudgeCooldown = 5 * time.Minute
@@ -2901,6 +2951,15 @@ func overseeClaude(cfg Config, p tmux.Pane, dir, content, sessFile string, now t
 	if !ok {
 		return
 	}
+	// Feed the judge what is in the input box: a dim ghost is the agent's own
+	// suggested next step (it is not done), a real draft means the user is
+	// replying. The draft flag also guards the action below.
+	esc := tmux.CapturePaneEsc(p.ID)
+	drafting := composerHasDraft(esc)
+	if text, _ := composerState(esc); text != "" {
+		ss.Pending = pendingNote(text, drafting)
+	}
+
 	res, err := overseer.Look(cfg.Overseer.Model, []overseer.SessionState{ss})
 	if err != nil {
 		slog.Error("overseer look failed", "session", p.Session, "err", err)
@@ -2917,17 +2976,17 @@ func overseeClaude(cfg Config, p tmux.Pane, dir, content, sessFile string, now t
 
 	v := res.Verdicts[0]
 	action, m := overseer.Decide(v, prev, cfg.Overseer.MaxNudges)
-	m.Sig, m.State, m.Goal = sig, v.State, v.Goal
+	m.Sig, m.State, m.Goal, m.Reason = sig, v.State, v.Goal, v.Reason
 	if v.State == "blocked" {
 		m.NextRecheck = now.Add(overseerRecheck)
 	} else {
 		m.NextRecheck = time.Time{}
 	}
-	switch action {
-	case overseer.ActNudge:
-		if composerHasDraft(tmux.CapturePaneEsc(p.ID)) {
-			break // user is typing; do not nudge over a draft
-		}
+	// A draft means the user is already engaged with this session, so neither
+	// nudge (would type over the draft) nor ping (they are already answering) -
+	// the whole point is to catch sessions the user left.
+	switch {
+	case action == overseer.ActNudge && !drafting:
 		if err := submitPrompt(cfg, p.ID, v.Callout); err != nil {
 			slog.Error("overseer nudge failed", "session", p.Session, "err", err)
 		} else {
@@ -2935,11 +2994,13 @@ func overseeClaude(cfg Config, p tmux.Pane, dir, content, sessFile string, now t
 			slog.Info("overseer nudged", "session", p.Session,
 				"nudges", m.Nudges, "goal", v.Goal, "callout", v.Callout)
 		}
-	case overseer.ActNotify:
+	case action == overseer.ActNotify && !drafting:
 		if notifyUser(cfg.Overseer.NtfyTopic, p.Session, v) {
 			m.Notified = true
 			slog.Info("overseer notified user", "session", p.Session, "reason", v.UserReason)
 		}
+	case drafting:
+		slog.Debug("overseer holding; user has a draft", "session", p.Session, "state", v.State)
 	default:
 		slog.Info("overseer judged", "session", p.Session, "state", v.State, "goal", v.Goal)
 	}
@@ -3053,6 +3114,12 @@ func notifyUser(topic, session string, v overseer.Verdict) bool {
 // Backs `proj daemon overseer run`.
 func OverseerDryRun(cfg Config) (overseer.LookResult, error) {
 	reg, _ := projects.LoadRegistry()
+	paneBySession := make(map[string]string)
+	for _, p := range tmux.ListPanes() {
+		if _, seen := paneBySession[p.Session]; !seen {
+			paneBySession[p.Session] = p.ID
+		}
+	}
 	budget := cfg.Overseer.MaxTokens
 	if budget <= 0 {
 		budget = 4000
@@ -3077,6 +3144,14 @@ func OverseerDryRun(cfg Config) (overseer.LookResult, error) {
 		if !ok {
 			continue
 		}
+		if tool == config.DefaultTool {
+			if pane := paneBySession[s.Name]; pane != "" {
+				esc := tmux.CapturePaneEsc(pane)
+				if text, _ := composerState(esc); text != "" {
+					ss.Pending = pendingNote(text, composerHasDraft(esc))
+				}
+			}
+		}
 		if len(ss.Tail) > remaining {
 			ss.Tail = "…" + ss.Tail[len(ss.Tail)-remaining:]
 		}
@@ -3090,7 +3165,7 @@ func OverseerDryRun(cfg Config) (overseer.LookResult, error) {
 	mem := overseer.LoadMemory()
 	for _, v := range res.Verdicts {
 		m := mem.Sessions[v.Name]
-		m.State, m.Goal = v.State, v.Goal
+		m.State, m.Goal, m.Reason = v.State, v.Goal, v.Reason
 		mem.Sessions[v.Name] = m
 	}
 	mem.LastLook = time.Now()

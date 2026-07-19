@@ -16,6 +16,7 @@ type SessionMemory struct {
 	Notified    bool      `json:"notified"`
 	State       string    `json:"state"`        // last judged: working | done | stopped_short | blocked
 	Goal        string    `json:"goal"`         // last inferred goal
+	Reason      string    `json:"reason"`       // why the judge chose that state
 	NextRecheck time.Time `json:"next_recheck"` // when to re-judge a blocked session even with no new work; zero = only on new work
 }
 

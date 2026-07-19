@@ -21,20 +21,23 @@ import (
 )
 
 // SessionState is one session's input to the overseer: its name, tool, the
-// original task (the first user turn, when it can be read), and a recent slice
-// of its transcript.
+// original task (the first user turn, when it can be read), a recent slice of
+// its transcript, and what currently sits in its input box (pending).
 type SessionState struct {
-	Name string `json:"name"`
-	Tool string `json:"tool"`
-	Task string `json:"task,omitempty"` // the session's original goal, first user turn
-	Tail string `json:"tail"`
+	Name    string `json:"name"`
+	Tool    string `json:"tool"`
+	Task    string `json:"task,omitempty"` // the session's original goal, first user turn
+	Tail    string `json:"tail"`
+	Pending string `json:"pending,omitempty"` // what's in the input box now: the agent's suggested next step, or a user draft
 }
 
-// Verdict is the overseer's per-session decision.
+// Verdict is the overseer's per-session decision. Reason states why it chose the
+// state, so a call can be understood and a wrong one caught.
 type Verdict struct {
 	Name       string `json:"name"`
 	Goal       string `json:"goal"`
-	State      string `json:"state"` // done | stopped_short | blocked | working
+	State      string `json:"state"`  // done | stopped_short | blocked | working
+	Reason     string `json:"reason"` // one sentence: why this state
 	Callout    string `json:"callout"`
 	NeedsUser  bool   `json:"needs_user"`
 	UserReason string `json:"user_reason"`
@@ -77,18 +80,22 @@ func ScratchDir() string {
 // than competing with Claude Code's coding-agent framing in a user turn.
 const overseerSystemPrompt = `You are the overseer of a fleet of autonomous coding-agent sessions. You do not write code or use tools. Your only job: read each session's recent transcript and judge whether it reached its goal or stopped short.
 
-Each user message is a JSON array of sessions, each with a name, tool, an optional task (the session's original goal, from its first message), and a recent transcript tail. For each session:
+Each user message is a JSON array of sessions, each with a name, tool, an optional task (the session's original goal, from its first message), a recent transcript tail, and an optional pending field (what is in the session's input box right now). For each session:
 - take its goal from task when present, otherwise infer it from the tail,
-- judge its state: "working" (actively mid-task), "done" (goal met), "stopped_short" (idle with the goal unmet and a path still open), or "blocked" (needs something it cannot get itself),
+- judge its state: "working" (actively mid-task), "done" (the goal is fully met with nothing left to do), "stopped_short" (idle with the goal unmet and a path still open), or "blocked" (needs something it cannot get itself),
+- if the last message ends by asking the user a question or offering options to choose from, the state is "stopped_short" with needs_user true, however much was accomplished - it is waiting on the user, not done,
+- a good stopping point is not "done": if any part of the goal (or a follow-up the agent itself named) remains, it is "stopped_short",
+- read pending: "agent's suggested next step: X" is the agent proposing what to do next, so it is NOT done - state stopped_short and put X in callout; "user is typing ..." means the user is engaged, so leave it (working),
 - if stopped_short, write callout: one imperative sentence telling the agent to continue toward the goal,
-- set needs_user true ONLY when a real decision is required that the agent cannot make on its own.
+- set needs_user true when a real decision is required that the agent cannot make on its own (including when it asked the user a question),
+- write reason: one sentence saying why you chose this state, citing the last thing that happened.
 
 Reply with ONLY a JSON array, one object per session, no prose, no markdown fences:
-[{"name":"...","goal":"...","state":"working|done|stopped_short|blocked","callout":"...","needs_user":false,"user_reason":""}]`
+[{"name":"...","goal":"...","state":"working|done|stopped_short|blocked","reason":"...","callout":"...","needs_user":false,"user_reason":""}]`
 
 // promptContract is appended to every user turn to hold a resumed session to the
 // output format (see the note in Look).
-const promptContract = `Judge these sessions. Reply with ONLY the JSON array of verdicts, one object per session, no prose, no markdown fences.`
+const promptContract = `Judge these sessions. Reply with ONLY the JSON array of verdicts, each with name, goal, state, reason, callout, needs_user, user_reason - no prose, no markdown fences.`
 
 // Look runs one overseer call over the given session tails and returns the
 // verdicts and token usage. It takes no action; the daemon acts on the verdicts.

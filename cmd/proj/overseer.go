@@ -83,6 +83,9 @@ func runOverseerRun(cmd *cobra.Command, args []string) error {
 
 	for _, v := range res.Verdicts {
 		fmt.Printf("  %-24s %-13s %s\n", v.Name, v.State, v.Goal)
+		if v.Reason != "" {
+			fmt.Printf("      %swhy: %s%s\n", aDim, v.Reason, aReset)
+		}
 		if v.State == "stopped_short" && v.Callout != "" {
 			fmt.Printf("      → %s\n", v.Callout)
 		}
@@ -195,6 +198,9 @@ func printOverseerReport(cfg config.Config) {
 			}
 			fmt.Printf("    %s %-8s %-20s %s%.58s%s%s\n",
 				glyph, label, s.Name, aDim, s.Goal, aReset, note)
+			if s.Reason != "" {
+				fmt.Printf("      %s%.72s%s\n", aDim, s.Reason, aReset)
+			}
 		}
 	}
 	fmt.Println()
