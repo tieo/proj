@@ -2,6 +2,28 @@ package overseer
 
 import "testing"
 
+func TestNormalizeState(t *testing.T) {
+	cases := map[string]string{
+		"working":       "working",
+		"in_progress":   "working", // the off-enum value seen in the wild
+		"active":        "working",
+		"":              "working", // empty falls back to the safe no-op
+		"whatever":      "working",
+		"done":          "done",
+		"Completed":     "done",
+		"stopped_short": "stopped_short",
+		"stopped":       "stopped_short",
+		"paused":        "stopped_short",
+		"blocked":       "blocked",
+		"stuck":         "blocked",
+	}
+	for in, want := range cases {
+		if got := normalizeState(in); got != want {
+			t.Errorf("normalizeState(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
 func TestDecide(t *testing.T) {
 	const maxNudges = 3
 	cases := []struct {

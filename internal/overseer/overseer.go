@@ -82,7 +82,7 @@ const overseerSystemPrompt = `You are the overseer of a fleet of autonomous codi
 
 Each user message is a JSON array of sessions, each with a name, tool, an optional task (the session's original goal, from its first message), a recent transcript tail, and an optional pending field (what is in the session's input box right now). For each session:
 - take its goal from task when present, otherwise infer it from the tail,
-- judge its state: "working" (actively mid-task), "done" (the goal is fully met with nothing left to do), "stopped_short" (idle with the goal unmet and a path still open), or "blocked" (needs something it cannot get itself),
+- judge its state, which MUST be exactly one of these four strings: "working" (actively mid-task), "done" (the goal is fully met with nothing left to do), "stopped_short" (idle with the goal unmet and a path still open), "blocked" (needs something it cannot get itself). Use no other value,
 - if the last message ends by asking the user a question or offering options to choose from, the state is "stopped_short" with needs_user true, however much was accomplished - it is waiting on the user, not done,
 - a good stopping point is not "done": if any part of the goal (or a follow-up the agent itself named) remains, it is "stopped_short",
 - read pending: "agent's suggested next step: X" is the agent proposing what to do next, so it is NOT done - state stopped_short and put X in callout; "user is typing ..." means the user is engaged, so leave it (working),
@@ -230,7 +230,27 @@ func parseVerdicts(s string) []Verdict {
 	if json.Unmarshal([]byte(s), &v) != nil {
 		return nil
 	}
+	for i := range v {
+		v[i].State = normalizeState(v[i].State)
+	}
 	return v
+}
+
+// normalizeState maps whatever the model emits to exactly one of the four valid
+// states, so an off-spec value ("in_progress", "completed", …) can never reach
+// the actions or the display. An unrecognised state falls back to "working":
+// the safe no-op, so the overseer never nudges on a state it does not understand.
+func normalizeState(s string) string {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "done", "complete", "completed", "finished", "resolved":
+		return "done"
+	case "stopped_short", "stopped-short", "stoppedshort", "stopped", "short", "paused", "incomplete":
+		return "stopped_short"
+	case "blocked", "stuck", "waiting":
+		return "blocked"
+	default: // working, in_progress, active, and anything unrecognised
+		return "working"
+	}
 }
 
 // UsageLogPath is where each look's usage is appended as JSONL, so cache warmth
