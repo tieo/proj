@@ -3109,9 +3109,9 @@ func notifyUser(topic, session string, v overseer.Verdict) bool {
 }
 
 // OverseerDryRun judges every readable session once and returns the result,
-// taking no action on the sessions. It records the verdicts (state and goal)
-// into the overseer's memory so the status report reflects a manual look.
-// Backs `proj daemon overseer run`.
+// with no side effect on the overseer's state: it nudges nothing and does not
+// touch the memory the live daemon keeps, so a dry-run can never leave a session
+// labelled as judged when it was not acted on. Backs `proj daemon overseer run`.
 func OverseerDryRun(cfg Config) (overseer.LookResult, error) {
 	reg, _ := projects.LoadRegistry()
 	paneBySession := make(map[string]string)
@@ -3158,19 +3158,7 @@ func OverseerDryRun(cfg Config) (overseer.LookResult, error) {
 		remaining -= len(ss.Tail)
 		sessions = append(sessions, ss)
 	}
-	res, err := overseer.Look(cfg.Overseer.Model, sessions)
-	if err != nil {
-		return res, err
-	}
-	mem := overseer.LoadMemory()
-	for _, v := range res.Verdicts {
-		m := mem.Sessions[v.Name]
-		m.State, m.Goal, m.Reason = v.State, v.Goal, v.Reason
-		mem.Sessions[v.Name] = m
-	}
-	mem.LastLook = time.Now()
-	_ = mem.Save()
-	return res, nil
+	return overseer.Look(cfg.Overseer.Model, sessions)
 }
 
 func recordAction(prev Tracked, p tmux.Pane, b *Banner, now time.Time, cfg Config) Tracked {

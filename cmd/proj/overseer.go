@@ -97,15 +97,13 @@ func runOverseerRun(cmd *cobra.Command, args []string) error {
 		fmt.Printf("  (overseer returned no parseable verdicts)\n  raw: %.300s\n", res.Raw)
 	}
 
+	// A dry-run leaves no trace: the usage is printed for the operator but not
+	// logged, so it never counts against the budget the live overseer reports.
 	u := res.Usage
-	fmt.Printf("usage: judged=%d input=%d output=%d cache_read=%d cache_create=%d  ~effective=%d\n",
+	fmt.Printf("usage: judged=%d input=%d output=%d cache_read=%d cache_create=%d  ~effective=%d (not logged)\n",
 		len(res.Sessions), u.Input, u.Output, u.CacheRead, u.CacheCreate, overseer.Effective(u))
 	if u.CacheRead < 15000 {
 		fmt.Printf("note: cache_read=%d low — the system/CLAUDE.md prefix did not cache (cold or evicted this look)\n", u.CacheRead)
-	}
-
-	if err := overseer.LogUsage(time.Now(), res); err != nil {
-		fmt.Printf("warning: could not log usage: %v\n", err)
 	}
 	return nil
 }
