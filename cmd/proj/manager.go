@@ -1,0 +1,187 @@
+package main
+
+import (
+	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
+
+	"github.com/spf13/cobra"
+
+	"github.com/tieo/proj/internal/config"
+	"github.com/tieo/proj/internal/daemon"
+	"github.com/tieo/proj/internal/projects"
+	"github.com/tieo/proj/internal/tmux"
+)
+
+// managerSession is the fixed session name for the manager. The manager is proj
+// infrastructure, tracked as a System managed session, never a base_dir project.
+const managerSession = "manager"
+
+// managerDir is the manager's working directory: its own git repo under
+// XDG_DATA_HOME (the standard home for app-managed persistent data), kept
+// outside base_dir so it can never be confused with a user project.
+func managerDir() string {
+	base := os.Getenv("XDG_DATA_HOME")
+	if base == "" {
+		home, _ := os.UserHomeDir()
+		base = filepath.Join(home, ".local", "share")
+	}
+	return filepath.Join(base, "proj", "manager")
+}
+
+var managerCmd = &cobra.Command{
+	Use:   "manager [on|off]",
+	Short: "open the always-on manager session (proj infrastructure, not a project)",
+	Long: `Open, enable, or disable the manager.
+
+The manager is a talkable, always-on Claude session that oversees the fleet:
+the daemon routes decisions to it, it can delegate work to other sessions, and
+(later) it holds secrets via sops. It is proj's own infrastructure, so it lives
+in its own git repo under XDG_DATA_HOME (not base_dir) and is tracked as a
+system session with its own ⌂ marker in the list.
+
+  proj manager       scaffold if needed, pin it, and attach
+  proj manager on    same as bare
+  proj manager off   unpin and close it`,
+	Args: cobra.MaximumNArgs(1),
+	RunE: runManager,
+}
+
+func init() {
+	rootCmd.AddCommand(managerCmd)
+}
+
+func runManager(cmd *cobra.Command, args []string) error {
+	cfg, err := config.Load()
+	if err != nil {
+		return err
+	}
+	if len(args) == 1 {
+		switch args[0] {
+		case "off":
+			return managerOff()
+		case "on":
+			// fall through to open
+		default:
+			return fmt.Errorf("expected on or off, got %q", args[0])
+		}
+	}
+	return managerOn(cfg)
+}
+
+// managerOn scaffolds the manager repo if needed, records it as a pinned system
+// session (so keep-alive maintains it), and opens/attaches it.
+func managerOn(cfg config.Config) error {
+	dir := managerDir()
+	if err := scaffoldManager(dir); err != nil {
+		return err
+	}
+	if err := daemon.UpdateManagedState(daemonConfig().StatePath, func(m daemon.ManagedState) error {
+		ms := m[managerSession]
+		ms.Name = managerSession
+		ms.Dir = dir
+		ms.Pinned = true
+		ms.System = true
+		m[managerSession] = ms
+		return nil
+	}); err != nil {
+		return err
+	}
+	// Reuse the normal open machinery with a synthetic project rooted at the
+	// manager dir; its tool is the default (claude), its persona comes from the
+	// CLAUDE.md the scaffold wrote.
+	return openInTmux(cfg, projects.Project{Name: managerSession, Dir: dir})
+}
+
+// managerOff clears the manager's system/pinned flags so keep-alive stops
+// maintaining it, then closes its session.
+func managerOff() error {
+	if err := daemon.UpdateManagedState(daemonConfig().StatePath, func(m daemon.ManagedState) error {
+		ms := m[managerSession]
+		ms.Pinned = false
+		ms.System = false
+		// Mark a clean close so keep-alive does not resurrect it after the kill.
+		ms.ExitedCleanly = true
+		m[managerSession] = ms
+		return nil
+	}); err != nil {
+		return err
+	}
+	_ = tmux.KillSession(managerSession)
+	fmt.Println("manager: off")
+	return nil
+}
+
+// scaffoldManager creates the manager's git repo and seeds its persona on first
+// use. It is idempotent: an existing repo (CLAUDE.md present) is left untouched,
+// so the manager's own edits and history are never overwritten.
+func scaffoldManager(dir string) error {
+	if _, err := os.Stat(filepath.Join(dir, "CLAUDE.md")); err == nil {
+		return nil // already scaffolded
+	}
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return err
+	}
+	if _, err := os.Stat(filepath.Join(dir, ".git")); os.IsNotExist(err) {
+		c := exec.Command("git", "init", "-q")
+		c.Dir = dir
+		if err := c.Run(); err != nil {
+			return fmt.Errorf("git init manager repo: %w", err)
+		}
+	}
+	files := map[string]string{
+		"CLAUDE.md":  managerPersona,
+		"README.md":  managerReadme,
+		".gitignore": managerGitignore,
+	}
+	for name, body := range files {
+		p := filepath.Join(dir, name)
+		if _, err := os.Stat(p); err == nil {
+			continue
+		}
+		if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
+			return err
+		}
+	}
+	fmt.Printf("scaffolded manager repo at %s\n", dir)
+	return nil
+}
+
+const managerPersona = `# proj manager
+
+You are the manager: a talkable, always-on session that oversees the fleet of
+proj-managed coding sessions on this host. You are proj's own infrastructure,
+not a project. Your working directory is this git repo; keep your notes, state,
+and (later) sops-encrypted secrets here, and commit as you change them.
+
+## Role
+
+- Be the human's single point of contact for the fleet. They talk to you here.
+- Triage what the daemon routes to you (goal-nudge decisions that need a human):
+  handle what you can, escalate only what genuinely needs the user.
+- Delegate work to other sessions when asked, via the proj CLI.
+- (Later) hold API keys and secrets encrypted with sops, and use them to reach
+  external services (Jira, etc.) without secrets ever passing through chat.
+
+## Tools
+
+- proj CLI: ` + "`proj list`" + ` to see the fleet, ` + "`proj <name>`" + ` to open a
+  session, ` + "`proj daemon goal-nudge`" + ` to see judged states.
+- This repo: your durable memory and workspace. Commit your changes.
+
+This is an early version; the inbox routing and sops toolkit are not wired yet.
+`
+
+const managerReadme = `# proj manager repo
+
+Working directory and git repo for the proj **manager** session (see ` + "`proj manager`" + `).
+This is proj infrastructure under XDG_DATA_HOME, not a project under base_dir.
+It can be pushed to a remote and managed from elsewhere.
+`
+
+const managerGitignore = `# decrypted secrets must never be committed
+*.dec
+*.plain
+secrets.decrypted
+`

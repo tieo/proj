@@ -2031,6 +2031,7 @@ type ManagedSession struct {
 	Dir           string    `json:"dir"`            // working directory, captured while alive
 	Pinned        bool      `json:"pinned"`         // always recreate, survives system restart
 	KeepAlive     bool      `json:"keep_alive"`     // recreate if not cleanly closed
+	System        bool      `json:"system"`         // proj infrastructure (the manager), not a base_dir project
 	ExitedCleanly bool      `json:"exited_cleanly"` // got a clean goodbye (proj close / shell trap)
 	SeenAt        time.Time `json:"seen_at"`        // last time daemon observed session alive
 	RCEverActive  bool      `json:"rc_ever_active"` // Remote Control was observed bound at least once

@@ -14,6 +14,7 @@ import (
 	"github.com/tieo/proj/internal/daemon"
 	"github.com/tieo/proj/internal/goalnudge"
 	"github.com/tieo/proj/internal/projects"
+	"github.com/tieo/proj/internal/tmux"
 )
 
 const (
@@ -126,6 +127,32 @@ func runList(cmd *cobra.Command, args []string) error {
 
 	var rows []listRow
 	now := time.Now().Unix()
+
+	// The manager is proj infrastructure, tracked as a system session outside
+	// base_dir, so it never appears in `all`. When enabled, surface it at the top
+	// with its own ⌂ marker so it reads as infrastructure, not a project.
+	if mgr, ok := managed[managerSession]; ok && mgr.System {
+		alive := false
+		var mgrTS int64
+		for _, s := range tmux.ListSessions() {
+			if s.Name == managerSession {
+				alive, mgrTS = true, s.Activity
+				break
+			}
+		}
+		glyph := ansiGray + "⌂" + ansiReset + " "
+		if alive {
+			glyph = ansiGreen + "⌂" + ansiReset + " "
+		}
+		rows = append(rows, listRow{
+			indicator: glyph,
+			name:      managerSession,
+			tags:      "system",
+			ts:        mgrTS,
+			note:      "manager",
+			noteColor: ansiDim,
+		})
+	}
 
 	maxAge := cfg.List.MaxAgeDays
 	if listAll {
