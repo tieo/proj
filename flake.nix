@@ -21,6 +21,8 @@
           src = ./.;
           vendorHash = "sha256-TIpQWA4BZOkunPbsLkXDZdgzzYD58crGPGf0RW3hK1M=";
           subPackages = [ "cmd/proj" ];
+          # The secret-store test scaffolds the manager's git repo (git init).
+          nativeCheckInputs = [ pkgs.git ];
           postInstall = ''
             install -Dm0644 -t $out/share/proj shells/proj.zsh shells/proj.bash shells/proj.fish
           '';
