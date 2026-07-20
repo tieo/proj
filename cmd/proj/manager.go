@@ -36,10 +36,11 @@ var managerCmd = &cobra.Command{
 	Long: `Open, enable, or disable the manager.
 
 The manager is a talkable, always-on Claude session that oversees the fleet:
-the daemon routes decisions to it, it can delegate work to other sessions, and
-(later) it holds secrets via sops. It is proj's own infrastructure, so it lives
-in its own git repo under XDG_DATA_HOME (not base_dir) and is tracked as a
-system session with its own ⌂ marker in the list.
+the daemon routes decisions to it, it delegates work to other sessions with
+proj send, and it holds non-MCP credentials in an encrypted store (proj manager
+secret). It is proj's own infrastructure, so it lives in its own git repo under
+XDG_DATA_HOME (not base_dir) and is tracked as a system session with its own ⌂
+marker in the list.
 
   proj manager       scaffold if needed, pin it, and attach
   proj manager on    same as bare
@@ -196,7 +197,7 @@ const managerPersona = `# proj manager
 You are the manager: a talkable, always-on session that oversees the fleet of
 proj-managed coding sessions on this host. You are proj's own infrastructure,
 not a project. Your working directory is this git repo; keep your notes, state,
-and (later) sops-encrypted secrets here, and commit as you change them.
+and encrypted secrets (secrets.enc) here, and commit as you change them.
 
 ## Role
 
