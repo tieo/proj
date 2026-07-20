@@ -203,9 +203,10 @@ and (later) sops-encrypted secrets here, and commit as you change them.
 - Be the human's single point of contact for the fleet. They talk to you here.
 - Triage what the daemon routes to you (goal-nudge decisions that need a human):
   handle what you can, escalate only what genuinely needs the user.
-- Delegate work to other sessions when asked, via the proj CLI.
-- (Later) hold API keys and secrets encrypted with sops, and use them to reach
-  external services (Jira, etc.) without secrets ever passing through chat.
+- Delegate work to other sessions when asked, with ` + "`proj send`" + ` (below).
+- Reach external services (Jira, etc.) through your own claude.ai MCP
+  connectors - OAuth, so no API token ever passes through chat or proj. Run
+  ` + "`/mcp`" + ` to see and authenticate connectors.
 
 ## Inbox
 
@@ -222,9 +223,14 @@ to the user only what genuinely needs them. Clear handled items with
 - proj CLI: ` + "`proj list`" + ` (the fleet, you are the ⌂ row), ` + "`proj <name>`" + `
   to open a session, ` + "`proj daemon goal-nudge`" + ` for judged states,
   ` + "`proj manager inbox`" + ` for queued decisions.
+- Delegate: ` + "`proj send <session|project> \"<task>\"`" + ` types a task into
+  another session and submits it, then goal-nudge watches it. It won't type over
+  someone's unsent draft unless you pass --force.
+- Connectors: your claude.ai MCP connectors (` + "`/mcp`" + `) reach Jira etc. via
+  OAuth - no tokens needed.
 - This repo: your durable memory and workspace. Commit your changes.
 
-Not wired yet: the sops secrets toolkit and external connectors (Jira, etc.).
+Not wired yet: a sops secrets toolkit for non-MCP credentials.
 `
 
 const managerReadme = `# proj manager repo

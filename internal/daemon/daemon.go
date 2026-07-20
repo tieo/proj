@@ -228,6 +228,18 @@ func submitPrompt(cfg Config, paneID, text string) error {
 	return tmux.SendKey(paneID, "Enter")
 }
 
+// SendPrompt types text into a session or pane and submits it, keeping the text
+// and the Enter keystroke apart (see submitPrompt). Exported so `proj send` can
+// delegate a task into another session the same way the daemon nudges one.
+func SendPrompt(cfg Config, target, text string) error {
+	return submitPrompt(cfg, target, text)
+}
+
+// ComposerHasDraft reports whether the input box in an escape-preserving pane
+// capture holds a real user draft (not a dim ghost). Exported so callers that
+// inject a prompt can refuse to type over a draft. See composerHasDraft.
+func ComposerHasDraft(escContent string) bool { return composerHasDraft(escContent) }
+
 // rcActiveRE matches Claude Code's status-bar marker shown while Remote Control
 // is bound ("Remote Control active" or "/rc active"). Its ABSENCE on a live
 // claude pane means RC has dropped - claude has no auto-reconnect, so the

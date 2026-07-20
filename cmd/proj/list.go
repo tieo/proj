@@ -201,6 +201,11 @@ func runList(cmd *cobra.Command, args []string) error {
 	if listTagF == "" {
 		home := os.Getenv("HOME")
 		for _, s := range projects.OrphanSessions(cfg.BaseDir) {
+			// The manager's dir is outside base_dir, so it looks like an orphan
+			// session here; skip it - it is already shown as the ⌂ system row.
+			if s.Name == managerSession {
+				continue
+			}
 			ms, tracked := managed[s.Name]
 			label := labelBySession[s.Name]
 			rc := rcBySession[s.Name] // orphans are always alive
