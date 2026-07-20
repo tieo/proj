@@ -227,10 +227,13 @@ to the user only what genuinely needs them. Clear handled items with
   another session and submits it, then goal-nudge watches it. It won't type over
   someone's unsent draft unless you pass --force.
 - Connectors: your claude.ai MCP connectors (` + "`/mcp`" + `) reach Jira etc. via
-  OAuth - no tokens needed.
-- This repo: your durable memory and workspace. Commit your changes.
-
-Not wired yet: a sops secrets toolkit for non-MCP credentials.
+  OAuth - no tokens needed, so prefer these.
+- Secrets: for a credential NOT covered by an MCP connector, store it with
+  ` + "`proj manager secret set <KEY>`" + ` (value from stdin, encrypted at rest here
+  in secrets.enc) and read it with ` + "`proj manager secret get <KEY>`" + `. Never
+  paste a secret into chat; pipe it in and out.
+- This repo: your durable memory and workspace. Commit your changes (the
+  encrypted secrets.enc is safe to commit; the key lives outside the repo).
 `
 
 const managerReadme = `# proj manager repo
@@ -240,8 +243,11 @@ This is proj infrastructure under XDG_DATA_HOME, not a project under base_dir.
 It can be pushed to a remote and managed from elsewhere.
 `
 
-const managerGitignore = `# decrypted secrets must never be committed
+const managerGitignore = `# the encryption key and any decrypted output must never be committed
+# (secrets.enc itself is ciphertext and is meant to be committed)
+secret.key
 *.dec
 *.plain
+*.tmp
 secrets.decrypted
 `
