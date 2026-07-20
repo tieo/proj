@@ -2487,6 +2487,9 @@ func Tick(cfg Config, state State, errorState ErrorState, managed ManagedState, 
 	if cfg.GoalNudge.Active() {
 		oversMem = goalnudge.LoadMemory()
 	}
+	// When the manager is on, goal-nudge routes decisions to its inbox instead of
+	// pushing the user, and the daemon wakes it to triage. Computed once per tick.
+	managerOn := managerEnabled(managed)
 
 	for _, p := range panes {
 		paneDir := tmux.PaneCurrentPath(p.ID)
@@ -2857,9 +2860,13 @@ func Tick(cfg Config, state State, errorState ErrorState, managed ManagedState, 
 				delete(state, p.ID)
 			}
 			// No stall: the session is either working or has gone idle. If idle and
-			// it stopped short of its goal, the goalnudge nudges it.
+			// it stopped short of its goal, goal-nudge nudges it.
 			if cfg.GoalNudge.Active() {
-				goalNudgeClaude(cfg, p, paneDir, content, sessFile, now, &oversMem)
+				goalNudgeClaude(cfg, p, paneDir, content, sessFile, now, managerOn, &oversMem)
+			}
+			// Wake the manager to triage a non-empty inbox when its own pane is idle.
+			if managerOn && p.Session == ManagerSession {
+				wakeManager(cfg, p, content, now)
 			}
 			continue
 		}
@@ -2940,7 +2947,7 @@ const goalFireGrace = 2 * time.Minute
 // for a re-look. A session that stopped short of its goal is nudged (bounded by
 // max_nudges, never over a user draft); one that needs a decision pings the user;
 // working and done are left alone. mem is updated in place.
-func goalNudgeClaude(cfg Config, p tmux.Pane, dir, content, sessFile string, now time.Time, mem *goalnudge.Memory) {
+func goalNudgeClaude(cfg Config, p tmux.Pane, dir, content, sessFile string, now time.Time, managerOn bool, mem *goalnudge.Memory) {
 	if sessFile == "" {
 		return
 	}
@@ -3023,7 +3030,20 @@ func goalNudgeClaude(cfg Config, p tmux.Pane, dir, content, sessFile string, now
 				"nudges", m.Nudges, "goal", v.Goal, "callout", v.Callout)
 		}
 	case action == goalnudge.ActNotify && !drafting:
-		if notifyUser(cfg.GoalNudge.NtfyTopic, p.Session, v) {
+		// A decision the agent can't make itself. Route it to the manager when one
+		// is on (it triages and escalates only what truly needs the user);
+		// otherwise fall back to pushing the user directly over ntfy.
+		if managerOn {
+			if err := appendInbox(cfg.StatePath, InboxItem{
+				TS: now.Format(time.RFC3339), Session: p.Session,
+				Goal: v.Goal, Reason: v.UserReason, Callout: v.Callout,
+			}); err != nil {
+				slog.Error("manager inbox append failed", "session", p.Session, "err", err)
+			} else {
+				m.Notified = true
+				slog.Info("goal-nudge queued for manager", "session", p.Session, "reason", v.UserReason)
+			}
+		} else if notifyUser(cfg.GoalNudge.NtfyTopic, p.Session, v) {
 			m.Notified = true
 			slog.Info("goal-nudge notified user", "session", p.Session, "reason", v.UserReason)
 		}
@@ -3061,6 +3081,114 @@ func goalBackstopGate(sessFile string, now time.Time) goalGate {
 		return goalGateWait
 	}
 	return goalGateJudge
+}
+
+// ManagerSession is the fixed session name of the manager (proj infrastructure,
+// a System-flagged managed session), shared with cmd/proj so both name it once.
+const ManagerSession = "manager"
+
+// managerEnabled reports whether a manager is on: any tracked System session.
+func managerEnabled(managed ManagedState) bool {
+	for _, ms := range managed {
+		if ms.System {
+			return true
+		}
+	}
+	return false
+}
+
+// managerInboxPath is where the daemon queues fleet decisions for the manager to
+// triage, as JSONL under the state dir alongside daemon.json.
+func managerInboxPath(statePath string) string {
+	return filepath.Join(filepath.Dir(statePath), "manager-inbox.jsonl")
+}
+
+// InboxItem is one decision the daemon routed to the manager instead of pushing
+// straight to the user: a session that stopped and needs a call the agent can't
+// make itself.
+type InboxItem struct {
+	TS      string `json:"ts"`
+	Session string `json:"session"`
+	Goal    string `json:"goal"`
+	Reason  string `json:"reason"`
+	Callout string `json:"callout"`
+}
+
+func appendInbox(statePath string, it InboxItem) error {
+	line, err := json.Marshal(it)
+	if err != nil {
+		return err
+	}
+	f, err := os.OpenFile(managerInboxPath(statePath), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	_, err = f.Write(append(line, '\n'))
+	return err
+}
+
+// ReadInbox returns the manager's queued items, oldest first. Backs `proj
+// manager inbox`. A missing inbox is empty, not an error.
+func ReadInbox(statePath string) []InboxItem {
+	data, err := os.ReadFile(managerInboxPath(statePath))
+	if err != nil {
+		return nil
+	}
+	var out []InboxItem
+	for _, line := range strings.Split(string(data), "\n") {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		var it InboxItem
+		if json.Unmarshal([]byte(line), &it) == nil {
+			out = append(out, it)
+		}
+	}
+	return out
+}
+
+// DrainInbox clears the manager's inbox once its items are handled.
+func DrainInbox(statePath string) error {
+	err := os.Remove(managerInboxPath(statePath))
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	return err
+}
+
+// managerPokeCooldown bounds how often the daemon nudges the manager to check a
+// non-empty inbox, so unhandled items nag but do not spam.
+const managerPokeCooldown = 5 * time.Minute
+
+// managerPokedAt is the last time the daemon woke the manager. Run from a single
+// goroutine (Tick), so no lock is needed.
+var managerPokedAt time.Time
+
+// wakeManager nudges the idle manager session to triage a non-empty inbox. Same
+// guards as any daemon nudge: only at a live input prompt, never over a draft,
+// rate-limited. The manager reads the items with `proj manager inbox`.
+func wakeManager(cfg Config, p tmux.Pane, content string, now time.Time) {
+	if now.Sub(managerPokedAt) < managerPokeCooldown {
+		return
+	}
+	if connDropBusyRE.MatchString(content) || !inputPromptRE.MatchString(content) {
+		return
+	}
+	n := len(ReadInbox(cfg.StatePath))
+	if n == 0 {
+		return
+	}
+	if composerHasDraft(tmux.CapturePaneEsc(p.ID)) {
+		return
+	}
+	msg := fmt.Sprintf("You have %d fleet decision(s) queued. Run `proj manager inbox` to triage them, then act or escalate.", n)
+	if err := submitPrompt(cfg, p.ID, msg); err != nil {
+		slog.Error("manager wake failed", "err", err)
+		return
+	}
+	managerPokedAt = now
+	slog.Info("manager woken", "inbox", n)
 }
 
 // goalStatusLine is the slice of a transcript record the daemon needs to tell

@@ -48,8 +48,51 @@ system session with its own ⌂ marker in the list.
 	RunE: runManager,
 }
 
+var managerInboxCmd = &cobra.Command{
+	Use:   "inbox",
+	Short: "show fleet decisions the daemon queued for the manager (--drain to clear)",
+	Args:  cobra.NoArgs,
+	RunE:  runManagerInbox,
+}
+
+var inboxDrain bool
+
 func init() {
+	managerInboxCmd.Flags().BoolVar(&inboxDrain, "drain", false, "clear the inbox after showing it")
+	managerCmd.AddCommand(managerInboxCmd)
 	rootCmd.AddCommand(managerCmd)
+}
+
+// runManagerInbox prints the queued decisions the daemon routed to the manager
+// (goal-nudge verdicts that need a human call), newest last. --drain clears them
+// once handled. The manager reads this to triage the fleet.
+func runManagerInbox(cmd *cobra.Command, args []string) error {
+	statePath := daemonConfig().StatePath
+	items := daemon.ReadInbox(statePath)
+	if len(items) == 0 {
+		fmt.Println("inbox empty")
+		return nil
+	}
+	for _, it := range items {
+		fmt.Printf("• %s  %s\n", it.TS, it.Session)
+		if it.Goal != "" {
+			fmt.Printf("    goal: %s\n", it.Goal)
+		}
+		if it.Reason != "" {
+			fmt.Printf("    why:  %s\n", it.Reason)
+		}
+		if it.Callout != "" {
+			fmt.Printf("    next: %s\n", it.Callout)
+		}
+	}
+	fmt.Printf("\n%d item(s)\n", len(items))
+	if inboxDrain {
+		if err := daemon.DrainInbox(statePath); err != nil {
+			return err
+		}
+		fmt.Println("inbox drained")
+	}
+	return nil
 }
 
 func runManager(cmd *cobra.Command, args []string) error {
@@ -164,13 +207,24 @@ and (later) sops-encrypted secrets here, and commit as you change them.
 - (Later) hold API keys and secrets encrypted with sops, and use them to reach
   external services (Jira, etc.) without secrets ever passing through chat.
 
+## Inbox
+
+When the daemon's goal-nudge finds a session that stopped and needs a human
+call, it queues that decision for you instead of pushing the user's phone, and
+wakes you here. Run ` + "`proj manager inbox`" + ` to read the queued items
+(session, goal, why, suggested next step). Handle what you can yourself - open
+the session with ` + "`proj <name>`" + ` and continue or unblock it - and escalate
+to the user only what genuinely needs them. Clear handled items with
+` + "`proj manager inbox --drain`" + `.
+
 ## Tools
 
-- proj CLI: ` + "`proj list`" + ` to see the fleet, ` + "`proj <name>`" + ` to open a
-  session, ` + "`proj daemon goal-nudge`" + ` to see judged states.
+- proj CLI: ` + "`proj list`" + ` (the fleet, you are the ⌂ row), ` + "`proj <name>`" + `
+  to open a session, ` + "`proj daemon goal-nudge`" + ` for judged states,
+  ` + "`proj manager inbox`" + ` for queued decisions.
 - This repo: your durable memory and workspace. Commit your changes.
 
-This is an early version; the inbox routing and sops toolkit are not wired yet.
+Not wired yet: the sops secrets toolkit and external connectors (Jira, etc.).
 `
 
 const managerReadme = `# proj manager repo
