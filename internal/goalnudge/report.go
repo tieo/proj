@@ -1,4 +1,4 @@
-package overseer
+package goalnudge
 
 import (
 	"bufio"
@@ -8,7 +8,7 @@ import (
 	"time"
 )
 
-// DayBudget is the overseer's daily token target: ~2% of the ~20M/day sonnet
+// DayBudget is the goalnudge's daily token target: ~2% of the ~20M/day sonnet
 // plan quota. Effective tokens summed over a day are reported against it.
 const DayBudget = 400_000
 

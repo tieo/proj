@@ -18,7 +18,7 @@ import (
 
 	"github.com/tieo/proj/internal/config"
 	"github.com/tieo/proj/internal/daemon"
-	"github.com/tieo/proj/internal/overseer"
+	"github.com/tieo/proj/internal/goalnudge"
 	"github.com/tieo/proj/internal/tmux"
 )
 
@@ -76,7 +76,7 @@ func init() {
 	rootCmd.AddCommand(daemonCmd)
 	daemonCmd.AddCommand(daemonRunCmd, daemonStartCmd, daemonStopCmd,
 		daemonRestartCmd, daemonEnableCmd, daemonDisableCmd, daemonLogsCmd,
-		daemonKeepAliveCmd, daemonMarkClosedCmd, overseerCmd)
+		daemonKeepAliveCmd, daemonMarkClosedCmd, goalnudgeCmd)
 }
 
 // ----- status output -----
@@ -258,36 +258,36 @@ func renderManaged(cfg daemon.Config) {
 	}
 }
 
-// renderOverseer prints the daemon status's overseer block: one line when off,
+// renderGoalNudge prints the daemon status's goalnudge block: one line when off,
 // and when on, its cadence, last look, and today's spend against the budget, so
 // the fleet judge is visible in the same view as the resume watchdog. Full
-// detail (per-session nudges, recent looks) lives in `proj daemon overseer`.
-func renderOverseer() {
+// detail (per-session nudges, recent looks) lives in `proj daemon goalnudge`.
+func renderGoalNudge() {
 	cfg, err := config.Load()
 	if err != nil {
 		return
 	}
-	ov := cfg.Daemon.Overseer
+	ov := cfg.Daemon.GoalNudge
 	fmt.Println()
 	if !ov.Active() {
-		fmt.Printf("   Overseer: off  (model=%s; enable with `proj daemon overseer on`)\n", ov.Model)
+		fmt.Printf("   Goal-nudge: off  (model=%s; enable with `proj daemon goal-nudge on`)\n", ov.Model)
 		return
 	}
-	recs := overseer.ReadUsageLog()
-	lastLook, sessions := overseer.ReadLookState()
+	recs := goalnudge.ReadUsageLog()
+	lastLook, sessions := goalnudge.ReadLookState()
 	now := time.Now()
 	last := "none yet"
 	if !lastLook.IsZero() {
 		last = formatAgo(now.Sub(lastLook)) + " ago"
 	}
-	looks, eff := overseer.TodayUsage(recs, now)
+	looks, eff := goalnudge.TodayUsage(recs, now)
 	pct := 0
-	if overseer.DayBudget > 0 {
-		pct = eff * 100 / overseer.DayBudget
+	if goalnudge.DayBudget > 0 {
+		pct = eff * 100 / goalnudge.DayBudget
 	}
-	fmt.Printf("   Overseer: on · model=%s · last judge %s\n", ov.Model, last)
+	fmt.Printf("   Goal-nudge: on · model=%s · last judge %s\n", ov.Model, last)
 	fmt.Printf("             today %d looks · ~%s eff (%d%% of %s budget)\n",
-		looks, formatK(eff), pct, formatK(overseer.DayBudget))
+		looks, formatK(eff), pct, formatK(goalnudge.DayBudget))
 	var short, blocked int
 	for _, s := range sessions {
 		switch s.State {
@@ -298,7 +298,7 @@ func renderOverseer() {
 		}
 	}
 	if short > 0 || blocked > 0 {
-		fmt.Printf("             %d stopped short · %d blocked (see `proj daemon overseer`)\n", short, blocked)
+		fmt.Printf("             %d stopped short · %d blocked (see `proj daemon goal-nudge`)\n", short, blocked)
 	}
 }
 
@@ -348,7 +348,7 @@ func runDaemonStatus(cmd *cobra.Command, args []string) error {
 		fmt.Printf("  Next tick: in %s (%s)\n", formatAgo(time.Until(next)), next.Format("15:04:05"))
 	}
 	renderManaged(cfg)
-	renderOverseer()
+	renderGoalNudge()
 
 	now := time.Now()
 	deferredCount := 0
@@ -420,7 +420,7 @@ func daemonConfig() daemon.Config {
 		}
 	}
 	out.ClaudeHome = user.Claude.Home
-	out.Overseer = user.Daemon.Overseer
+	out.GoalNudge = user.Daemon.GoalNudge
 	return out
 }
 

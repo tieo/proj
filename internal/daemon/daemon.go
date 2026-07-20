@@ -27,7 +27,7 @@ import (
 
 	"github.com/tieo/proj/internal/config"
 	"github.com/tieo/proj/internal/handoff"
-	"github.com/tieo/proj/internal/overseer"
+	"github.com/tieo/proj/internal/goalnudge"
 	"github.com/tieo/proj/internal/projects"
 	"github.com/tieo/proj/internal/shellout"
 	"github.com/tieo/proj/internal/tmux"
@@ -70,7 +70,7 @@ type Config struct {
 	KeepAlive   bool                       // recreate vanished sessions that weren't cleanly closed
 	Tools       map[string]config.ToolSpec // resolved launch recipes keyed by tool name, "claude" included
 	ClaudeHome  string                     // [claude] home override; where Claude Code keeps transcripts (the Windows home under WSL)
-	Overseer    config.OverseerConfig      // fleet judge: nudge sessions that stopped short of their goal
+	GoalNudge    config.GoalNudgeConfig      // fleet judge: nudge sessions that stopped short of their goal
 }
 
 func DefaultConfig() Config {
@@ -408,7 +408,7 @@ func composerHasDraft(escContent string) bool {
 // preserving capture: the text, and whether it is a real user draft (normal
 // weight) versus the agent's dim ghost suggestion. Empty text means an empty
 // box. A picker counts as a draft (unsafe to type). It shares composerHasDraft's
-// dim-vs-normal logic; the overseer feeds the text to the judge and uses the
+// dim-vs-normal logic; the goalnudge feeds the text to the judge and uses the
 // draft flag to know the user is engaged.
 func composerState(escContent string) (text string, draft bool) {
 	lines := strings.Split(escContent, "\n")
@@ -445,8 +445,8 @@ func pendingNote(text string, draft bool) string {
 	if text == "" {
 		return ""
 	}
-	if len(text) > overseerTaskCap {
-		text = text[:overseerTaskCap] + "…"
+	if len(text) > goalnudgeTaskCap {
+		text = text[:goalnudgeTaskCap] + "…"
 	}
 	if draft {
 		return "user is typing a reply: " + text
@@ -2480,11 +2480,11 @@ func Tick(cfg Config, state State, errorState ErrorState, managed ManagedState, 
 		rcConn, rcConnStale = rcConnLastGood, true
 	}
 
-	// Overseer memory, loaded once per tick and saved after the pane loop. The
-	// judge fires per session as it goes idle (see overseeClaude), not on a timer.
-	var oversMem overseer.Memory
-	if cfg.Overseer.Active() {
-		oversMem = overseer.LoadMemory()
+	// GoalNudge memory, loaded once per tick and saved after the pane loop. The
+	// judge fires per session as it goes idle (see goalNudgeClaude), not on a timer.
+	var oversMem goalnudge.Memory
+	if cfg.GoalNudge.Active() {
+		oversMem = goalnudge.LoadMemory()
 	}
 
 	for _, p := range panes {
@@ -2856,9 +2856,9 @@ func Tick(cfg Config, state State, errorState ErrorState, managed ManagedState, 
 				delete(state, p.ID)
 			}
 			// No stall: the session is either working or has gone idle. If idle and
-			// it stopped short of its goal, the overseer nudges it.
-			if cfg.Overseer.Active() {
-				overseeClaude(cfg, p, paneDir, content, sessFile, now, &oversMem)
+			// it stopped short of its goal, the goalnudge nudges it.
+			if cfg.GoalNudge.Active() {
+				goalNudgeClaude(cfg, p, paneDir, content, sessFile, now, &oversMem)
 			}
 			continue
 		}
@@ -2904,35 +2904,42 @@ func Tick(cfg Config, state State, errorState ErrorState, managed ManagedState, 
 		}
 	}
 
-	if cfg.Overseer.Active() {
+	if cfg.GoalNudge.Active() {
 		live := make(map[string]bool, len(panes))
 		for _, p := range panes {
 			live[p.Session] = true
 		}
 		oversMem.Prune(live)
 		if err := oversMem.Save(); err != nil {
-			slog.Error("overseer state save failed", "err", err)
+			slog.Error("goal-nudge state save failed", "err", err)
 		}
 	}
 }
 
-// overseerTailTurns and overseerTailCap bound the transcript slice handed to the
-// judge; overseerRecheck is how long after judging a session "blocked" the
-// overseer re-looks even with no new work, in case the thing it waited on cleared.
+// goalnudgeTailTurns and goalnudgeTailCap bound the transcript slice handed to the
+// judge; goalnudgeRecheck is how long after judging a session "blocked" the
+// goalnudge re-looks even with no new work, in case the thing it waited on cleared.
 const (
-	overseerTailTurns = 12
-	overseerTailCap   = 500
-	overseerTaskCap   = 400
-	overseerRecheck   = 30 * time.Minute
+	goalnudgeTailTurns = 12
+	goalnudgeTailCap   = 500
+	goalnudgeTaskCap   = 400
+	goalnudgeRecheck   = 30 * time.Minute
 )
 
-// overseeClaude judges one idle claude session and acts on the verdict. It fires
+// goalFireGrace is how long a session's transcript must stay quiet after it goes
+// idle before goal-nudge treats an open /goal as having failed to fire. A firing
+// goal writes within a poll or two (its judge record plus the continuation it
+// submits); waiting this out lets the goal drive itself first, so goal-nudge is a
+// true backstop and never races /goal's own auto-continue.
+const goalFireGrace = 2 * time.Minute
+
+// goalNudgeClaude judges one idle claude session and acts on the verdict. It fires
 // only on a real stop: the pane sits at the input prompt (not generating), and
 // either the transcript changed since the last judge or a blocked session is due
 // for a re-look. A session that stopped short of its goal is nudged (bounded by
 // max_nudges, never over a user draft); one that needs a decision pings the user;
 // working and done are left alone. mem is updated in place.
-func overseeClaude(cfg Config, p tmux.Pane, dir, content, sessFile string, now time.Time, mem *overseer.Memory) {
+func goalNudgeClaude(cfg Config, p tmux.Pane, dir, content, sessFile string, now time.Time, mem *goalnudge.Memory) {
 	if sessFile == "" {
 		return
 	}
@@ -2947,18 +2954,27 @@ func overseeClaude(cfg Config, p tmux.Pane, dir, content, sessFile string, now t
 	if sig == "" || (sig == prev.Sig && !recheckDue) {
 		return // nothing new since the last judge, and no recheck due
 	}
-	// on_goal mode judges only sessions the user pinned a /goal on. The goal is
-	// stored in the transcript as a goal_status sentinel attachment; skip a
-	// session with no open goal so the judge never touches it.
-	if cfg.Overseer.RequiresGoal() && !sessionHasActiveGoal(sessFile) {
-		// Replace whatever the judge last said with no_goal: a verdict from a
-		// goal the session has since met or cleared would otherwise linger in
-		// the report and the list, describing work nothing is judging any more.
-		slog.Debug("overseer skip: no /goal set", "session", p.Session)
-		mem.Sessions[p.Session] = overseer.SessionMemory{Sig: sig, State: overseer.StateNoGoal}
+	// Goal-nudge only backstops a /goal that failed to fire (see goalBackstopGate).
+	switch goalBackstopGate(sessFile, now) {
+	case goalGateNone:
+		// No open /goal: nothing to back up. Drop any stale verdict, so a goal
+		// since met or cleared does not linger in the report and the list.
+		slog.Debug("goal-nudge skip: no /goal set", "session", p.Session)
+		mem.Sessions[p.Session] = goalnudge.SessionMemory{Sig: sig, State: goalnudge.StateNoGoal}
+		return
+	case goalGateWait:
+		// Open goal, still within its fire grace: hold off so /goal can re-drive
+		// the session itself, and re-check once the grace elapses.
+		m := prev
+		m.Sig = sig
+		m.State = goalnudge.StateWaitGoal
+		m.NextRecheck = now.Add(goalFireGrace)
+		mem.Sessions[p.Session] = m
 		return
 	}
-	ss, ok := overseerSession(p.Session, config.DefaultTool, sessFile, dir)
+	// goalGateJudge: open goal that went quiet past the grace - it did not fire.
+	// Fall through and judge the session.
+	ss, ok := goalnudgeSession(p.Session, config.DefaultTool, sessFile, dir)
 	if !ok {
 		return
 	}
@@ -2971,25 +2987,25 @@ func overseeClaude(cfg Config, p tmux.Pane, dir, content, sessFile string, now t
 		ss.Pending = pendingNote(text, drafting)
 	}
 
-	res, err := overseer.Look(cfg.Overseer.Model, []overseer.SessionState{ss})
+	res, err := goalnudge.Look(cfg.GoalNudge.Model, []goalnudge.SessionState{ss})
 	if err != nil {
-		slog.Error("overseer look failed", "session", p.Session, "err", err)
+		slog.Error("goal-nudge look failed", "session", p.Session, "err", err)
 		return
 	}
-	_ = overseer.LogUsage(now, res)
+	_ = goalnudge.LogUsage(now, res)
 	mem.LastLook = now
 	if len(res.Verdicts) == 0 {
 		prev.Sig = sig
 		mem.Sessions[p.Session] = prev
-		slog.Warn("overseer returned no verdict", "session", p.Session)
+		slog.Warn("goal-nudge returned no verdict", "session", p.Session)
 		return
 	}
 
 	v := res.Verdicts[0]
-	action, m := overseer.Decide(v, prev, cfg.Overseer.MaxNudges)
+	action, m := goalnudge.Decide(v, prev, cfg.GoalNudge.MaxNudges)
 	m.Sig, m.State, m.Goal, m.Reason = sig, v.State, v.Goal, v.Reason
 	if v.State == "blocked" {
-		m.NextRecheck = now.Add(overseerRecheck)
+		m.NextRecheck = now.Add(goalnudgeRecheck)
 	} else {
 		m.NextRecheck = time.Time{}
 	}
@@ -2997,25 +3013,53 @@ func overseeClaude(cfg Config, p tmux.Pane, dir, content, sessFile string, now t
 	// nudge (would type over the draft) nor ping (they are already answering) -
 	// the whole point is to catch sessions the user left.
 	switch {
-	case action == overseer.ActNudge && !drafting:
+	case action == goalnudge.ActNudge && !drafting:
 		if err := submitPrompt(cfg, p.ID, v.Callout); err != nil {
-			slog.Error("overseer nudge failed", "session", p.Session, "err", err)
+			slog.Error("goal-nudge nudge failed", "session", p.Session, "err", err)
 		} else {
 			m.Nudges++
-			slog.Info("overseer nudged", "session", p.Session,
+			slog.Info("goal-nudge nudged", "session", p.Session,
 				"nudges", m.Nudges, "goal", v.Goal, "callout", v.Callout)
 		}
-	case action == overseer.ActNotify && !drafting:
-		if notifyUser(cfg.Overseer.NtfyTopic, p.Session, v) {
+	case action == goalnudge.ActNotify && !drafting:
+		if notifyUser(cfg.GoalNudge.NtfyTopic, p.Session, v) {
 			m.Notified = true
-			slog.Info("overseer notified user", "session", p.Session, "reason", v.UserReason)
+			slog.Info("goal-nudge notified user", "session", p.Session, "reason", v.UserReason)
 		}
 	case drafting:
-		slog.Debug("overseer holding; user has a draft", "session", p.Session, "state", v.State)
+		slog.Debug("goal-nudge holding; user has a draft", "session", p.Session, "state", v.State)
 	default:
-		slog.Info("overseer judged", "session", p.Session, "state", v.State, "goal", v.Goal)
+		slog.Info("goal-nudge judged", "session", p.Session, "state", v.State, "goal", v.Goal)
 	}
 	mem.Sessions[p.Session] = m
+}
+
+// goalGate is goal-nudge's decision for one idle session: whether it has an open
+// /goal, and if so whether the goal is still within its fire grace or has gone
+// quiet long enough to be judged.
+type goalGate int
+
+const (
+	goalGateNone  goalGate = iota // no open /goal - not goal-nudge's concern
+	goalGateWait                  // open goal, still within goalFireGrace - hold off
+	goalGateJudge                 // open goal, quiet past the grace - it did not fire
+)
+
+// goalBackstopGate decides whether goal-nudge should step in for a session. A
+// /goal is Claude Code's own auto-continue loop: on each idle it re-judges the
+// goal and, when unmet, re-prompts the session itself, writing to the transcript
+// as it does. Goal-nudge is only a backstop for when that loop stops firing, so:
+// no open goal is not its concern; an open goal whose transcript was written
+// within goalFireGrace may be about to fire, so wait; an open goal quiet past the
+// grace did not fire, so judge it.
+func goalBackstopGate(sessFile string, now time.Time) goalGate {
+	if !sessionHasActiveGoal(sessFile) {
+		return goalGateNone
+	}
+	if now.Sub(fileMTime(sessFile)) < goalFireGrace {
+		return goalGateWait
+	}
+	return goalGateJudge
 }
 
 // goalStatusLine is the slice of a transcript record the daemon needs to tell
@@ -3067,10 +3111,21 @@ func fileSig(path string) string {
 	return fmt.Sprintf("%d:%d", info.Size(), info.ModTime().UnixNano())
 }
 
-// overseerSession reads a session's transcript once and returns the input for
+// fileMTime is the transcript's last-write time, used to tell whether a /goal is
+// still firing (recent writes) or has gone quiet. A missing file reads as the
+// zero time, so its age is effectively infinite and goal-nudge does not wait.
+func fileMTime(path string) time.Time {
+	info, err := os.Stat(path)
+	if err != nil {
+		return time.Time{}
+	}
+	return info.ModTime()
+}
+
+// goalnudgeSession reads a session's transcript once and returns the input for
 // the judge: the original task (its first user turn, the goal) and a recent
 // role-prefixed tail. ok is false when there is no readable transcript.
-func overseerSession(name, tool, path, dir string) (s overseer.SessionState, ok bool) {
+func goalnudgeSession(name, tool, path, dir string) (s goalnudge.SessionState, ok bool) {
 	if path == "" {
 		return s, false
 	}
@@ -3087,7 +3142,7 @@ func overseerSession(name, tool, path, dir string) (s overseer.SessionState, ok 
 	if err != nil || tr == nil || len(tr.Turns) == 0 {
 		return s, false
 	}
-	return overseer.SessionState{
+	return goalnudge.SessionState{
 		Name: name,
 		Tool: tool,
 		Task: firstUserTurn(tr.Turns),
@@ -3103,25 +3158,25 @@ func firstUserTurn(turns []handoff.Turn) string {
 			continue
 		}
 		text := strings.Join(strings.Fields(t.Text), " ")
-		if len(text) > overseerTaskCap {
-			text = text[:overseerTaskCap] + "…"
+		if len(text) > goalnudgeTaskCap {
+			text = text[:goalnudgeTaskCap] + "…"
 		}
 		return text
 	}
 	return ""
 }
 
-// formatTail renders the last overseerTailTurns of a transcript as role-prefixed
+// formatTail renders the last goalnudgeTailTurns of a transcript as role-prefixed
 // lines for the judge.
 func formatTail(turns []handoff.Turn) string {
-	if len(turns) > overseerTailTurns {
-		turns = turns[len(turns)-overseerTailTurns:]
+	if len(turns) > goalnudgeTailTurns {
+		turns = turns[len(turns)-goalnudgeTailTurns:]
 	}
 	var b strings.Builder
 	for _, t := range turns {
 		text := t.Text
-		if len(text) > overseerTailCap {
-			text = text[:overseerTailCap] + "…"
+		if len(text) > goalnudgeTailCap {
+			text = text[:goalnudgeTailCap] + "…"
 		}
 		role := t.Role
 		if t.Name != "" {
@@ -3134,7 +3189,7 @@ func formatTail(turns []handoff.Turn) string {
 
 // notifyUser pushes one ntfy message for a session that needs a user decision.
 // No topic means no push. Reports whether it sent.
-func notifyUser(topic, session string, v overseer.Verdict) bool {
+func notifyUser(topic, session string, v goalnudge.Verdict) bool {
 	if topic == "" {
 		return false
 	}
@@ -3146,22 +3201,22 @@ func notifyUser(topic, session string, v overseer.Verdict) bool {
 	if err != nil {
 		return false
 	}
-	req.Header.Set("Title", "proj overseer: "+session)
+	req.Header.Set("Title", "proj goal-nudge: "+session)
 	client := &http.Client{Timeout: 5 * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {
-		slog.Error("overseer notify failed", "session", session, "err", err)
+		slog.Error("goal-nudge notify failed", "session", session, "err", err)
 		return false
 	}
 	resp.Body.Close()
 	return true
 }
 
-// OverseerDryRun judges every readable session once and returns the result,
-// with no side effect on the overseer's state: it nudges nothing and does not
+// GoalNudgeDryRun judges every readable session once and returns the result,
+// with no side effect on the goalnudge's state: it nudges nothing and does not
 // touch the memory the live daemon keeps, so a dry-run can never leave a session
-// labelled as judged when it was not acted on. Backs `proj daemon overseer run`.
-func OverseerDryRun(cfg Config) (overseer.LookResult, error) {
+// labelled as judged when it was not acted on. Backs `proj daemon goalnudge run`.
+func GoalNudgeDryRun(cfg Config) (goalnudge.LookResult, error) {
 	reg, _ := projects.LoadRegistry()
 	paneBySession := make(map[string]string)
 	for _, p := range tmux.ListPanes() {
@@ -3169,12 +3224,12 @@ func OverseerDryRun(cfg Config) (overseer.LookResult, error) {
 			paneBySession[p.Session] = p.ID
 		}
 	}
-	budget := cfg.Overseer.MaxTokens
+	budget := cfg.GoalNudge.MaxTokens
 	if budget <= 0 {
 		budget = 4000
 	}
 	remaining := budget * 4
-	var sessions []overseer.SessionState
+	var sessions []goalnudge.SessionState
 	for _, s := range tmux.ListSessions() {
 		if remaining <= 0 {
 			break
@@ -3189,7 +3244,7 @@ func OverseerDryRun(cfg Config) (overseer.LookResult, error) {
 		default:
 			continue
 		}
-		ss, ok := overseerSession(s.Name, tool, path, s.Path)
+		ss, ok := goalnudgeSession(s.Name, tool, path, s.Path)
 		if !ok {
 			continue
 		}
@@ -3207,7 +3262,7 @@ func OverseerDryRun(cfg Config) (overseer.LookResult, error) {
 		remaining -= len(ss.Tail)
 		sessions = append(sessions, ss)
 	}
-	return overseer.Look(cfg.Overseer.Model, sessions)
+	return goalnudge.Look(cfg.GoalNudge.Model, sessions)
 }
 
 func recordAction(prev Tracked, p tmux.Pane, b *Banner, now time.Time, cfg Config) Tracked {

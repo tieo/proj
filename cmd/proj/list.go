@@ -12,7 +12,7 @@ import (
 
 	"github.com/tieo/proj/internal/config"
 	"github.com/tieo/proj/internal/daemon"
-	"github.com/tieo/proj/internal/overseer"
+	"github.com/tieo/proj/internal/goalnudge"
 	"github.com/tieo/proj/internal/projects"
 )
 
@@ -63,13 +63,13 @@ func runList(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("managed state unreadable (pins are only stored there): %w", err)
 	}
 
-	// Overseer verdicts, shown in the note column. Only when the overseer is on:
+	// GoalNudge verdicts, shown in the note column. Only when the goalnudge is on:
 	// its memory is otherwise stale and would mislabel a session's state.
-	oversMem := overseer.Memory{Sessions: map[string]overseer.SessionMemory{}}
-	if cfg.Daemon.Overseer.Active() {
-		oversMem = overseer.LoadMemory()
+	oversMem := goalnudge.Memory{Sessions: map[string]goalnudge.SessionMemory{}}
+	if cfg.Daemon.GoalNudge.Active() {
+		oversMem = goalnudge.LoadMemory()
 	}
-	maxNudges := cfg.Daemon.Overseer.MaxNudges
+	maxNudges := cfg.Daemon.GoalNudge.MaxNudges
 
 	// Scan panes for label (banner/error/selector state) and, as a fallback, RC
 	// status per session. Model is read from JSONL session files instead; more
@@ -313,7 +313,7 @@ func buildIndicator(alive, pinned bool, label, rc string) string {
 	return ansiGreen + "●" + ansiReset + " " // "active" or "" (no zone yet — starting up)
 }
 
-func buildNote(label, rc string, ms daemon.ManagedSession, tracked, alive, globalKeepAlive bool, om overseer.SessionMemory, maxNudges int) string {
+func buildNote(label, rc string, ms daemon.ManagedSession, tracked, alive, globalKeepAlive bool, om goalnudge.SessionMemory, maxNudges int) string {
 	// Only the daemon's tracked sessions get recreated. globalKeepAlive on its
 	// own must not paint every dead project as "restarting".
 	if !alive && tracked && (ms.Pinned || ms.KeepAlive || globalKeepAlive) && !ms.ExitedCleanly {
@@ -330,7 +330,7 @@ func buildNote(label, rc string, ms daemon.ManagedSession, tracked, alive, globa
 	if rc == "offline" {
 		return "RC offline"
 	}
-	// Overseer verdict, shown when nothing more urgent is: a session that stopped
+	// GoalNudge verdict, shown when nothing more urgent is: a session that stopped
 	// short of its goal (nudged or not) or one blocked waiting on something.
 	if alive {
 		switch om.State {
@@ -349,7 +349,7 @@ func buildNote(label, rc string, ms daemon.ManagedSession, tracked, alive, globa
 	return ""
 }
 
-func noteColor(label, rc string, alive bool, om overseer.SessionMemory) string {
+func noteColor(label, rc string, alive bool, om goalnudge.SessionMemory) string {
 	if !alive {
 		return ansiDim
 	}

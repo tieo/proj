@@ -1,4 +1,4 @@
-// Package overseer is the fleet judge. Given each session's recent transcript
+// Package goalnudge is the fleet judge. Given each session's recent transcript
 // tail it asks, through `claude -p` on the subscription (not the paid API),
 // whether the session reached its goal or stopped short, and returns a verdict
 // per session. It is a pure judge: the daemon owns which sessions to look at,
@@ -8,7 +8,7 @@
 // The call runs in a fixed scratch directory so Claude Code's own context stays
 // prompt-cached across looks. Every look records its token usage - cache_read vs
 // cache_creation - so cache warmth can be watched over real use.
-package overseer
+package goalnudge
 
 import (
 	"encoding/json"
@@ -20,7 +20,7 @@ import (
 	"time"
 )
 
-// SessionState is one session's input to the overseer: its name, tool, the
+// SessionState is one session's input to the goalnudge: its name, tool, the
 // original task (the first user turn, when it can be read), a recent slice of
 // its transcript, and what currently sits in its input box (pending).
 type SessionState struct {
@@ -31,7 +31,7 @@ type SessionState struct {
 	Pending string `json:"pending,omitempty"` // what's in the input box now: the agent's suggested next step, or a user draft
 }
 
-// Verdict is the overseer's per-session decision. Reason states why it chose the
+// Verdict is the goalnudge's per-session decision. Reason states why it chose the
 // state, so a call can be understood and a wrong one caught.
 type Verdict struct {
 	Name       string `json:"name"`
@@ -43,7 +43,7 @@ type Verdict struct {
 	UserReason string `json:"user_reason"`
 }
 
-// Usage is the overseer call's token accounting, the numbers that matter for the
+// Usage is the goalnudge call's token accounting, the numbers that matter for the
 // budget: cache_read is billed at ~10% and cache_creation at the write rate.
 type Usage struct {
 	Input       int `json:"input"`
@@ -53,17 +53,17 @@ type Usage struct {
 }
 
 // LookResult is the outcome of one look: what was judged, the verdicts, and the
-// overseer call's usage.
+// goalnudge call's usage.
 type LookResult struct {
 	Sessions []SessionState
 	Verdicts []Verdict
 	Usage    Usage
-	Raw      string // the overseer's raw text, kept when the JSON fails to parse
+	Raw      string // the goalnudge's raw text, kept when the JSON fails to parse
 }
 
-const scratchDirRC = "overseer"
+const scratchDirRC = "goalnudge"
 
-// ScratchDir is the fixed non-git directory the overseer runs in, so Claude Code's
+// ScratchDir is the fixed non-git directory the goalnudge runs in, so Claude Code's
 // system-prompt prefix (which embeds the working directory) stays identical
 // across looks and keeps its prompt cache warm.
 func ScratchDir() string {
@@ -75,10 +75,10 @@ func ScratchDir() string {
 	return filepath.Join(base, "proj", scratchDirRC)
 }
 
-// overseerSystemPrompt is the overseer's role, passed as the session's system
-// prompt (--system-prompt) so it defines the overseer role at the system level rather
+// goalnudgeSystemPrompt is the goalnudge's role, passed as the session's system
+// prompt (--system-prompt) so it defines the goalnudge role at the system level rather
 // than competing with Claude Code's coding-agent framing in a user turn.
-const overseerSystemPrompt = `You are the overseer of a fleet of autonomous coding-agent sessions. You do not write code or use tools. Your only job: read each session's recent transcript and judge whether it reached its goal or stopped short.
+const goalnudgeSystemPrompt = `You are the goalnudge of a fleet of autonomous coding-agent sessions. You do not write code or use tools. Your only job: read each session's recent transcript and judge whether it reached its goal or stopped short.
 
 Each user message is a JSON array of sessions, each with a name, tool, an optional task (the session's original goal, from its first message), a recent transcript tail, and an optional pending field (what is in the session's input box right now). For each session:
 - take its goal from task when present, otherwise infer it from the tail,
@@ -97,7 +97,7 @@ Reply with ONLY a JSON array, one object per session, no prose, no markdown fenc
 // output format (see the note in Look).
 const promptContract = `Judge these sessions. Reply with ONLY the JSON array of verdicts, each with name, goal, state, reason, callout, needs_user, user_reason - no prose, no markdown fences.`
 
-// Look runs one overseer call over the given session tails and returns the
+// Look runs one goalnudge call over the given session tails and returns the
 // verdicts and token usage. It takes no action; the daemon acts on the verdicts.
 // The sessions are built by the caller (the daemon, from transcripts it already
 // reads). An empty model defaults to sonnet.
@@ -120,7 +120,7 @@ func Look(model string, sessions []SessionState) (LookResult, error) {
 
 	dir := ScratchDir()
 	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return res, fmt.Errorf("overseer scratch dir: %w", err)
+		return res, fmt.Errorf("goal-nudge scratch dir: %w", err)
 	}
 
 	if model == "" {
@@ -132,9 +132,9 @@ func Look(model string, sessions []SessionState) (LookResult, error) {
 	// that whole prefix. resume falls back to fresh on any failure (the session
 	// was cleared, or Claude Code upgraded and its prefix changed).
 	sid := readSessionID()
-	out, err := runOverseer(dir, model, sid, prompt)
+	out, err := runGoalNudge(dir, model, sid, prompt)
 	if err != nil && sid != "" {
-		out, err = runOverseer(dir, model, "", prompt)
+		out, err = runGoalNudge(dir, model, "", prompt)
 	}
 	if err != nil {
 		return res, err
@@ -165,7 +165,7 @@ func Look(model string, sessions []SessionState) (LookResult, error) {
 // next look starts fresh.
 const resetAbove = 120000
 
-type overseerOutput struct {
+type goalnudgeOutput struct {
 	Result    string `json:"result"`
 	SessionID string `json:"session_id"`
 	Usage     struct {
@@ -176,18 +176,18 @@ type overseerOutput struct {
 	} `json:"usage"`
 }
 
-func runOverseer(dir, model, resumeID, prompt string) (overseerOutput, error) {
+func runGoalNudge(dir, model, resumeID, prompt string) (goalnudgeOutput, error) {
 	args := []string{"-p", "--model", model, "--output-format", "json", "--dangerously-skip-permissions"}
 	if resumeID != "" {
 		// The session carries its system prompt and settings from creation; resume
 		// just continues it.
 		args = append(args, "--resume", resumeID)
 	} else {
-		// Fresh session: define the overseer as a pure judge via its own system
+		// Fresh session: define the goalnudge as a pure judge via its own system
 		// prompt, and drop user settings so the global CLAUDE.md (coding persona,
 		// caveman mode) and hooks don't load into it or bloat the cached prefix.
 		args = append(args,
-			"--system-prompt", overseerSystemPrompt,
+			"--system-prompt", goalnudgeSystemPrompt,
 			"--setting-sources", "project")
 	}
 	args = append(args, prompt)
@@ -195,11 +195,11 @@ func runOverseer(dir, model, resumeID, prompt string) (overseerOutput, error) {
 	cmd.Dir = dir
 	raw, err := cmd.Output()
 	if err != nil {
-		return overseerOutput{}, fmt.Errorf("overseer call: %w", err)
+		return goalnudgeOutput{}, fmt.Errorf("goal-nudge call: %w", err)
 	}
-	var out overseerOutput
+	var out goalnudgeOutput
 	if err := json.Unmarshal(raw, &out); err != nil {
-		return overseerOutput{}, fmt.Errorf("parse overseer output: %w", err)
+		return goalnudgeOutput{}, fmt.Errorf("parse goal-nudge output: %w", err)
 	}
 	return out, nil
 }
@@ -217,7 +217,7 @@ func readSessionID() string {
 func writeSessionID(id string) { _ = os.WriteFile(sessionIDPath(), []byte(id), 0o644) }
 func clearSessionID()          { _ = os.Remove(sessionIDPath()) }
 
-// parseVerdicts extracts the JSON array from the overseer's reply, tolerating a
+// parseVerdicts extracts the JSON array from the goalnudge's reply, tolerating a
 // markdown code fence around it.
 func parseVerdicts(s string) []Verdict {
 	s = strings.TrimSpace(s)
@@ -239,7 +239,7 @@ func parseVerdicts(s string) []Verdict {
 // normalizeState maps whatever the model emits to exactly one of the four valid
 // states, so an off-spec value ("in_progress", "completed", …) can never reach
 // the actions or the display. An unrecognised state falls back to "working":
-// the safe no-op, so the overseer never nudges on a state it does not understand.
+// the safe no-op, so the goalnudge never nudges on a state it does not understand.
 func normalizeState(s string) string {
 	switch strings.ToLower(strings.TrimSpace(s)) {
 	case "done", "complete", "completed", "finished", "resolved":
@@ -256,7 +256,7 @@ func normalizeState(s string) string {
 // UsageLogPath is where each look's usage is appended as JSONL, so cache warmth
 // (cache_read vs cache_create) can be analysed over real use.
 func UsageLogPath() string {
-	return filepath.Join(filepath.Dir(ScratchDir()), "overseer-usage.jsonl")
+	return filepath.Join(filepath.Dir(ScratchDir()), "goalnudge-usage.jsonl")
 }
 
 // LogUsage appends one look's usage record. at is passed in (not read from the

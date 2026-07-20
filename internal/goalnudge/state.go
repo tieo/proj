@@ -1,4 +1,4 @@
-package overseer
+package goalnudge
 
 import (
 	"encoding/json"
@@ -7,12 +7,18 @@ import (
 	"time"
 )
 
-// StateNoGoal marks a session the overseer declined to judge because on_goal
-// mode is set and the session has no open /goal. The daemon assigns it; the
-// judge never returns it, so it stays out of the four verdict states.
-const StateNoGoal = "no_goal"
+// StateNoGoal marks a session goal-nudge declined to judge because it has no
+// open /goal. StateWaitGoal marks one that has an open /goal but was left alone
+// this look because the goal is still within its fire grace - the goal may
+// re-drive the session itself, so goal-nudge holds off to avoid racing it. The
+// daemon assigns both; the judge never returns either, so they stay out of the
+// four verdict states.
+const (
+	StateNoGoal   = "no_goal"
+	StateWaitGoal = "wait_goal"
+)
 
-// SessionMemory is the overseer's carried state for one session between judges:
+// SessionMemory is the goalnudge's carried state for one session between judges:
 // the transcript signature at the last judge (so a session is judged once per
 // stop, not every tick), its last verdict, and the nudge/notify bookkeeping.
 type SessionMemory struct {
@@ -25,7 +31,7 @@ type SessionMemory struct {
 	NextRecheck time.Time `json:"next_recheck"` // when to re-judge a blocked session even with no new work; zero = only on new work
 }
 
-// Memory is the overseer's durable state, kept in the scratch dir so a daemon
+// Memory is the goalnudge's durable state, kept in the scratch dir so a daemon
 // restart does not re-nudge or re-judge sessions it already handled. LastLook is
 // the last time any session was judged, shown in the status report.
 type Memory struct {
@@ -35,7 +41,7 @@ type Memory struct {
 
 func memoryPath() string { return filepath.Join(ScratchDir(), "lookstate.json") }
 
-// LoadMemory reads the overseer's state, or an empty one when none exists.
+// LoadMemory reads the goalnudge's state, or an empty one when none exists.
 func LoadMemory() Memory {
 	m := Memory{Sessions: map[string]SessionMemory{}}
 	b, err := os.ReadFile(memoryPath())
@@ -49,7 +55,7 @@ func LoadMemory() Memory {
 	return m
 }
 
-// Save writes the overseer's state back to the scratch dir.
+// Save writes the goalnudge's state back to the scratch dir.
 func (m Memory) Save() error {
 	if err := os.MkdirAll(ScratchDir(), 0o755); err != nil {
 		return err

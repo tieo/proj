@@ -111,31 +111,30 @@ type DaemonConfig struct {
 	ResumeText   string         `toml:"resume_text"`
 	CaptureLines int            `toml:"capture_lines"`
 	KeepAlive    bool           `toml:"keep_alive"`
-	Overseer     OverseerConfig `toml:"overseer"`
+	GoalNudge    GoalNudgeConfig `toml:"goal_nudge"`
 }
 
 type ListConfig struct {
 	MaxAgeDays int `toml:"max_age_days"` // hide inactive projects older than this; 0 = show all
 }
 
-// OverseerConfig configures the fleet overseer: as each session goes idle the
-// daemon judges whether it reached its goal, and nudges the ones that stopped
-// short. Mode gates it: "off" runs nothing, "on_goal" judges only sessions with
-// a /goal set (the default), "on" judges every session.
-type OverseerConfig struct {
-	Mode      string `toml:"mode"`       // off | on_goal | on
+// GoalNudgeConfig configures the goal-nudge backstop. A /goal set on a session
+// is Claude Code's own auto-continue loop: on each idle it re-judges the goal
+// and, when unmet, re-prompts the session itself. Goal-nudge only steps in when
+// that loop fails to fire - the session is idle, the goal is still open, and the
+// goal did not re-drive it within the grace window. It then judges the session
+// (done | stopped_short | blocked | working) and nudges the ones that stopped
+// short. It never touches a session with no open /goal. Enabled by default.
+type GoalNudgeConfig struct {
+	Enabled   bool   `toml:"enabled"`    // run the goal-nudge backstop (default true)
 	Model     string `toml:"model"`      // model for the judge (default sonnet, far cheaper than opus)
 	MaxNudges int    `toml:"max_nudges"` // consecutive nudges to one session without progress before giving up
 	MaxTokens int    `toml:"max_tokens"` // per-session transcript budget fed to the judge (default 4000)
 	NtfyTopic string `toml:"ntfy_topic"` // ntfy topic for the rare user-decision notification; empty disables push
 }
 
-// Active reports whether the overseer runs at all.
-func (o OverseerConfig) Active() bool { return o.Mode == "on" || o.Mode == "on_goal" }
-
-// RequiresGoal reports whether the overseer judges only sessions that have a
-// /goal set (on_goal mode).
-func (o OverseerConfig) RequiresGoal() bool { return o.Mode == "on_goal" }
+// Active reports whether the goal-nudge backstop runs.
+func (o GoalNudgeConfig) Active() bool { return o.Enabled }
 
 func Default() Config {
 	home, _ := os.UserHomeDir()
@@ -150,8 +149,8 @@ func Default() Config {
 			MaxWait:      "5h",
 			ResumeText:   "continue",
 			CaptureLines: 300,
-			Overseer: OverseerConfig{
-				Mode:      "on_goal",
+			GoalNudge: GoalNudgeConfig{
+				Enabled:   true,
 				Model:     "sonnet",
 				MaxNudges: 3,
 				MaxTokens: 4000,

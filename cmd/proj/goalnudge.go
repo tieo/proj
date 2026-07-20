@@ -10,71 +10,71 @@ import (
 
 	"github.com/tieo/proj/internal/config"
 	"github.com/tieo/proj/internal/daemon"
-	"github.com/tieo/proj/internal/overseer"
+	"github.com/tieo/proj/internal/goalnudge"
 )
 
-// overseerCmd manages the daemon's fleet overseer, mirroring the keep-alive
-// command: no argument shows the status report, on/off toggles
-// [daemon.overseer].enabled in config.toml. Registered under daemonCmd.
-var overseerCmd = &cobra.Command{
-	Use:   "overseer [on|off|on_goal]",
-	Short: "show the fleet overseer, or set its mode (on_goal judges only /goal sessions; overseer run for a dry-run)",
-	Long: `Show or set the daemon's fleet overseer.
+// goalnudgeCmd manages the daemon's goal-nudge backstop, mirroring the
+// keep-alive command: no argument shows the status report, on/off toggles
+// [daemon.goal_nudge].enabled in config.toml. Registered under daemonCmd.
+var goalnudgeCmd = &cobra.Command{
+	Use:   "goal-nudge [on|off]",
+	Short: "show the goal-nudge backstop, or turn it on/off (goal-nudge run for a dry-run)",
+	Long: `Show or set the daemon's goal-nudge backstop.
 
-With no argument, prints the overseer's status: whether it's on, today's token
+With no argument, prints goal-nudge's status: whether it's on, today's token
 spend against the budget, and each watched session's judged state. "on" and
-"off" toggle [daemon.overseer].enabled in config.toml; the daemon picks the
+"off" toggle [daemon.goal_nudge].enabled in config.toml; the daemon picks the
 change up on its next tick. Other settings (model, max_nudges, max_tokens,
-ntfy_topic) are edited directly under [daemon.overseer] in config.toml.
+ntfy_topic) are edited directly under [daemon.goal_nudge] in config.toml.
 
-As each session goes idle the daemon judges whether it reached its goal or
-stopped short, and nudges the ones that stopped short. "overseer run" judges
-every session once now and prints the verdicts, without acting - the dry-run for
-validating it before enabling.`,
+A /goal set on a session is Claude Code's own auto-continue loop. Goal-nudge
+only backstops it: when the goal fails to re-drive an idle session within its
+fire grace, it judges the session (done / stopped_short / blocked / working) and
+nudges the ones that stopped short. It never touches a session with no open
+/goal. "goal-nudge run" judges every session once now and prints the verdicts,
+without acting - the dry-run for validating it.`,
 	Args: cobra.MaximumNArgs(1),
-	RunE: runOverseer,
+	RunE: runGoalNudge,
 }
 
-var overseerRunCmd = &cobra.Command{
+var goalnudgeRunCmd = &cobra.Command{
 	Use:   "run",
-	Short: "run one overseer look now and print the verdicts (takes no action)",
+	Short: "run one goal-nudge look now and print the verdicts (takes no action)",
 	Args:  cobra.NoArgs,
-	RunE:  runOverseerRun,
+	RunE:  runGoalNudgeRun,
 }
 
 func init() {
-	overseerCmd.AddCommand(overseerRunCmd)
+	goalnudgeCmd.AddCommand(goalnudgeRunCmd)
 }
 
-func runOverseer(cmd *cobra.Command, args []string) error {
+func runGoalNudge(cmd *cobra.Command, args []string) error {
 	cfg, err := config.Load()
 	if err != nil {
 		return err
 	}
-	ov := &cfg.Daemon.Overseer
+	ov := &cfg.Daemon.GoalNudge
 	if len(args) == 0 {
-		printOverseerReport(cfg)
+		printGoalNudgeReport(cfg)
 		return nil
 	}
 	switch args[0] {
 	case "on":
-		ov.Mode = "on"
+		ov.Enabled = true
 	case "off":
-		ov.Mode = "off"
-	case "on_goal", "goal":
-		ov.Mode = "on_goal"
+		ov.Enabled = false
 	default:
-		return fmt.Errorf("expected on, off, or on_goal, got %q", args[0])
+		return fmt.Errorf("expected on or off, got %q", args[0])
 	}
 	if err := config.Write(cfg); err != nil {
 		return err
 	}
-	fmt.Printf("overseer: %s\n", args[0])
+	fmt.Printf("goal-nudge: %s\n", args[0])
 	return nil
 }
 
-func runOverseerRun(cmd *cobra.Command, args []string) error {
-	res, err := daemon.OverseerDryRun(daemonConfig())
+func runGoalNudgeRun(cmd *cobra.Command, args []string) error {
+	res, err := daemon.GoalNudgeDryRun(daemonConfig())
 	if err != nil {
 		return err
 	}
@@ -96,21 +96,21 @@ func runOverseerRun(cmd *cobra.Command, args []string) error {
 		}
 	}
 	if len(res.Verdicts) == 0 {
-		fmt.Printf("  (overseer returned no parseable verdicts)\n  raw: %.300s\n", res.Raw)
+		fmt.Printf("  (goal-nudge returned no parseable verdicts)\n  raw: %.300s\n", res.Raw)
 	}
 
 	// A dry-run leaves no trace: the usage is printed for the operator but not
-	// logged, so it never counts against the budget the live overseer reports.
+	// logged, so it never counts against the budget the live goalnudge reports.
 	u := res.Usage
 	fmt.Printf("usage: judged=%d input=%d output=%d cache_read=%d cache_create=%d  ~effective=%d (not logged)\n",
-		len(res.Sessions), u.Input, u.Output, u.CacheRead, u.CacheCreate, overseer.Effective(u))
+		len(res.Sessions), u.Input, u.Output, u.CacheRead, u.CacheCreate, goalnudge.Effective(u))
 	if u.CacheRead < 15000 {
 		fmt.Printf("note: cache_read=%d low — the system/CLAUDE.md prefix did not cache (cold or evicted this look)\n", u.CacheRead)
 	}
 	return nil
 }
 
-// ANSI styles for the overseer report.
+// ANSI styles for the goalnudge report.
 const (
 	aReset  = "\033[0m"
 	aBold   = "\033[1m"
@@ -121,31 +121,27 @@ const (
 	aCyan   = "\033[36m"
 )
 
-// printOverseerReport is the no-argument `proj daemon overseer` view: a
+// printGoalNudgeReport is the no-argument `proj daemon goalnudge` view: a
 // human-readable dashboard of the fleet judge - whether it's on, what it does,
 // today's token spend against the budget, when it last looked, the cost pattern
 // of recent looks, and which sessions it is currently acting on.
-func printOverseerReport(cfg config.Config) {
-	ov := cfg.Daemon.Overseer
+func printGoalNudgeReport(cfg config.Config) {
+	ov := cfg.Daemon.GoalNudge
 	now := time.Now()
-	recs := overseer.ReadUsageLog()
-	lastLook, sessions := overseer.ReadLookState()
+	recs := goalnudge.ReadUsageLog()
+	lastLook, sessions := goalnudge.ReadLookState()
 
 	badge := aDim + "○ off" + aReset
 	if ov.Active() {
-		label := "on"
-		if ov.RequiresGoal() {
-			label = "on (goal-only)"
-		}
-		badge = aGreen + aBold + "● " + label + aReset
+		badge = aGreen + aBold + "● on" + aReset
 	}
 	fmt.Println()
-	fmt.Printf("  %s⬢ Overseer%s  %s   %smodel %s · budget %s/day%s\n",
-		aBold, aReset, badge, aDim, ov.Model, formatK(overseer.DayBudget), aReset)
+	fmt.Printf("  %s⬢ Goal-nudge%s  %s   %smodel %s · budget %s/day%s\n",
+		aBold, aReset, badge, aDim, ov.Model, formatK(goalnudge.DayBudget), aReset)
 	fmt.Printf("  %sAs each session goes idle, judges whether it hit its goal; nudges the\n  ones that stopped short, pings you only when a decision needs you.%s\n\n", aDim, aReset)
 
 	if len(recs) == 0 && lastLook.IsZero() {
-		how := "run one now with `proj daemon overseer run`"
+		how := "run one now with `proj daemon goal-nudge run`"
 		if ov.Active() {
 			how = "the daemon will look on its next round of new work"
 		}
@@ -154,14 +150,14 @@ func printOverseerReport(cfg config.Config) {
 	}
 
 	// Budget bar.
-	looks, eff := overseer.TodayUsage(recs, now)
+	looks, eff := goalnudge.TodayUsage(recs, now)
 	pct := 0
-	if overseer.DayBudget > 0 {
-		pct = eff * 100 / overseer.DayBudget
+	if goalnudge.DayBudget > 0 {
+		pct = eff * 100 / goalnudge.DayBudget
 	}
 	fmt.Printf("  %-13s %s  %s%d%%%s   %s of %s tokens\n",
 		"Budget today", budgetBar(pct, 22), budgetColor(pct), pct, aReset,
-		formatK(eff), formatK(overseer.DayBudget))
+		formatK(eff), formatK(goalnudge.DayBudget))
 	fmt.Printf("  %-13s %d\n", "Looks today", looks)
 
 	// Last look, with cache warmth in plain words.
@@ -184,7 +180,7 @@ func printOverseerReport(cfg config.Config) {
 			"Cost/look", aCyan, sparkline(effs), aReset, aDim, formatK(effs[len(effs)-1]), aReset)
 	}
 
-	// Every judged session with the state the overseer last gave it and the goal
+	// Every judged session with the state the goalnudge last gave it and the goal
 	// it inferred, so the whole fleet's status is visible at a glance.
 	fmt.Println()
 	if len(sessions) == 0 {
@@ -221,8 +217,10 @@ func stateBadge(state string) (glyph, label string) {
 		return aYellow + "▲" + aReset, "short"
 	case "blocked":
 		return aRed + "■" + aReset, "blocked"
-	case overseer.StateNoGoal:
+	case goalnudge.StateNoGoal:
 		return aDim + "·" + aReset, "no goal"
+	case goalnudge.StateWaitGoal:
+		return aDim + "◦" + aReset, "goal set"
 	default:
 		return aDim + "·" + aReset, "-"
 	}
@@ -280,7 +278,7 @@ func sparkline(vals []int) string {
 
 // recentEffective returns the effective-token cost of up to the last n looks,
 // oldest first.
-func recentEffective(recs []overseer.UsageRecord, n int) []int {
+func recentEffective(recs []goalnudge.UsageRecord, n int) []int {
 	start := len(recs) - n
 	if start < 0 {
 		start = 0
