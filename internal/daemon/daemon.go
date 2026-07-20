@@ -2998,6 +2998,14 @@ func goalNudgeClaude(cfg Config, p tmux.Pane, dir, content, sessFile string, now
 	if !ok {
 		return
 	}
+	// Judge against the /goal the user pinned, not the session's first message.
+	// goalnudgeSession defaults Task to the first user turn, which is stale once
+	// a /goal is set (and often already satisfied, so the judge calls it done and
+	// never nudges the stalled goal). The open goal_status condition is the real
+	// target here.
+	if cond := openGoalCondition(sessFile); cond != "" {
+		ss.Task = cond
+	}
 	// Feed the judge what is in the input box: a dim ghost is the agent's own
 	// suggested next step (it is not done), a real draft means the user is
 	// replying. The draft flag also guards the action below.
@@ -3207,38 +3215,49 @@ func wakeManager(cfg Config, p tmux.Pane, content string, now time.Time) {
 // whether a /goal is still open: the goal_status attachment's met/failed flags.
 type goalStatusLine struct {
 	Attachment struct {
-		Type   string `json:"type"`
-		Met    bool   `json:"met"`
-		Failed bool   `json:"failed"`
+		Type      string `json:"type"`
+		Met       bool   `json:"met"`
+		Failed    bool   `json:"failed"`
+		Condition string `json:"condition"`
 	} `json:"attachment"`
 }
 
-// sessionHasActiveGoal reports whether the session has an open /goal, read from
-// its transcript. Claude Code's /goal writes a goal_status attachment when the
-// goal is armed and again each time it judges; the goal is open until one lands
-// with met or failed set. The last such attachment wins, so a session that met
-// or abandoned its goal reads as having none.
-func sessionHasActiveGoal(sessFile string) bool {
+// openGoalCondition returns the condition of the session's open /goal, or "" if
+// none is open, read from its transcript. Claude Code's /goal writes a
+// goal_status attachment when the goal is armed and again each time it judges;
+// the goal is open until one lands with met or failed set. The last such
+// attachment wins, so a session that met or abandoned its goal reads as having
+// none.
+func openGoalCondition(sessFile string) string {
 	f, err := os.Open(sessFile)
 	if err != nil {
-		return false
+		return ""
 	}
 	defer f.Close()
-	active := false
+	cond := ""
 	r := bufio.NewReader(f)
 	for {
 		line, err := r.ReadBytes('\n')
 		if bytes.Contains(line, []byte(`"type":"goal_status"`)) {
 			var g goalStatusLine
 			if json.Unmarshal(bytes.TrimSpace(line), &g) == nil && g.Attachment.Type == "goal_status" {
-				active = !g.Attachment.Met && !g.Attachment.Failed
+				if g.Attachment.Met || g.Attachment.Failed {
+					cond = "" // closed
+				} else {
+					cond = g.Attachment.Condition
+				}
 			}
 		}
 		if err != nil {
 			break
 		}
 	}
-	return active
+	return cond
+}
+
+// sessionHasActiveGoal reports whether the session has an open /goal.
+func sessionHasActiveGoal(sessFile string) bool {
+	return openGoalCondition(sessFile) != ""
 }
 
 // fileSig is a cheap fingerprint of a transcript file (size and mtime); it
@@ -3389,7 +3408,12 @@ func GoalNudgeDryRun(cfg Config) (goalnudge.LookResult, error) {
 		if !ok {
 			continue
 		}
+		// Score against the pinned /goal, not the stale first user turn (see
+		// goalNudgeClaude). Only Claude Code writes goal_status attachments.
 		if tool == config.DefaultTool {
+			if cond := openGoalCondition(path); cond != "" {
+				ss.Task = cond
+			}
 			if pane := paneBySession[s.Name]; pane != "" {
 				esc := tmux.CapturePaneEsc(pane)
 				if text, _ := composerState(esc); text != "" {
