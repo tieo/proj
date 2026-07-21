@@ -26,8 +26,8 @@ import (
 	"time"
 
 	"github.com/tieo/proj/internal/config"
-	"github.com/tieo/proj/internal/handoff"
 	"github.com/tieo/proj/internal/goalnudge"
+	"github.com/tieo/proj/internal/handoff"
 	"github.com/tieo/proj/internal/projects"
 	"github.com/tieo/proj/internal/shellout"
 	"github.com/tieo/proj/internal/tmux"
@@ -70,7 +70,7 @@ type Config struct {
 	KeepAlive   bool                       // recreate vanished sessions that weren't cleanly closed
 	Tools       map[string]config.ToolSpec // resolved launch recipes keyed by tool name, "claude" included
 	ClaudeHome  string                     // [claude] home override; where Claude Code keeps transcripts (the Windows home under WSL)
-	GoalNudge    config.GoalNudgeConfig      // fleet judge: nudge sessions that stopped short of their goal
+	GoalNudge   config.GoalNudgeConfig     // fleet judge: nudge sessions that stopped short of their goal
 }
 
 func DefaultConfig() Config {
@@ -228,26 +228,11 @@ func submitPrompt(cfg Config, paneID, text string) error {
 	return tmux.SendKey(paneID, "Enter")
 }
 
-// SendPrompt types text into a session or pane and submits it, keeping the text
-// and the Enter keystroke apart (see submitPrompt). Exported so `proj send` can
-// delegate a task into another session the same way the daemon nudges one.
-func SendPrompt(cfg Config, target, text string) error {
-	return submitPrompt(cfg, target, text)
-}
 
 // ComposerHasDraft reports whether the input box in an escape-preserving pane
 // capture holds a real user draft (not a dim ghost). Exported so callers that
 // inject a prompt can refuse to type over a draft. See composerHasDraft.
 func ComposerHasDraft(escContent string) bool { return composerHasDraft(escContent) }
-
-// SessionBusy reports whether a pane capture shows a session that cannot take
-// a prompt right now: one still generating (spinner or "esc to interrupt"), or
-// one showing no live input box at all (starting up, sitting in a picker or on
-// the trust-folder prompt). Typed into either, a prompt is swallowed or arrives
-// with its head cut off, while the sender still sees a successful send.
-func SessionBusy(content string) bool {
-	return connDropBusyRE.MatchString(content) || !inputPromptRE.MatchString(content)
-}
 
 // rcActiveRE matches Claude Code's status-bar marker shown while Remote Control
 // is bound ("Remote Control active" or "/rc active"). Its ABSENCE on a live

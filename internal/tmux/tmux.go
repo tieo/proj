@@ -89,6 +89,21 @@ func CapturePane(target string, lines int) string {
 	return shellout.Run("tmux", args...)
 }
 
+// PaneSize returns the pane's width and height in cells, or zeroes when the
+// target cannot be measured.
+func PaneSize(target string) (width, height int) {
+	out := strings.Fields(shellout.Run("tmux", "display-message", "-p", "-t", target, "#{pane_width} #{pane_height}"))
+	if len(out) != 2 {
+		return 0, 0
+	}
+	w, err1 := strconv.Atoi(out[0])
+	h, err2 := strconv.Atoi(out[1])
+	if err1 != nil || err2 != nil {
+		return 0, 0
+	}
+	return w, h
+}
+
 // CapturePaneEsc captures the pane's visible viewport preserving escape
 // sequences (colors and OSC 8 hyperlinks). The plain capture strips these, but
 // the Remote Control marker is only distinguishable by them: a bound session
@@ -457,12 +472,61 @@ func SendKeys(target, cmd string) error {
 	return err
 }
 
+// literalChunk is how much text goes into one send-keys burst, and
+// literalChunkGap how long the pane gets between bursts. Beyond a certain
+// burst, Claude Code's TUI stops treating the input as typing: it collapses it
+// into a "[Pasted text #1]" placeholder, or keeps only part of it, and
+// submitting then delivers a fragment or nothing at all - while tmux and the
+// sender both report success.
+//
+// Both limits were measured against a live session, typing marker text into
+// the composer and reading it back. In a single burst, 800 characters arrive
+// whole, 1000 collapse to a placeholder and 1500 arrive truncated. Splitting
+// alone does not help: 2000 characters in 200-character bursts sent
+// back-to-back still lost half, because bursts with no pause between them
+// reach the TUI as one. With a pause of 30ms or more, bursts of 800 and below
+// arrive whole. These values sit inside both limits, and cost about 200ms for
+// a 2000-character prompt.
+const (
+	literalChunk    = 500
+	literalChunkGap = 50 * time.Millisecond
+)
+
 // SendLiteral sends `text` to `target` in literal mode (no Enter, no key
 // name expansion). Use for long messages where a trailing Enter must arrive
-// only after the target has had time to process all buffered input.
+// only after the target has had time to process all buffered input. Long text
+// goes out in bursts small enough to stay typed input rather than a paste (see
+// literalChunk); splitting is on rune boundaries, so a multi-byte character is
+// never cut in half.
 func SendLiteral(target, text string) error {
-	_, err := shellout.RunErr("tmux", "send-keys", "-t", target, "-l", text)
-	return err
+	for _, part := range chunkRunes(text, literalChunk) {
+		if _, err := shellout.RunErr("tmux", "send-keys", "-t", target, "-l", part); err != nil {
+			return err
+		}
+		if len(text) > literalChunk {
+			time.Sleep(literalChunkGap)
+		}
+	}
+	return nil
+}
+
+// chunkRunes splits s into pieces of at most size runes. An empty string yields
+// one empty piece, so a caller still sends (and a target still sees) exactly
+// what it was given.
+func chunkRunes(s string, size int) []string {
+	runes := []rune(s)
+	if len(runes) <= size {
+		return []string{s}
+	}
+	var out []string
+	for i := 0; i < len(runes); i += size {
+		end := i + size
+		if end > len(runes) {
+			end = len(runes)
+		}
+		out = append(out, string(runes[i:end]))
+	}
+	return out
 }
 
 // SendKey sends a single named tmux key (e.g. "Escape", "Up") with no Enter.

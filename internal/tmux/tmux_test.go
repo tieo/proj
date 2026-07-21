@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 )
 
@@ -166,5 +167,31 @@ func TestLookPathIn(t *testing.T) {
 	}
 	if lookPathIn("claude", "") {
 		t.Error("lookPathIn accepted an empty PATH")
+	}
+}
+
+func TestChunkRunes(t *testing.T) {
+	if got := chunkRunes("short", 500); !slices.Equal(got, []string{"short"}) {
+		t.Errorf("chunkRunes short = %v, want one piece", got)
+	}
+	if got := chunkRunes("", 500); !slices.Equal(got, []string{""}) {
+		t.Errorf("chunkRunes empty = %v, want one empty piece", got)
+	}
+	// Multi-byte runes must not be cut in half: a piece that ends mid-character
+	// reaches the pane as a replacement character.
+	got := chunkRunes("äöüßäöüß", 3)
+	want := []string{"äöü", "ßäö", "üß"}
+	if !slices.Equal(got, want) {
+		t.Errorf("chunkRunes = %q, want %q", got, want)
+	}
+	var n int
+	for _, p := range chunkRunes(strings.Repeat("x", 2000), literalChunk) {
+		if len([]rune(p)) > literalChunk {
+			t.Errorf("piece of %d runes exceeds the burst limit %d", len([]rune(p)), literalChunk)
+		}
+		n += len(p)
+	}
+	if n != 2000 {
+		t.Errorf("pieces total %d runes, want 2000", n)
 	}
 }
