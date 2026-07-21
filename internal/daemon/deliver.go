@@ -65,23 +65,28 @@ func ComposerBox(content string) (text string, placeholder bool) {
 	return text, strings.Contains(text, "Pasted text #")
 }
 
+// clearAttempts bounds the Ctrl+C presses. One press is usually enough, but a
+// press that arrives while the session is mid-turn is spent on the turn and
+// leaves the box as it was, so a second one is needed.
+const clearAttempts = 3
+
 // clearComposer empties a session's input box. Ctrl+C is the only key that
-// clears it whole - Ctrl+U kills a single line, so it leaves long or multi-line
-// content behind, and Escape does nothing. It is pressed once, and only on a
-// box that reads non-empty: a second Ctrl+C on an empty box exits Claude Code
-// and takes the session with it.
-func clearComposer(target string) error {
-	if text, _ := ComposerBox(tmux.CapturePane(target, 0)); text == "" {
-		return nil
+// clears it whole: Ctrl+U kills a single line, so it leaves long or multi-line
+// content behind, and Escape does nothing. Each press happens only while the
+// box reads non-empty, which is what keeps it safe - Ctrl+C on an already empty
+// box arms Claude Code's exit prompt, and a second one there ends the session.
+//
+// Never returns an error: whatever is in the box is the sender's to overwrite,
+// and a send that refuses because the box would not clear is a send that did
+// not happen.
+func clearComposer(target string) {
+	for i := 0; i < clearAttempts; i++ {
+		if text, _ := ComposerBox(tmux.CapturePane(target, 0)); text == "" {
+			return
+		}
+		_ = tmux.SendKey(target, "C-c")
+		time.Sleep(composerSettle)
 	}
-	if err := tmux.SendKey(target, "C-c"); err != nil {
-		return err
-	}
-	time.Sleep(composerSettle)
-	if text, _ := ComposerBox(tmux.CapturePane(target, 0)); text != "" {
-		return fmt.Errorf("input box of %s did not clear", target)
-	}
-	return nil
 }
 
 // verifiableLen is how much text can be typed into target and still be read
@@ -116,7 +121,7 @@ func sameComposerText(box, want string) bool {
 type paneIO struct {
 	send  func(target, text string) error
 	read  func(target string) (string, bool)
-	clear func(target string) error
+	clear func(target string)
 }
 
 var livePane = paneIO{
@@ -144,9 +149,7 @@ func typeVerifiedVia(io paneIO, target, text string) (bool, error) {
 		if !placeholder && sameComposerText(box, text) {
 			return true, nil
 		}
-		if err := io.clear(target); err != nil {
-			return false, err
-		}
+		io.clear(target)
 	}
 	return false, nil
 }
@@ -163,9 +166,7 @@ func typeVerifiedVia(io paneIO, target, text string) (bool, error) {
 // target reads the message from disk rather than through the keyboard.
 func SendPrompt(cfg Config, target, text string) error {
 	saved, savedPlaceholder := ComposerBox(tmux.CapturePane(target, 0))
-	if err := clearComposer(target); err != nil {
-		return err
-	}
+	clearComposer(target)
 	if err := deliver(target, text); err != nil {
 		return err
 	}

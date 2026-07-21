@@ -91,7 +91,7 @@ func TestTypeVerifiedRetriesAMangledFill(t *testing.T) {
 	io := paneIO{
 		send:  func(string, string) error { sends++; return nil },
 		read:  func(string) (string, bool) { b := boxes[0]; boxes = boxes[1:]; return b, b == "[Pasted text #1]" },
-		clear: func(string) error { clears++; return nil },
+		clear: func(string) { clears++ },
 	}
 	ok, err := typeVerifiedVia(io, "s", want)
 	if err != nil || !ok {
@@ -106,7 +106,7 @@ func TestTypeVerifiedGivesUp(t *testing.T) {
 	io := paneIO{
 		send:  func(string, string) error { return nil },
 		read:  func(string) (string, bool) { return "half of it", false },
-		clear: func(string) error { return nil },
+		clear: func(string) {},
 	}
 	ok, err := typeVerifiedVia(io, "s", "the whole prompt")
 	if err != nil {
