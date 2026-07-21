@@ -7,6 +7,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/tieo/proj/internal/config"
+	"github.com/tieo/proj/internal/daemon"
 	"github.com/tieo/proj/internal/projects"
 	"github.com/tieo/proj/internal/tmux"
 )
@@ -84,6 +85,10 @@ func mutateTags(name string, fn func([]string) []string) error {
 	newSession := projects.SessionName(p.Name, stored)
 	if oldSession != newSession {
 		_ = tmux.RenameSession(oldSession, newSession)
+		// Tags ride in the session name, so they ride in the Remote Control
+		// name too; see retitleRemote for why a running session cannot correct
+		// that by itself.
+		retitleRemote(cfg.Claude.Home, daemon.BridgeSessionID(cfg.Claude.Home, p.Dir), p.Dir, newSession)
 	}
 	if len(stored) == 0 {
 		fmt.Printf("%s: (no tags)\n", p.Name)

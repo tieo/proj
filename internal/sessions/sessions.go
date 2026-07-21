@@ -834,6 +834,12 @@ func MigrateHistory(home, oldDir, newDir string) {
 		}
 		_ = os.Remove(filepath.Join(oldFolder, e.Name()))
 	}
+	// Drop the source folder once its transcripts have moved, so a project
+	// renamed a few times does not leave a trail of empty history folders. It
+	// stays if anything is left in it, transcript or not.
+	if rest, err := os.ReadDir(oldFolder); err == nil && len(rest) == 0 {
+		_ = os.Remove(oldFolder)
+	}
 }
 
 // jsonInner returns the JSON encoding of s without the surrounding quotes, so it
@@ -923,4 +929,54 @@ func CwdForDir(projectDir string, sessions []Session) string {
 		}
 	}
 	return WSLToUNC(projectDir)
+}
+
+// ClaudeProjectKey returns the key Claude Code files a directory under in
+// .claude.json: the path as it sees it (the \wsl.localhost UNC form under
+// WSL), written with forward slashes.
+func ClaudeProjectKey(dir string) string {
+	return strings.ReplaceAll(WSLToUNC(dir), "\\", "/")
+}
+
+// MigrateProjectEntry moves a project's .claude.json entry from oldDir to
+// newDir. That entry carries hasTrustDialogAccepted, so without it a renamed
+// project counts as a folder Claude Code has never seen: the relaunched session
+// comes up on the trust dialog instead of the conversation, waiting for a key
+// nobody is there to press. Best effort, like MigrateHistory: a rename that
+// already happened must not fail over this.
+func MigrateProjectEntry(home, oldDir, newDir string) {
+	oldKey, newKey := ClaudeProjectKey(oldDir), ClaudeProjectKey(newDir)
+	if oldKey == newKey {
+		return
+	}
+	path := filepath.Join(filepath.Dir(home), ".claude.json")
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return
+	}
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.UseNumber()
+	var root map[string]any
+	if err := dec.Decode(&root); err != nil {
+		return
+	}
+	projects, ok := root["projects"].(map[string]any)
+	if !ok {
+		return
+	}
+	entry, ok := projects[oldKey]
+	if !ok {
+		return
+	}
+	projects[newKey] = entry
+	delete(projects, oldKey)
+	out, err := json.MarshalIndent(root, "", "  ")
+	if err != nil {
+		return
+	}
+	tmp := path + ".proj-tmp"
+	if os.WriteFile(tmp, out, 0o644) != nil {
+		return
+	}
+	_ = os.Rename(tmp, path)
 }

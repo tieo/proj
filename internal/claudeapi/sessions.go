@@ -5,8 +5,10 @@
 package claudeapi
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -96,6 +98,33 @@ func DeleteSession(token, id string) error {
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("DELETE %s: HTTP %d", id, resp.StatusCode)
+	}
+	return nil
+}
+
+// RenameSession re-titles one Remote Control session. The title is what
+// claude.ai/code and the phone app show, and it is fixed when the bridge first
+// registers: a session resumed under a new --remote-control name keeps the old
+// title, so renaming a project has to say so here too.
+func RenameSession(token, id, title string) error {
+	body, err := json.Marshal(map[string]string{"title": title})
+	if err != nil {
+		return err
+	}
+	req, err := request("PATCH", sessionsURL+"/"+id, token)
+	if err != nil {
+		return err
+	}
+	req.Body = io.NopCloser(bytes.NewReader(body))
+	req.ContentLength = int64(len(body))
+	req.Header.Set("content-type", "application/json")
+	resp, err := (&http.Client{Timeout: 15 * time.Second}).Do(req)
+	if err != nil {
+		return fmt.Errorf("PATCH %s: %w", id, err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("PATCH %s: HTTP %d", id, resp.StatusCode)
 	}
 	return nil
 }

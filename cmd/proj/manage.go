@@ -159,6 +159,11 @@ func renameProject(cfg config.Config, p projects.Project, newName string, ops se
 	oldSession := projects.SessionName(p.Name, p.Tags)
 	newSession := projects.SessionName(newName, p.Tags)
 
+	// Resolve the Remote Control bridge before anything moves: it is found by
+	// the directory Claude Code recorded, which is still the old one, and the
+	// relaunched session reuses the same bridge.
+	bridge := daemon.BridgeSessionID(cfg.Claude.Home, p.Dir)
+
 	live := ops.SessionForPath(p.Dir)
 	if live != "" {
 		if err := ops.RespawnShell(live, p.Dir); err != nil {
@@ -182,6 +187,9 @@ func renameProject(cfg config.Config, p projects.Project, newName string, ops se
 	// later migration would hand it an empty project and start a new
 	// conversation next to the one it was supposed to continue.
 	sessions.MigrateHistory(sessions.Home(cfg.Claude.Home), p.Dir, newDir)
+	// Carry the trust decision to the new path as well, or the relaunch below
+	// comes up on the trust dialog rather than the conversation.
+	sessions.MigrateProjectEntry(sessions.Home(cfg.Claude.Home), p.Dir, newDir)
 	renameManagedSession(oldSession, newSession, newDir)
 
 	if live == "" {
@@ -199,6 +207,10 @@ func renameProject(cfg config.Config, p projects.Project, newName string, ops se
 		if err := ops.RespawnSession(newSession, newDir, cmdLine); err != nil {
 			return fmt.Errorf("relaunch session %q: %w", newSession, err)
 		}
+		// The relaunched tool carries the new --remote-control name, but the
+		// bridge it resumes was registered under the old one and keeps it; see
+		// retitleRemote.
+		retitleRemote(cfg.Claude.Home, bridge, newDir, newSession)
 	}
 	fmt.Printf("renamed %s -> %s\n", p.Dir, newDir)
 	return nil

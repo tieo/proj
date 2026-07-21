@@ -38,6 +38,16 @@ func SessionForPath(dir string) string {
 			return s.Name
 		}
 	}
+	// session_path is fixed when the session is created and does not follow a
+	// pane respawned into another directory, which is exactly what `proj
+	// rename` does. Ask the panes where they actually are, so a project renamed
+	// twice still finds its own session the second time.
+	for _, line := range strings.Split(shellout.Run("tmux", "list-panes", "-a", "-F", "#{session_name}\t#{pane_current_path}"), "\n") {
+		parts := strings.SplitN(line, "\t", 2)
+		if len(parts) == 2 && parts[1] == dir {
+			return parts[0]
+		}
+	}
 	return ""
 }
 
