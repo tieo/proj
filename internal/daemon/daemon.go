@@ -220,6 +220,10 @@ func autoTrustPath(baseDir, path string) bool {
 // whenever the user finally presses Enter. Typing the text literally, letting
 // the pane settle, then sending Enter on its own keeps the two bursts apart.
 // Literal mode also stops tmux from resolving the text against its key names.
+//
+// This is the unverified path, for panes whose input box proj cannot read: the
+// read-back in SendPrompt knows Claude Code's composer only. Every Claude pane
+// goes through SendPrompt instead.
 func submitPrompt(cfg Config, paneID, text string) error {
 	if err := tmux.SendLiteral(paneID, text); err != nil {
 		return err
@@ -227,7 +231,6 @@ func submitPrompt(cfg Config, paneID, text string) error {
 	time.Sleep(cfg.DismissGap)
 	return tmux.SendKey(paneID, "Enter")
 }
-
 
 // ComposerHasDraft reports whether the input box in an escape-preserving pane
 // capture holds a real user draft (not a dim ghost). Exported so callers that
@@ -2787,19 +2790,14 @@ func Tick(cfg Config, state State, errorState ErrorState, managed ManagedState, 
 						clearOK = true
 						slog.Info("cleared", "session", p.Session, "pane", p.ID)
 						// Wait for Claude Code to finish processing /clear and
-						// redraw to the idle prompt. Then send the recovery message
-						// in literal mode (no key-name expansion) followed by a
-						// separate Enter; this guarantees Enter only arrives after
-						// all the message text has landed in the input buffer.
+						// redraw to the idle prompt before typing into it. The
+						// recovery message carries the pre-clear context, so it is
+						// the longest thing the daemon sends and the one that most
+						// needs SendPrompt's read-back (see deliver.go).
 						time.Sleep(2 * time.Second)
 						msg := clearRecoveryMessage(apiErr, sessContext)
-						if err := tmux.SendLiteral(p.ID, msg); err != nil {
+						if err := SendPrompt(cfg, p.ID, msg); err != nil {
 							slog.Error("send recovery message failed", "session", p.Session, "err", err)
-						} else {
-							time.Sleep(100 * time.Millisecond)
-							if err := tmux.SendKey(p.ID, "Enter"); err != nil {
-								slog.Error("send Enter failed", "session", p.Session, "err", err)
-							}
 						}
 					}
 				}
@@ -2926,7 +2924,7 @@ func Tick(cfg Config, state State, errorState ErrorState, managed ManagedState, 
 				continue
 			}
 			time.Sleep(cfg.DismissGap)
-			if err := tmux.SendKeys(p.ID, cfg.ResumeText); err != nil {
+			if err := SendPrompt(cfg, p.ID, cfg.ResumeText); err != nil {
 				slog.Error("send-keys failed", "session", p.Session, "err", err)
 				continue
 			}
@@ -3055,7 +3053,7 @@ func goalNudgeClaude(cfg Config, p tmux.Pane, dir, content, sessFile string, now
 	// the whole point is to catch sessions the user left.
 	switch {
 	case action == goalnudge.ActNudge && !drafting:
-		if err := submitPrompt(cfg, p.ID, v.Callout); err != nil {
+		if err := SendPrompt(cfg, p.ID, v.Callout); err != nil {
 			slog.Error("goal-nudge nudge failed", "session", p.Session, "err", err)
 		} else {
 			m.Nudges++
@@ -3216,7 +3214,7 @@ func wakeManager(cfg Config, p tmux.Pane, content string, now time.Time) {
 		return
 	}
 	msg := fmt.Sprintf("You have %d fleet decision(s) queued. Run `proj manager inbox` to triage them, then act or escalate.", n)
-	if err := submitPrompt(cfg, p.ID, msg); err != nil {
+	if err := SendPrompt(cfg, p.ID, msg); err != nil {
 		slog.Error("manager wake failed", "err", err)
 		return
 	}
