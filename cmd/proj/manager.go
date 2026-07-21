@@ -209,6 +209,13 @@ and encrypted secrets (secrets.enc) here, and commit as you change them.
   connectors - OAuth, so no API token ever passes through chat or proj. Run
   ` + "`/mcp`" + ` to see and authenticate connectors.
 
+## Language
+
+Everything you address to another model is English: ` + "`proj send`" + ` tasks,
+handoff briefs, notes a session will read later, prompts to any tool or
+connector. This holds whatever language the human is writing to you in; only
+your replies to them follow their language.
+
 ## Inbox
 
 When the daemon's goal-nudge finds a session that stopped and needs a human
