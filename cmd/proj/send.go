@@ -2,7 +2,6 @@ package main
 
 import (
 	"fmt"
-	"os"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -52,17 +51,15 @@ func runSend(cmd *cobra.Command, args []string) error {
 		return err
 	}
 	text := strings.Join(args[1:], " ")
-	before, placeholder := daemon.ComposerBox(tmux.CapturePane(sess, 0))
+	if strings.TrimSpace(text) == "" {
+		// An empty prompt is a caller's bug (an unset variable, an empty file);
+		// sending it would submit nothing and wake the target for no reason.
+		return fmt.Errorf("nothing to send: the prompt is empty")
+	}
 	if err := daemon.SendPrompt(daemonConfig(), sess, text); err != nil {
 		return fmt.Errorf("send to %s: %w", sess, err)
 	}
 	fmt.Printf("sent to %s\n", sess)
-	if before != "" && placeholder {
-		// A pasted draft shows as "[Pasted text #1]" and nothing can read its
-		// real content back, so the send overwrote it. Say so rather than let
-		// it disappear quietly.
-		fmt.Fprintf(os.Stderr, "warning: %s held a pasted draft, which could not be restored\n", sess)
-	}
 	return nil
 }
 

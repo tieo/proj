@@ -26,10 +26,6 @@ import (
 // composer is read back.
 const composerSettle = 900 * time.Millisecond
 
-// deliverAttempts is how often a mismatching fill is cleared and retyped
-// before the send falls back to handing over a file.
-const deliverAttempts = 3
-
 // composerChrome is how much of the pane the conversation, the rules and the
 // status lines take, leaving the rest for the input box. Deliberately
 // pessimistic: overestimating the box means trusting a read-back that was
@@ -38,12 +34,16 @@ const composerChrome = 6
 
 var composerPrompt = regexp.MustCompile(`^(?:❯|>\x{00a0})`)
 
-// ComposerBox returns the text standing in a session's input box, and whether
-// it is a paste placeholder rather than readable text. The box is the region
-// below the last prompt marker up to the rule that closes it; continuation
-// lines are indented by two spaces, which is undone here so the text compares
-// against what was typed.
-func ComposerBox(content string) (text string, placeholder bool) {
+// ComposerBox returns the text standing in a session's input box, whether it
+// is a paste placeholder rather than readable text, and whether there is an
+// input box on screen at all. The box is the region below the last prompt
+// marker up to the rule that closes it; continuation lines are indented by two
+// spaces, which is undone here so the text compares against what was typed.
+//
+// present is false when the session shows no input box: it is starting up, or
+// standing on the trust-folder question or a picker. Typing there does not
+// compose a message, it works the menu.
+func ComposerBox(content string) (text string, placeholder, present bool) {
 	lines := strings.Split(content, "\n")
 	start := -1
 	for i, ln := range lines {
@@ -52,7 +52,7 @@ func ComposerBox(content string) (text string, placeholder bool) {
 		}
 	}
 	if start < 0 {
-		return "", false
+		return "", false, false
 	}
 	body := []string{composerPrompt.ReplaceAllString(lines[start], "")}
 	for _, ln := range lines[start+1:] {
@@ -62,31 +62,7 @@ func ComposerBox(content string) (text string, placeholder bool) {
 		body = append(body, strings.TrimPrefix(ln, "  "))
 	}
 	text = strings.TrimSpace(strings.Join(body, "\n"))
-	return text, strings.Contains(text, "Pasted text #")
-}
-
-// clearAttempts bounds the Ctrl+C presses. One press is usually enough, but a
-// press that arrives while the session is mid-turn is spent on the turn and
-// leaves the box as it was, so a second one is needed.
-const clearAttempts = 3
-
-// clearComposer empties a session's input box. Ctrl+C is the only key that
-// clears it whole: Ctrl+U kills a single line, so it leaves long or multi-line
-// content behind, and Escape does nothing. Each press happens only while the
-// box reads non-empty, which is what keeps it safe - Ctrl+C on an already empty
-// box arms Claude Code's exit prompt, and a second one there ends the session.
-//
-// Never returns an error: whatever is in the box is the sender's to overwrite,
-// and a send that refuses because the box would not clear is a send that did
-// not happen.
-func clearComposer(target string) {
-	for i := 0; i < clearAttempts; i++ {
-		if text, _ := ComposerBox(tmux.CapturePane(target, 0)); text == "" {
-			return
-		}
-		_ = tmux.SendKey(target, "C-c")
-		time.Sleep(composerSettle)
-	}
+	return text, strings.Contains(text, "Pasted text #"), true
 }
 
 // verifiableLen is how much text can be typed into target and still be read
@@ -101,10 +77,12 @@ func verifiableLen(target string) int {
 	return w * rows
 }
 
-// sameComposerText reports whether the box holds what was typed. The comparison
-// ignores whitespace: the TUI wraps long input across lines and pads them, so
-// the rendered text differs from the input in whitespace alone.
-func sameComposerText(box, want string) bool {
+// composerEndsWith reports whether the box ends with what was just typed. It is
+// a suffix check rather than an equality one because the prompt is appended to
+// whatever already stood in the box. Whitespace is ignored: the TUI wraps long
+// input across lines and pads it, so the rendered text differs from the input
+// in whitespace alone.
+func composerEndsWith(box, typed string) bool {
 	strip := func(s string) string {
 		return strings.Map(func(r rune) rune {
 			if r == ' ' || r == '\t' || r == '\n' || r == '\r' || r == ' ' {
@@ -113,74 +91,71 @@ func sameComposerText(box, want string) bool {
 			return r
 		}, s)
 	}
-	return strip(box) == strip(want)
+	return strings.HasSuffix(strip(box), strip(typed))
 }
 
-// paneIO is the pane side of a verified fill, injected so the retry loop can
-// be tested without a tmux server.
+// paneIO is the pane side of a verified fill, injected so the check can be
+// tested without a tmux server.
 type paneIO struct {
-	send  func(target, text string) error
-	read  func(target string) (string, bool)
-	clear func(target string)
+	send func(target, text string) error
+	read func(target string) (text string, placeholder, present bool)
 }
 
 var livePane = paneIO{
 	send: tmux.SendLiteral,
-	read: func(target string) (string, bool) {
+	read: func(target string) (string, bool, bool) {
 		time.Sleep(composerSettle)
 		return ComposerBox(tmux.CapturePane(target, 0))
 	},
-	clear: clearComposer,
 }
 
-// typeVerified types text into target and confirms the input box holds it,
-// clearing and retyping on a mismatch. Reports whether the box ended up
-// correct.
+// typeVerified types text into target and reports whether the input box ends
+// with it. Whatever stood in the box before is left alone and goes out with the
+// prompt: the target sorts that out, and touching it has cost more than it ever
+// saved. A mangled fill is not retyped either - a second attempt would append a
+// second copy - so the caller falls back to handing over a file.
 func typeVerified(target, text string) (bool, error) {
 	return typeVerifiedVia(livePane, target, text)
 }
 
 func typeVerifiedVia(io paneIO, target, text string) (bool, error) {
-	for i := 0; i < deliverAttempts; i++ {
-		if err := io.send(target, text); err != nil {
-			return false, err
-		}
-		box, placeholder := io.read(target)
-		if !placeholder && sameComposerText(box, text) {
-			return true, nil
-		}
-		io.clear(target)
+	if err := io.send(target, text); err != nil {
+		return false, err
 	}
-	return false, nil
+	box, placeholder, present := io.read(target)
+	return present && !placeholder && composerEndsWith(box, text), nil
 }
 
 // SendPrompt delivers text into a session's input box and submits it as a turn
-// of its own. Whatever stood in the box is put back afterwards, so a send never
-// costs the user the draft they were writing - except when that draft is a
-// paste placeholder, whose real content the pane does not show and nothing can
-// restore.
+// of its own. Anything already standing in the box is left where it is and goes
+// out in front of the prompt: reading it, clearing it and putting it back cost
+// two sends that never arrived, and the target can make sense of a stray line
+// far more easily than of a message that was never delivered.
 //
 // Text that fits on screen is typed and verified. Anything longer, or anything
 // that will not type correctly, is written to a file and announced with a short
 // prompt that names it: a path is short enough to deliver reliably, and the
 // target reads the message from disk rather than through the keyboard.
 func SendPrompt(cfg Config, target, text string) error {
-	saved, savedPlaceholder := ComposerBox(tmux.CapturePane(target, 0))
-	clearComposer(target)
+	if strings.TrimSpace(text) == "" {
+		// An empty send used to clear the target's box, submit nothing, and -
+		// once the box would not verify - hand over a file holding a single
+		// newline. Whatever produced the empty text is the caller's bug, and it
+		// must not reach the target as a task.
+		return fmt.Errorf("refusing to send an empty prompt to %s", target)
+	}
+	if _, _, present := ComposerBox(tmux.CapturePane(target, 0)); !present {
+		// No input box: the session is starting up, or waiting on the
+		// trust-folder question or a picker. Keystrokes there work the menu
+		// instead of composing a message, so a send would pick an option nobody
+		// chose and still deliver nothing.
+		return fmt.Errorf("%s is not at an input box (starting up, or on a prompt or picker); nothing sent", target)
+	}
 	if err := deliver(target, text); err != nil {
 		return err
 	}
 	time.Sleep(cfg.DismissGap)
-	if err := tmux.SendKey(target, "Enter"); err != nil {
-		return err
-	}
-	if saved != "" && !savedPlaceholder {
-		time.Sleep(composerSettle)
-		// Best effort: the prompt is already on its way, and failing the send
-		// over a draft that could not be typed back would misreport it.
-		_, _ = typeVerified(target, saved)
-	}
-	return nil
+	return tmux.SendKey(target, "Enter")
 }
 
 func deliver(target, text string) error {

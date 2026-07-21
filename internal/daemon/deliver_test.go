@@ -37,18 +37,19 @@ func TestComposerBox(t *testing.T) {
 		capture     string
 		want        string
 		placeholder bool
+		present     bool
 	}{
-		{"empty", emptyBox, "", false},
-		{"draft", draftBox, "restore all 79", false},
-		{"multi-line", multiLineBox, "first line of the draft\nsecond line\nthird line", false},
-		{"pasted", pastedBox, "[Pasted text #1][Pasted text #2]", true},
-		{"no input box", noBox, "", false},
+		{"empty", emptyBox, "", false, true},
+		{"draft", draftBox, "restore all 79", false, true},
+		{"multi-line", multiLineBox, "first line of the draft\nsecond line\nthird line", false, true},
+		{"pasted", pastedBox, "[Pasted text #1][Pasted text #2]", true, true},
+		{"no input box", noBox, "", false, false},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			got, ph := ComposerBox(c.capture)
-			if got != c.want || ph != c.placeholder {
-				t.Errorf("ComposerBox = (%q, %v), want (%q, %v)", got, ph, c.want, c.placeholder)
+			got, ph, present := ComposerBox(c.capture)
+			if got != c.want || ph != c.placeholder || present != c.present {
+				t.Errorf("ComposerBox = (%q, %v, %v), want (%q, %v, %v)", got, ph, present, c.want, c.placeholder, c.present)
 			}
 		})
 	}
@@ -61,58 +62,56 @@ func TestComposerBoxTakesTheLastPrompt(t *testing.T) {
 		"────────────────────────────────\n" +
 		"> the real draft\n" +
 		"────────────────────────────────\n"
-	if got, _ := ComposerBox(capture); got != "the real draft" {
+	if got, _, _ := ComposerBox(capture); got != "the real draft" {
 		t.Errorf("ComposerBox = %q, want the live box", got)
 	}
 }
 
-func TestSameComposerText(t *testing.T) {
+func TestComposerEndsWith(t *testing.T) {
 	// The TUI wraps a long line and indents the continuation, so the rendered
 	// text differs from the input in whitespace alone.
 	typed := "one two three four five six seven"
 	rendered := "one two three four\nfive six seven"
-	if !sameComposerText(rendered, typed) {
+	if !composerEndsWith(rendered, typed) {
 		t.Error("wrapped text should compare equal to what was typed")
 	}
-	if sameComposerText("one two three", typed) {
+	if composerEndsWith("one two three", typed) {
 		t.Error("a short fill must not pass as the full text")
 	}
-	if !sameComposerText("", "") {
+	if !composerEndsWith("", "") {
 		t.Error("empty should equal empty")
 	}
 }
 
-// A mangled fill must be retyped, not submitted: the TUI drops input often
-// enough that one clean attempt cannot be assumed.
-func TestTypeVerifiedRetriesAMangledFill(t *testing.T) {
-	want := "the whole prompt"
-	boxes := []string{"the whole", "[Pasted text #1]", want}
-	var sends, clears int
+// The prompt is appended to whatever stands in the box, so the check is a
+// suffix one: a leftover draft in front of it is fine, a cut-off fill is not.
+func TestTypeVerifiedAcceptsTextAfterALeftoverDraft(t *testing.T) {
 	io := paneIO{
-		send:  func(string, string) error { sends++; return nil },
-		read:  func(string) (string, bool) { b := boxes[0]; boxes = boxes[1:]; return b, b == "[Pasted text #1]" },
-		clear: func(string) { clears++ },
+		send: func(string, string) error { return nil },
+		read: func(string) (string, bool, bool) { return "leftover draft the whole prompt", false, true },
 	}
-	ok, err := typeVerifiedVia(io, "s", want)
+	ok, err := typeVerifiedVia(io, "s", "the whole prompt")
 	if err != nil || !ok {
 		t.Fatalf("typeVerified = (%v, %v), want (true, nil)", ok, err)
 	}
-	if sends != 3 || clears != 2 {
-		t.Errorf("sends=%d clears=%d, want 3 and 2", sends, clears)
+}
+
+func TestTypeVerifiedRejectsATruncatedFill(t *testing.T) {
+	io := paneIO{
+		send: func(string, string) error { return nil },
+		read: func(string) (string, bool, bool) { return "the whole pro", false, true },
+	}
+	if ok, _ := typeVerifiedVia(io, "s", "the whole prompt"); ok {
+		t.Error("a fill missing its tail was reported as delivered")
 	}
 }
 
-func TestTypeVerifiedGivesUp(t *testing.T) {
+func TestTypeVerifiedRejectsAPastePlaceholder(t *testing.T) {
 	io := paneIO{
-		send:  func(string, string) error { return nil },
-		read:  func(string) (string, bool) { return "half of it", false },
-		clear: func(string) {},
+		send: func(string, string) error { return nil },
+		read: func(string) (string, bool, bool) { return "[Pasted text #1]", true, true },
 	}
-	ok, err := typeVerifiedVia(io, "s", "the whole prompt")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if ok {
-		t.Error("a fill that never matched was reported as delivered")
+	if ok, _ := typeVerifiedVia(io, "s", "the whole prompt"); ok {
+		t.Error("a paste placeholder was reported as delivered")
 	}
 }
