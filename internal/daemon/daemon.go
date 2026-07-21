@@ -240,6 +240,15 @@ func SendPrompt(cfg Config, target, text string) error {
 // inject a prompt can refuse to type over a draft. See composerHasDraft.
 func ComposerHasDraft(escContent string) bool { return composerHasDraft(escContent) }
 
+// SessionBusy reports whether a pane capture shows a session that cannot take
+// a prompt right now: one still generating (spinner or "esc to interrupt"), or
+// one showing no live input box at all (starting up, sitting in a picker or on
+// the trust-folder prompt). Typed into either, a prompt is swallowed or arrives
+// with its head cut off, while the sender still sees a successful send.
+func SessionBusy(content string) bool {
+	return connDropBusyRE.MatchString(content) || !inputPromptRE.MatchString(content)
+}
+
 // rcActiveRE matches Claude Code's status-bar marker shown while Remote Control
 // is bound ("Remote Control active" or "/rc active"). Its ABSENCE on a live
 // claude pane means RC has dropped - claude has no auto-reconnect, so the
@@ -384,6 +393,25 @@ var sgrRE = regexp.MustCompile(`\x1b\[[0-9;]*m`)
 // osc8RE matches an OSC 8 hyperlink introducer or terminator (ESC]8;...ST).
 var osc8RE = regexp.MustCompile(`\x1b\]8;[^\x1b]*\x1b\\`)
 
+// composerMarkers are the glyphs Claude Code has used to introduce its input
+// box: the older "❯" and the current "> " with a non-breaking space (the NBSP
+// is what tells it apart from ordinary "> " quoting in prose). Both live here
+// rather than inline in each check: a build that renders only the unknown one
+// makes every capture read as "no input box", and the callers treat that as
+// unsafe, so they refuse to type into a session that is in fact ready.
+var composerMarkers = []string{"❯", "> "}
+
+// afterComposerMarker returns what follows the composer marker on an input
+// line, and whether the line carries one at all.
+func afterComposerMarker(line string) (string, bool) {
+	for _, m := range composerMarkers {
+		if i := strings.Index(line, m); i >= 0 {
+			return line[i+len(m):], true
+		}
+	}
+	return "", false
+}
+
 // composerHasDraft reports whether Claude's input composer holds a real user
 // draft (normal-weight text the user typed and has not sent), as opposed to
 // being empty or showing only a dim ghost placeholder. It reads an
@@ -396,7 +424,7 @@ func composerHasDraft(escContent string) bool {
 	lines := strings.Split(escContent, "\n")
 	for i := len(lines) - 1; i >= 0; i-- {
 		plain := sgrRE.ReplaceAllString(lines[i], "")
-		if !strings.ContainsRune(plain, '❯') {
+		if _, ok := afterComposerMarker(plain); !ok {
 			continue
 		}
 		if pickerOptionRE.MatchString(plain) {
@@ -405,8 +433,8 @@ func composerHasDraft(escContent string) bool {
 		s := dimSpanRE.ReplaceAllString(lines[i], "") // drop ghost placeholders
 		s = osc8RE.ReplaceAllString(s, "")
 		s = sgrRE.ReplaceAllString(s, "")
-		if idx := strings.IndexRune(s, '❯'); idx >= 0 {
-			s = s[idx+len("❯"):]
+		if rest, ok := afterComposerMarker(s); ok {
+			s = rest
 		}
 		s = strings.TrimFunc(s, func(r rune) bool {
 			return r == ' ' || r == ' ' || r == '\t'
@@ -426,7 +454,7 @@ func composerState(escContent string) (text string, draft bool) {
 	lines := strings.Split(escContent, "\n")
 	for i := len(lines) - 1; i >= 0; i-- {
 		plain := sgrRE.ReplaceAllString(lines[i], "")
-		if !strings.ContainsRune(plain, '❯') {
+		if _, ok := afterComposerMarker(plain); !ok {
 			continue
 		}
 		if pickerOptionRE.MatchString(plain) {
@@ -434,16 +462,16 @@ func composerState(escContent string) (text string, draft bool) {
 		}
 		// Normal-weight text after dropping the dim ghost span is a real draft.
 		nodim := sgrRE.ReplaceAllString(osc8RE.ReplaceAllString(dimSpanRE.ReplaceAllString(lines[i], ""), ""), "")
-		if idx := strings.IndexRune(nodim, '❯'); idx >= 0 {
-			nodim = nodim[idx+len("❯"):]
+		if rest, ok := afterComposerMarker(nodim); ok {
+			nodim = rest
 		}
 		if d := strings.TrimSpace(nodim); d != "" {
 			return d, true
 		}
 		// Empty of draft: the ghost placeholder is the agent's suggested next step.
 		full := sgrRE.ReplaceAllString(osc8RE.ReplaceAllString(lines[i], ""), "")
-		if idx := strings.IndexRune(full, '❯'); idx >= 0 {
-			full = full[idx+len("❯"):]
+		if rest, ok := afterComposerMarker(full); ok {
+			full = rest
 		}
 		return strings.TrimSpace(full), false
 	}
