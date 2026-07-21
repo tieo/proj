@@ -172,7 +172,7 @@ func deliver(target, text string) error {
 	if err != nil {
 		return fmt.Errorf("hand the prompt over as a file: %w", err)
 	}
-	pointer := fmt.Sprintf("Read %s and act on it: it is a task sent to you with `proj send`, too long to type into your input box.", path)
+	pointer := fmt.Sprintf("Read %s and act on it: it is a message from the proj daemon, too long to type into your input box.", path)
 	ok, err := typeVerified(target, pointer)
 	if err != nil {
 		return err

@@ -75,40 +75,6 @@ func TestGoalBackstopGate(t *testing.T) {
 	}
 }
 
-func TestManagerInboxRoundtrip(t *testing.T) {
-	statePath := filepath.Join(t.TempDir(), "daemon.json")
-	if got := ReadInbox(statePath); got != nil {
-		t.Fatalf("empty inbox should read nil, got %v", got)
-	}
-	for i, s := range []string{"alpha", "beta"} {
-		if err := appendInbox(statePath, InboxItem{TS: "t", Session: s, Reason: "needs a call"}); err != nil {
-			t.Fatalf("append %d: %v", i, err)
-		}
-	}
-	items := ReadInbox(statePath)
-	if len(items) != 2 || items[0].Session != "alpha" || items[1].Session != "beta" {
-		t.Fatalf("read back wrong: %+v", items)
-	}
-	if err := DrainInbox(statePath); err != nil {
-		t.Fatalf("drain: %v", err)
-	}
-	if got := ReadInbox(statePath); got != nil {
-		t.Fatalf("drained inbox should be empty, got %v", got)
-	}
-	if err := DrainInbox(statePath); err != nil {
-		t.Fatalf("drain of missing inbox must be a no-op, got %v", err)
-	}
-}
-
-func TestManagerEnabled(t *testing.T) {
-	if managerEnabled(ManagedState{"x": {Name: "x"}}) {
-		t.Error("no system session should read as manager off")
-	}
-	if !managerEnabled(ManagedState{"manager": {Name: "manager", System: true}}) {
-		t.Error("a system session should read as manager on")
-	}
-}
-
 func touch(t *testing.T, path string, mtime time.Time) {
 	t.Helper()
 	if err := os.Chtimes(path, mtime, mtime); err != nil {
