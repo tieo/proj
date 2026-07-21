@@ -10,9 +10,11 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 )
@@ -102,25 +104,91 @@ func runSecretSet(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-// readSecretValue takes a secret from stdin. In a terminal it reads one line -
-// paste the value and press Enter, nothing to Ctrl-D and no piping. When stdin
-// is redirected or piped it takes everything, so `proj manager secret set K <
-// file` still works. Either way the value never appears in argv or shell
-// history. A trailing newline is trimmed.
+// readSecretValue takes a secret from stdin. In a terminal it reads until
+// Enter with echo off - paste the value and press Enter, nothing to Ctrl-D and
+// no piping. When stdin is redirected or piped it takes everything, so `proj
+// manager secret set K < file` still works. Either way the value never appears
+// in argv or shell history. Trailing newlines are trimmed.
 func readSecretValue() (string, error) {
 	if info, _ := os.Stdin.Stat(); info != nil && info.Mode()&os.ModeCharDevice != 0 {
-		fmt.Fprint(os.Stderr, "paste the value, then press Enter: ")
-		line, err := bufio.NewReader(os.Stdin).ReadString('\n')
-		if err != nil && err != io.EOF {
-			return "", err
-		}
-		return strings.TrimRight(line, "\r\n"), nil
+		return readTerminalSecret()
 	}
 	raw, err := io.ReadAll(os.Stdin)
 	if err != nil {
 		return "", err
 	}
 	return strings.TrimRight(string(raw), "\r\n"), nil
+}
+
+// terminalPasteWindow is how long the reader waits for more of a paste after
+// the first line ends. A paste lands in the tty buffer in one burst, so its
+// remaining lines are already in flight and arrive well inside the window; a
+// value typed by hand is followed by nothing, so the window simply elapses.
+const terminalPasteWindow = 150 * time.Millisecond
+
+// readTerminalSecret reads a secret from the terminal without echoing it, so
+// the value never reaches the screen (nor a tmux pane's scrollback, which
+// `proj` itself can capture). Multi-line values survive: a key pasted whole is
+// taken whole rather than truncated at its first newline, silently storing a
+// broken credential.
+func readTerminalSecret() (string, error) {
+	fmt.Fprint(os.Stderr, "paste the value, then press Enter (not echoed): ")
+	restore := disableTerminalEcho()
+	defer func() {
+		restore()
+		fmt.Fprintln(os.Stderr)
+	}()
+
+	lines := make(chan string)
+	go func() {
+		r := bufio.NewReader(os.Stdin)
+		for {
+			line, err := r.ReadString('\n')
+			if line != "" {
+				lines <- line
+			}
+			if err != nil {
+				close(lines)
+				return
+			}
+		}
+	}()
+
+	var b strings.Builder
+	line, ok := <-lines
+	if !ok {
+		return "", nil
+	}
+	b.WriteString(line)
+	for {
+		select {
+		case line, ok := <-lines:
+			if !ok {
+				return strings.TrimRight(b.String(), "\r\n"), nil
+			}
+			b.WriteString(line)
+		case <-time.After(terminalPasteWindow):
+			return strings.TrimRight(b.String(), "\r\n"), nil
+		}
+	}
+}
+
+// disableTerminalEcho stops the terminal from echoing what is typed and
+// returns the call that turns echo back on. stty is used rather than a termios
+// binding because proj depends on the Go standard library alone (the corporate
+// network blocks the module proxy, see the store's header comment). Best
+// effort: on a terminal that refuses the change the read still works, it just
+// echoes.
+func disableTerminalEcho() func() {
+	stty := func(arg string) error {
+		c := exec.Command("stty", arg)
+		c.Stdin = os.Stdin
+		return c.Run()
+	}
+	if err := stty("-echo"); err != nil {
+		return func() {}
+	}
+	return func() { _ = stty("echo") }
 }
 
 func runSecretGet(cmd *cobra.Command, args []string) error {
