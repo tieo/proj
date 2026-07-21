@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/rand"
@@ -89,17 +90,37 @@ func runSecretSet(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
-	fmt.Fprint(os.Stderr, "value (end with EOF / Ctrl-D): ")
-	raw, err := io.ReadAll(os.Stdin)
+	value, err := readSecretValue()
 	if err != nil {
 		return err
 	}
-	m[args[0]] = strings.TrimRight(string(raw), "\r\n")
+	m[args[0]] = value
 	if err := saveSecrets(m); err != nil {
 		return err
 	}
 	fmt.Printf("stored %s\n", args[0])
 	return nil
+}
+
+// readSecretValue takes a secret from stdin. In a terminal it reads one line -
+// paste the value and press Enter, nothing to Ctrl-D and no piping. When stdin
+// is redirected or piped it takes everything, so `proj manager secret set K <
+// file` still works. Either way the value never appears in argv or shell
+// history. A trailing newline is trimmed.
+func readSecretValue() (string, error) {
+	if info, _ := os.Stdin.Stat(); info != nil && info.Mode()&os.ModeCharDevice != 0 {
+		fmt.Fprint(os.Stderr, "paste the value, then press Enter: ")
+		line, err := bufio.NewReader(os.Stdin).ReadString('\n')
+		if err != nil && err != io.EOF {
+			return "", err
+		}
+		return strings.TrimRight(line, "\r\n"), nil
+	}
+	raw, err := io.ReadAll(os.Stdin)
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimRight(string(raw), "\r\n"), nil
 }
 
 func runSecretGet(cmd *cobra.Command, args []string) error {
