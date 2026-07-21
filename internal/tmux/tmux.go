@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"syscall"
@@ -153,12 +154,95 @@ func ApplySlashCommands(target string, slashes []string, timeout time.Duration) 
 // (attaching to that server), so the pane id is captured normally via -P.
 func NewSession(name, dir, command string) (string, error) {
 	ensureServer()
+	if err := CheckPaneCommand(command); err != nil {
+		return "", err
+	}
 	pane, err := shellout.RunErr("tmux", newSessionArgs(name, dir, command, true)...)
 	if err != nil {
 		return "", err
 	}
 	applySessionOptions(name)
+	if command != "" && !sessionSettled(name) {
+		return "", fmt.Errorf("session %q died right after start: its program (%s) exited immediately, so tmux tore the single-window session down. Run the command in a shell to see why", name, command)
+	}
 	return pane, nil
+}
+
+// sessionSettleGrace is how long a freshly created session gets to prove it
+// survived. A program that cannot start at all (missing binary, immediate
+// crash) is gone within a few milliseconds; anything slower than this grace is
+// a running program, not a failed one.
+const sessionSettleGrace = 300 * time.Millisecond
+
+// sessionSettled reports whether the session still exists after the settle
+// grace. tmux reports a successful create even when the pane's program dies at
+// once, and with remain-on-exit off that death takes the whole session, so
+// without this check a caller reports a live session that no longer exists.
+func sessionSettled(name string) bool {
+	time.Sleep(sessionSettleGrace)
+	for _, s := range ListSessions() {
+		if s.Name == name {
+			return true
+		}
+	}
+	return false
+}
+
+// CheckPaneCommand reports whether a pane running command would find its
+// program. Panes inherit PATH from the tmux server's global environment, not
+// from the client creating the session, so this resolves against the server's
+// PATH rather than proj's own. Commands whose first word is not a bare program
+// name (a path, a shell construct, an env assignment) are left to the shell.
+func CheckPaneCommand(command string) error {
+	name := paneProgram(command)
+	if name == "" {
+		return nil
+	}
+	path := serverPath()
+	if path == "" || lookPathIn(name, path) {
+		return nil
+	}
+	return fmt.Errorf("%q is not on the tmux server's PATH (%s), so its pane would exit at once. The server inherited that PATH from whatever shell first started it; restart it from a shell that has %s with `tmux kill-server`", name, path, name)
+}
+
+// paneProgram returns the bare program name a pane command starts, or "" when
+// the first word is anything the shell has to interpret.
+func paneProgram(command string) string {
+	fields := strings.Fields(command)
+	if len(fields) == 0 {
+		return ""
+	}
+	name := fields[0]
+	if strings.ContainsAny(name, "=/$\"'`(){}") {
+		return ""
+	}
+	return name
+}
+
+// serverPath returns the PATH new panes inherit, i.e. the tmux server's global
+// environment entry. Empty when no server is running or PATH is unset there,
+// in which case no claim about resolvability can be made.
+func serverPath() string {
+	out, err := shellout.RunErr("tmux", "show-environment", "-g", "PATH")
+	if err != nil {
+		return ""
+	}
+	return strings.TrimPrefix(strings.TrimSpace(out), "PATH=")
+}
+
+// lookPathIn reports whether name is an executable file in one of the
+// colon-separated directories of path.
+func lookPathIn(name, path string) bool {
+	for _, dir := range filepath.SplitList(path) {
+		if dir == "" {
+			continue
+		}
+		info, err := os.Stat(filepath.Join(dir, name))
+		if err == nil && !info.IsDir() && info.Mode()&0o111 != 0 {
+			return true
+		}
+	}
+	return false
 }
 
 // bootstrapSession is the throwaway session used only to bring the tmux server
@@ -207,7 +291,63 @@ func ensureServer() {
 		";", "set-option", "-s", "exit-empty", "off",
 		";", "kill-session", "-t", bootstrapSession,
 	}
-	_, _ = shellout.RunErr("systemd-run", systemdRunArgs(boot, os.Environ())...)
+	_, _ = shellout.RunErr("systemd-run", systemdRunArgs(boot, serverEnviron(home))...)
+}
+
+// serverEnviron is the environment a newly started tmux server is seeded with.
+// Every pane on that server inherits its PATH, and the server outlives the
+// shell that happened to start it, so a proj invoked from a stripped
+// environment (a non-login `wsl bash -c`, cron, a systemd unit) would otherwise
+// hand every later session a PATH without the user's own bin dirs, and each
+// pane's tool would die as "command not found".
+func serverEnviron(home string) []string {
+	return withUserBinPath(os.Environ(), home)
+}
+
+// userBinDirs are the per-user bin dirs a login shell puts on PATH and a
+// non-login one does not; claude and friends install into the first.
+var userBinDirs = []string{".local/bin", "bin"}
+
+// withUserBinPath returns env with the user's bin dirs prepended to PATH,
+// skipping ones already listed or missing on disk. Order among the added dirs
+// follows userBinDirs; existing entries keep their relative order.
+func withUserBinPath(env []string, home string) []string {
+	if home == "" || home == "/" {
+		return env
+	}
+	out := make([]string, len(env))
+	copy(out, env)
+	for i, kv := range out {
+		if !strings.HasPrefix(kv, "PATH=") {
+			continue
+		}
+		path := strings.TrimPrefix(kv, "PATH=")
+		var add []string
+		for _, d := range userBinDirs {
+			dir := filepath.Join(home, d)
+			if hasPathEntry(path, dir) {
+				continue
+			}
+			if info, err := os.Stat(dir); err != nil || !info.IsDir() {
+				continue
+			}
+			add = append(add, dir)
+		}
+		if len(add) > 0 {
+			out[i] = "PATH=" + strings.Join(append(add, path), string(filepath.ListSeparator))
+		}
+		break
+	}
+	return out
+}
+
+func hasPathEntry(path, dir string) bool {
+	for _, d := range filepath.SplitList(path) {
+		if d == dir {
+			return true
+		}
+	}
+	return false
 }
 
 // newSessionArgs builds the tmux argv for creating a detached session. When
@@ -352,6 +492,9 @@ func RespawnSession(name, dir, command string) error {
 	pane := firstLine(shellout.Run("tmux", "list-panes", "-t", "="+name, "-F", "#{pane_id}"))
 	if pane == "" {
 		return fmt.Errorf("session %q has no pane", name)
+	}
+	if err := CheckPaneCommand(command); err != nil {
+		return err
 	}
 	_, err := shellout.RunErr("tmux", "respawn-pane", "-k", "-t", pane, "-c", dir, command)
 	return err

@@ -81,6 +81,10 @@ func openInTmux(cfg config.Config, p projects.Project) error {
 		tmux.ApplySlashCommands(session, p.Skills, 30*time.Second)
 	}
 	if headless {
+		// Nothing is attached, so the session itself is the only evidence the
+		// open worked. Name it, so a caller driving proj from a script reads a
+		// result rather than silence.
+		fmt.Printf("opened %s in session %s\n", p.Name, session)
 		return nil
 	}
 	return tmux.Attach(session)

@@ -1,6 +1,8 @@
 package tmux
 
 import (
+	"os"
+	"path/filepath"
 	"slices"
 	"testing"
 )
@@ -108,5 +110,61 @@ func TestFirstLine(t *testing.T) {
 		if got := firstLine(in); got != want {
 			t.Errorf("firstLine(%q) = %q, want %q", in, got, want)
 		}
+	}
+}
+
+func TestPaneProgram(t *testing.T) {
+	cases := map[string]string{
+		"claude --dangerously-skip-permissions -n rc": "claude",
+		"codex resume --last":                         "codex",
+		"":                                            "",
+		"/usr/local/bin/claude -c":                    "", // a path resolves without PATH
+		"FOO=bar claude":                              "", // env prefix is the shell's job
+		"$TOOL --flag":                                "",
+	}
+	for in, want := range cases {
+		if got := paneProgram(in); got != want {
+			t.Errorf("paneProgram(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+func TestWithUserBinPath(t *testing.T) {
+	home := t.TempDir()
+	local := filepath.Join(home, ".local", "bin")
+	if err := os.MkdirAll(local, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// ~/bin is deliberately absent: only dirs that exist are added.
+	got := withUserBinPath([]string{"HOME=" + home, "PATH=/usr/bin:/bin"}, home)
+	want := []string{"HOME=" + home, "PATH=" + local + ":/usr/bin:/bin"}
+	if !slices.Equal(got, want) {
+		t.Errorf("withUserBinPath = %v, want %v", got, want)
+	}
+
+	// Already listed: PATH is left untouched, no duplicate entry.
+	in := []string{"PATH=" + local + ":/usr/bin"}
+	if got := withUserBinPath(in, home); !slices.Equal(got, in) {
+		t.Errorf("withUserBinPath (already present) = %v, want %v", got, in)
+	}
+}
+
+func TestLookPathIn(t *testing.T) {
+	dir := t.TempDir()
+	exe := filepath.Join(dir, "claude")
+	if err := os.WriteFile(exe, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "notes"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if !lookPathIn("claude", "/nonexistent:"+dir) {
+		t.Error("lookPathIn missed an executable in a later PATH entry")
+	}
+	if lookPathIn("notes", dir) {
+		t.Error("lookPathIn accepted a non-executable file")
+	}
+	if lookPathIn("claude", "") {
+		t.Error("lookPathIn accepted an empty PATH")
 	}
 }
