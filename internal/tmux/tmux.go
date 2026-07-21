@@ -500,6 +500,20 @@ func RespawnSession(name, dir, command string) error {
 	return err
 }
 
+// RespawnShell replaces a session's pane program with a plain shell in dir,
+// killing whatever ran there. It parks a session whose project directory is
+// about to move: the tool held that directory as its working directory and
+// kept appending to the transcript filed under it, so it has to stop before
+// the move rather than after.
+func RespawnShell(name, dir string) error {
+	pane := firstLine(shellout.Run("tmux", "list-panes", "-t", "="+name, "-F", "#{pane_id}"))
+	if pane == "" {
+		return fmt.Errorf("session %q has no pane", name)
+	}
+	_, err := shellout.RunErr("tmux", "respawn-pane", "-k", "-t", pane, "-c", dir)
+	return err
+}
+
 func firstLine(s string) string {
 	s = strings.TrimSpace(s)
 	if i := strings.IndexByte(s, '\n'); i >= 0 {
