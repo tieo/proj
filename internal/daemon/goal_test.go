@@ -3,9 +3,49 @@ package daemon
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
+
+	"github.com/tieo/proj/internal/goalnudge"
 )
+
+func TestEnforceOpenGoal(t *testing.T) {
+	const cond = "ship the feature"
+	cases := []struct {
+		name        string
+		v           goalnudge.Verdict
+		cond        string
+		wantState   string
+		wantCallout string
+	}{
+		{"no goal keeps verdict", goalnudge.Verdict{State: "done", Callout: ""}, "", "done", ""},
+		{"open goal + done -> stopped_short", goalnudge.Verdict{State: "done"}, cond, "stopped_short", ""},
+		{"open goal + working -> stopped_short", goalnudge.Verdict{State: "working"}, cond, "stopped_short", ""},
+		{"keeps judge callout", goalnudge.Verdict{State: "working", Callout: "resume the crawler"}, cond, "stopped_short", "resume the crawler"},
+		{"needs_user is left to notify", goalnudge.Verdict{State: "blocked", NeedsUser: true}, cond, "blocked", ""},
+		{"already stopped_short stays", goalnudge.Verdict{State: "stopped_short", Callout: "go"}, cond, "stopped_short", "go"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			state, callout := enforceOpenGoal(c.v, c.cond)
+			if state != c.wantState {
+				t.Errorf("state = %q, want %q", state, c.wantState)
+			}
+			// A forced stopped_short with no judge callout must still carry one so
+			// Decide does not drop the nudge.
+			if c.wantCallout != "" && callout != c.wantCallout {
+				t.Errorf("callout = %q, want %q", callout, c.wantCallout)
+			}
+			if state == "stopped_short" && callout == "" {
+				t.Error("stopped_short must have a non-empty callout")
+			}
+			if c.cond != "" && !c.v.NeedsUser && callout == "" && !strings.Contains(callout, c.cond) {
+				t.Error("synthesized callout should reference the goal")
+			}
+		})
+	}
+}
 
 // goal_status attachment records as Claude Code's /goal writes them.
 const (

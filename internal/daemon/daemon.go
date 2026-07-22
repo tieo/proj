@@ -3007,7 +3007,8 @@ func goalNudgeClaude(cfg Config, p tmux.Pane, dir, content, sessFile string, now
 	// a /goal is set (and often already satisfied, so the judge calls it done and
 	// never nudges the stalled goal). The open goal_status condition is the real
 	// target here.
-	if cond := openGoalCondition(sessFile); cond != "" {
+	cond := openGoalCondition(sessFile)
+	if cond != "" {
 		ss.Task = cond
 	}
 	// Feed the judge what is in the input box: a dim ghost is the agent's own
@@ -3034,9 +3035,19 @@ func goalNudgeClaude(cfg Config, p tmux.Pane, dir, content, sessFile string, now
 	}
 
 	v := res.Verdicts[0]
+	v.State, v.Callout = enforceOpenGoal(v, cond)
+	// A transcript that advanced since the last look is progress, so the nudge
+	// budget resets; max_nudges then bounds only consecutive looks that found no
+	// new work - a session ignoring its nudges - not one still moving.
+	if sig != prev.Sig {
+		prev.Nudges = 0
+	}
 	action, m := goalnudge.Decide(v, prev, cfg.GoalNudge.MaxNudges)
 	m.Sig, m.State, m.Goal, m.Reason = sig, v.State, v.Goal, v.Reason
-	if v.State == "blocked" {
+	// Keep re-checking while the goal is open (or the session is blocked), so one
+	// that goes idle after this look is judged again rather than left until its
+	// transcript happens to change.
+	if cond != "" || v.State == "blocked" {
 		m.NextRecheck = now.Add(goalnudgeRecheck)
 	} else {
 		m.NextRecheck = time.Time{}
@@ -3093,6 +3104,23 @@ func goalBackstopGate(sessFile string, now time.Time) goalGate {
 		return goalGateWait
 	}
 	return goalGateJudge
+}
+
+// enforceOpenGoal applies the /goal sentinel's authority to a judge verdict. The
+// sentinel is met only when Claude Code's own goal loop judges the condition
+// satisfied, so an idle session with an open goal (cond non-empty) has not
+// fulfilled it - it stopped short, whatever the judge labelled it. Forcing that
+// keeps a "working" or "done" verdict from stranding a stalled session unnudged.
+// A verdict that needs the user is left alone, so it notifies rather than nudges.
+func enforceOpenGoal(v goalnudge.Verdict, cond string) (state, callout string) {
+	if cond == "" || v.NeedsUser {
+		return v.State, v.Callout
+	}
+	callout = v.Callout
+	if callout == "" {
+		callout = "Your /goal is not met yet. Keep working toward it: " + cond
+	}
+	return "stopped_short", callout
 }
 
 // goalStatusLine is the slice of a transcript record the daemon needs to tell
