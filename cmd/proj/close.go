@@ -24,15 +24,16 @@ import (
 var closeForce bool
 
 var closeCmd = &cobra.Command{
-	Use:   "close [project]",
+	Use:   "close [project...]",
 	Short: "close a project's session: mark it intentionally closed and kill it",
 	Long: `Mark a project's session as intentionally closed and kill it, so the daemon
 does not treat it as a vanished keep-alive session and recreate it. With no
-argument, closes the current tmux session.
+argument, closes the current tmux session; with several, closes each of them
+and reports the ones it could not.
 
 With --force, also unpin the project, so even a pinned session stays closed
 instead of being recreated on the next daemon tick.`,
-	Args: cobra.MaximumNArgs(1),
+	Args: cobra.ArbitraryArgs,
 	RunE: runClose,
 }
 
@@ -46,15 +47,28 @@ func runClose(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
-	name, err := resolveCloseSession(cfg.BaseDir, args)
-	if err != nil {
-		return err
+	if len(args) == 0 {
+		name, err := resolveCloseSession(cfg.BaseDir, nil)
+		if err != nil {
+			return err
+		}
+		if err := closeSession(name, closeForce); err != nil {
+			return err
+		}
+		fmt.Printf("closed %s\n", name)
+		return nil
 	}
-	if err := closeSession(name, closeForce); err != nil {
-		return err
-	}
-	fmt.Printf("closed %s\n", name)
-	return nil
+	return eachTarget(args, func(arg string) error {
+		name, err := resolveCloseSession(cfg.BaseDir, []string{arg})
+		if err != nil {
+			return err
+		}
+		if err := closeSession(name, closeForce); err != nil {
+			return err
+		}
+		fmt.Printf("closed %s\n", name)
+		return nil
+	})
 }
 
 // closeSession marks a session cleanly exited in the daemon's managed state

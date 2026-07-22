@@ -15,17 +15,26 @@ import (
 )
 
 var pinCmd = &cobra.Command{
-	Use:   "pin [project]",
-	Short: "pin a project so the daemon always recreates its session",
-	Args:  cobra.MaximumNArgs(1),
-	RunE:  func(cmd *cobra.Command, args []string) error { return setPinned(args, true) },
+	Use:   "pin [project...]",
+	Short: "pin projects so the daemon always recreates their sessions",
+	Args:  cobra.ArbitraryArgs,
+	RunE:  func(cmd *cobra.Command, args []string) error { return setPinnedAll(args, true) },
 }
 
 var unpinCmd = &cobra.Command{
-	Use:   "unpin [project]",
-	Short: "remove a project's pinned flag",
-	Args:  cobra.MaximumNArgs(1),
-	RunE:  func(cmd *cobra.Command, args []string) error { return setPinned(args, false) },
+	Use:   "unpin [project...]",
+	Short: "remove the pinned flag from projects",
+	Args:  cobra.ArbitraryArgs,
+	RunE:  func(cmd *cobra.Command, args []string) error { return setPinnedAll(args, false) },
+}
+
+// setPinnedAll applies the flag to every named project, or to the current tmux
+// session when no name is given.
+func setPinnedAll(args []string, pinned bool) error {
+	if len(args) <= 1 {
+		return setPinned(args, pinned)
+	}
+	return eachTarget(args, func(name string) error { return setPinned([]string{name}, pinned) })
 }
 
 func init() {

@@ -18,25 +18,55 @@ import (
 )
 
 var rmCmd = &cobra.Command{
-	Use:   "rm <name>",
-	Short: "delete a project directory and kill its session",
-	Args:  cobra.ExactArgs(1),
+	Use:   "rm <name...>",
+	Short: "delete project directories and kill their sessions",
+	Args:  cobra.MinimumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		cfg, err := config.Load()
 		if err != nil {
 			return err
 		}
-		p, err := projects.Resolve(cfg.BaseDir, args[0])
-		if err != nil {
-			return err
+		// Every name is resolved before anything is deleted, and the prompt
+		// lists them all: a typo in the third name should not surface after the
+		// first two directories are already gone.
+		var targets []projects.Project
+		for _, name := range args {
+			p, err := projects.Resolve(cfg.BaseDir, name)
+			if err != nil {
+				return err
+			}
+			targets = append(targets, p)
 		}
-		fmt.Printf("delete %s and kill its tmux session? [y/N] ", p.Dir)
+		fmt.Printf("delete %s and kill %s? [y/N] ",
+			strings.Join(projectDirs(targets), ", "),
+			plural(len(targets), "its tmux session", "their tmux sessions"))
 		ans, _ := bufio.NewReader(os.Stdin).ReadString('\n')
 		if a := strings.ToLower(strings.TrimSpace(ans)); a != "y" && a != "yes" {
 			return fmt.Errorf("aborted")
 		}
-		return removeProject(p)
+		byName := make(map[string]projects.Project, len(targets))
+		names := make([]string, 0, len(targets))
+		for _, p := range targets {
+			byName[p.Name] = p
+			names = append(names, p.Name)
+		}
+		return eachTarget(names, func(name string) error { return removeProject(byName[name]) })
 	},
+}
+
+func projectDirs(ps []projects.Project) []string {
+	out := make([]string, 0, len(ps))
+	for _, p := range ps {
+		out = append(out, p.Dir)
+	}
+	return out
+}
+
+func plural(n int, one, many string) string {
+	if n == 1 {
+		return one
+	}
+	return many
 }
 
 // removeProject deletes a project completely: it drops the daemon's managed
