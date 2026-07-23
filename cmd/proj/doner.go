@@ -55,11 +55,53 @@ var (
 	donerInstallCmd   = &cobra.Command{Use: "install", Args: cobra.NoArgs, Short: "add the doner Stop hook to Claude Code settings", RunE: func(*cobra.Command, []string) error { return donerInstall(true) }}
 	donerUninstallCmd = &cobra.Command{Use: "uninstall", Args: cobra.NoArgs, Short: "remove the doner Stop hook from Claude Code settings", RunE: func(*cobra.Command, []string) error { return donerInstall(false) }}
 	donerHookCmd      = &cobra.Command{Use: "doner-hook", Hidden: true, Args: cobra.NoArgs, Short: "Stop-hook handler (reads hook JSON on stdin)", RunE: runDonerHook}
+	donerToggleCmd    = &cobra.Command{
+		Use:   "toggle",
+		Short: "turn doner on or off for the project in the current directory",
+		Long: `Add or remove the doner tag on the project the working directory belongs to.
+This is what the /doner slash command runs, so a session can put itself on the
+doner leash (or take itself off) without leaving the session.`,
+		Args: cobra.NoArgs,
+		RunE: runDonerToggle,
+	}
 )
 
 func init() {
-	donerCmd.AddCommand(donerInstallCmd, donerUninstallCmd)
+	donerCmd.AddCommand(donerInstallCmd, donerUninstallCmd, donerToggleCmd)
 	rootCmd.AddCommand(donerCmd, donerHookCmd)
+}
+
+// runDonerToggle flips the doner tag on the project owning the working
+// directory. Going through mutateTags rather than the registry directly keeps a
+// toggle identical to `proj tag add/rm`: the tmux session is renamed to match
+// its new tags and the Remote Control title follows.
+func runDonerToggle(cmd *cobra.Command, args []string) error {
+	wd, err := os.Getwd()
+	if err != nil {
+		return err
+	}
+	name := lastPathSegment(wd)
+	if name == "" {
+		return fmt.Errorf("cannot tell which project %s belongs to", wd)
+	}
+	on := false
+	if err := mutateTags(name, func(current []string) []string {
+		for i, t := range current {
+			if t == DonerTag {
+				return append(current[:i], current[i+1:]...)
+			}
+		}
+		on = true
+		return append(current, DonerTag)
+	}); err != nil {
+		return err
+	}
+	if on {
+		fmt.Printf("doner on for %s: this session now keeps working until it reports done\n", name)
+	} else {
+		fmt.Printf("doner off for %s\n", name)
+	}
+	return nil
 }
 
 func runDoner(cmd *cobra.Command, args []string) error {
@@ -322,6 +364,11 @@ func donerInstall(install bool) error {
 	if err := writeSettings(path, root); err != nil {
 		return err
 	}
+	if err := writeDonerSlashCommand(cfg, install); err != nil {
+		// The hook is the feature; the slash command is a convenience, so a
+		// failure to write it must not fail the install.
+		fmt.Fprintf(os.Stderr, "warning: /doner slash command: %v\n", err)
+	}
 	if install {
 		fmt.Printf("doner Stop hook installed in %s\n", path)
 		if !cfg.Daemon.Doner.Active() {
@@ -331,6 +378,36 @@ func donerInstall(install bool) error {
 		fmt.Printf("doner Stop hook removed from %s\n", path)
 	}
 	return nil
+}
+
+// donerSlashCommand is the /doner command body. It tells the session to run the
+// toggle rather than executing it inline, so it does not depend on a particular
+// Claude Code version's command-substitution syntax.
+const donerSlashCommand = `---
+description: Toggle doner for this project (keep working until you report done)
+---
+Run ` + "`proj doner toggle`" + ` and report its output in one short line. Do nothing else.
+
+Doner is a Stop hook: while it is on, ending a turn is intercepted and you are
+told to keep going unless your last message says you are finished. Reply with
+exactly "Yes" when the work is genuinely complete.
+`
+
+// writeDonerSlashCommand installs or removes the /doner command in the commands
+// directory Claude Code reads (the Windows-side one under WSL, alongside
+// settings.json).
+func writeDonerSlashCommand(cfg config.Config, install bool) error {
+	path := filepath.Join(daemon.ClaudeRoot(cfg.Claude.Home), "commands", "doner.md")
+	if !install {
+		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+			return err
+		}
+		return nil
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	return os.WriteFile(path, []byte(donerSlashCommand), 0o644)
 }
 
 func readSettings(path string) (map[string]any, error) {
