@@ -124,6 +124,13 @@ echo "→ building proj"
 (cd "$HERE" && go build -o "$BIN_DIR/proj" ./cmd/proj)
 echo "  installed $BIN_DIR/proj"
 
+# ----- doner Stop hook -----
+# Registers proj as a Claude Code Stop hook so a doner-tagged session keeps
+# working until it reports done. Idempotent, and inert for every project without
+# the tag, so installing it costs nothing when unused.
+echo "→ registering the doner Stop hook"
+"$BIN_DIR/proj" doner install || echo "  (skipped; run \`proj doner install\` by hand)"
+
 # ----- shell shim source line -----
 
 shell_name=$(basename "${SHELL:-/bin/bash}")

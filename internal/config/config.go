@@ -106,35 +106,29 @@ func (c Config) ToolNames() []string {
 }
 
 type DaemonConfig struct {
-	PollInterval string         `toml:"poll_interval"`
-	MaxWait      string         `toml:"max_wait"`
-	ResumeText   string         `toml:"resume_text"`
-	CaptureLines int            `toml:"capture_lines"`
-	KeepAlive    bool           `toml:"keep_alive"`
-	GoalNudge    GoalNudgeConfig `toml:"goal_nudge"`
+	PollInterval string      `toml:"poll_interval"`
+	MaxWait      string      `toml:"max_wait"`
+	ResumeText   string      `toml:"resume_text"`
+	CaptureLines int         `toml:"capture_lines"`
+	KeepAlive    bool        `toml:"keep_alive"`
+	Doner        DonerConfig `toml:"doner"`
 }
 
 type ListConfig struct {
 	MaxAgeDays int `toml:"max_age_days"` // hide inactive projects older than this; 0 = show all
 }
 
-// GoalNudgeConfig configures the goal-nudge backstop. A /goal set on a session
-// is Claude Code's own auto-continue loop: on each idle it re-judges the goal
-// and, when unmet, re-prompts the session itself. Goal-nudge only steps in when
-// that loop fails to fire - the session is idle, the goal is still open, and the
-// goal did not re-drive it within the grace window. It then judges the session
-// (done | stopped_short | blocked | working) and nudges the ones that stopped
-// short. It never touches a session with no open /goal. Enabled by default.
-type GoalNudgeConfig struct {
-	Enabled   bool   `toml:"enabled"`    // run the goal-nudge backstop (default true)
-	Model     string `toml:"model"`      // model for the judge (default sonnet, far cheaper than opus)
-	MaxNudges int    `toml:"max_nudges"` // consecutive nudges to one session without progress before giving up
-	MaxTokens int    `toml:"max_tokens"` // per-session transcript budget fed to the judge (default 4000)
-	NtfyTopic string `toml:"ntfy_topic"` // ntfy topic for the rare user-decision notification; empty disables push
+// DonerConfig configures the doner backstop. A project opts in by carrying the
+// "doner" tag: whenever such a session goes idle without having reported done,
+// the daemon types "done? if not, continue. Else, reply with 'Yes'." to keep it
+// working, and stops once the session replies affirmatively. The switch here is
+// a global kill switch for that behaviour; per-session opt-in is the tag.
+type DonerConfig struct {
+	Enabled bool `toml:"enabled"` // run the doner backstop (default true; opt in per session with the doner tag)
 }
 
-// Active reports whether the goal-nudge backstop runs.
-func (o GoalNudgeConfig) Active() bool { return o.Enabled }
+// Active reports whether the doner backstop runs.
+func (d DonerConfig) Active() bool { return d.Enabled }
 
 func Default() Config {
 	home, _ := os.UserHomeDir()
@@ -149,12 +143,7 @@ func Default() Config {
 			MaxWait:      "5h",
 			ResumeText:   "continue",
 			CaptureLines: 300,
-			GoalNudge: GoalNudgeConfig{
-				Enabled:   true,
-				Model:     "sonnet",
-				MaxNudges: 3,
-				MaxTokens: 4000,
-			},
+			Doner:        DonerConfig{Enabled: true},
 		},
 		List: ListConfig{
 			MaxAgeDays: 14,
