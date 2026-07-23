@@ -105,3 +105,21 @@ func writeMust(t *testing.T, path string, v map[string]any) {
 		t.Fatal(err)
 	}
 }
+
+// A session waiting on a background shell has nothing to continue, so doner
+// must let it stop rather than spend a turn re-reporting the wait.
+func TestHasRunningTask(t *testing.T) {
+	type task = backgroundTask
+	if hasRunningTask(nil) {
+		t.Error("no tasks should not read as running")
+	}
+	if !hasRunningTask([]task{{Status: "running"}}) {
+		t.Error("a running task should hold the nudge")
+	}
+	if hasRunningTask([]task{{Status: "completed"}, {Status: "failed"}}) {
+		t.Error("finished tasks should not hold the nudge")
+	}
+	if !hasRunningTask([]task{{Status: "completed"}, {Status: "running"}}) {
+		t.Error("one live task among finished ones should hold the nudge")
+	}
+}
