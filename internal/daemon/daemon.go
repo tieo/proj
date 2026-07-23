@@ -2444,7 +2444,7 @@ func Tick(cfg Config, state State, errorState ErrorState, managed ManagedState, 
 	// only if the directory is unreadable, in which case the watchdog falls back
 	// to the chrome-marker rules below and holds off (never nudges on unknown).
 	rcConn := RCBridges(cfg.ClaudeHome)
-	rcHost, _ := os.Hostname()
+
 	// Keep the last good snapshot so an unreadable-dir blip doesn't flip a live
 	// session to "unknown" for one tick. rcConnStale marks a cached snapshot.
 	rcConnStale := false
@@ -2640,7 +2640,12 @@ func Tick(cfg Config, state State, errorState ErrorState, managed ManagedState, 
 			//   - bridgeDropped: the file reports this session's bridge null, or
 			//   - failed: the status line shows an explicit "/rc failed".
 			// When RCBridges is UNKNOWN (rcConn nil - unreadable dir), hold off.
-			bridgeDropped := rcConn != nil && !rcConn[RCName(p.Session, rcHost)]
+			// Keyed by the pane's directory, not the session's derived RC title:
+			// a rename or a tag change alters the title proj would compute while
+			// the running process keeps the one it was launched with, and a title
+			// lookup would then read a live bridge as dropped (see RCBridgeForDir).
+			bridgeBound, bridgeKnown := RCBridgeForDir(cfg.ClaudeHome, paneDir)
+			bridgeDropped := bridgeKnown && !bridgeBound
 			trigger := failed || (bridgeDropped && now.Sub(rcNudgedAt[p.ID]) >= rcNudgeCooldown)
 			if pastGrace && trigger {
 				// Re-bind the dropped RC by running /rc, but only into a safe

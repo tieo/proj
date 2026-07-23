@@ -85,6 +85,12 @@ func mutateTags(name string, fn func([]string) []string) error {
 	newSession := projects.SessionName(p.Name, stored)
 	if oldSession != newSession {
 		_ = tmux.RenameSession(oldSession, newSession)
+		// The daemon keys its bookkeeping by session name, so a tag change has
+		// to carry the entry over: left behind, the old name names a session
+		// that no longer exists (dropped on the next tick, taking any pin with
+		// it) and the new one starts blank - including the RC-bound latch, which
+		// made a long-connected session look like it had never bound.
+		renameManagedSession(oldSession, newSession, p.Dir)
 		// Tags ride in the session name, so they ride in the Remote Control
 		// name too; see retitleRemote for why a running session cannot correct
 		// that by itself.

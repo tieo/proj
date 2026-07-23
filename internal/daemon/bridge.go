@@ -58,6 +58,46 @@ func BridgeSessionID(claudeHome, dir string) string {
 	return best.BridgeSessionID
 }
 
+// RCBridgeForDir reports whether the Claude session running in dir currently
+// holds a Remote Control bridge, and whether anything is known about it at all.
+//
+// It exists because RCBridges keys bridges by the RC title the process was
+// LAUNCHED with, while callers derive the title from the session's current name.
+// Those diverge the moment a project is renamed or re-tagged: the running
+// process keeps its original -n title, so a title lookup misses and reads as a
+// dropped bridge, which had the watchdog typing /rc into a perfectly connected
+// session. The working directory is the one identity a rename cannot change, so
+// the drop check keys on it instead.
+func RCBridgeForDir(claudeHome, dir string) (bound, known bool) {
+	entries, err := filepath.Glob(filepath.Join(claudeRoot(claudeHome), "sessions", "*.json"))
+	if err != nil {
+		return false, false
+	}
+	want := []string{dir, sessions.WSLToUNC(dir)}
+	var best sessionFile
+	for _, path := range entries {
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			continue
+		}
+		var s sessionFile
+		if json.Unmarshal(raw, &s) != nil {
+			continue
+		}
+		if !matchesDir(s.Cwd, want) {
+			continue
+		}
+		if s.UpdatedAt >= best.UpdatedAt {
+			best = s
+		}
+		known = true
+	}
+	if !known {
+		return false, false
+	}
+	return best.BridgeSessionID != "", true
+}
+
 func matchesDir(cwd string, want []string) bool {
 	for _, w := range want {
 		if w == "" {

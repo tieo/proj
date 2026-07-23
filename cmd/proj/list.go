@@ -83,11 +83,9 @@ func runList(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	// Authoritative RC status from Claude's own per-session bridge files (local,
-	// non-rotating). nil when unreadable, in which case the pane /rc hyperlink
-	// (rcBySession) is the fallback.
-	rcBridges := daemon.RCBridges(cfg.Claude.Home)
-	host, _ := os.Hostname()
+	// RC status comes from Claude's own per-session bridge files, looked up by
+	// directory (see daemon.RCBridgeForDir); the pane /rc hyperlink
+	// (rcBySession) is the fallback when nothing is known.
 
 	all := projects.All(cfg.BaseDir)
 	if listTagF != "" {
@@ -137,11 +135,15 @@ func runList(cmd *cobra.Command, args []string) error {
 		// Remote Control is a Claude Code feature; other tools get no RC note.
 		if daemon.ToolName(p.Tool) != config.DefaultTool {
 			rc = ""
-		} else if alive && rcBridges != nil {
-			if rcBridges[daemon.RCName(sessName, host)] {
-				rc = "active"
-			} else {
-				rc = "offline"
+		} else if alive {
+			// Keyed by directory: a renamed or re-tagged project keeps the RC
+			// title it launched with, so the derived title would read as offline.
+			if bound, known := daemon.RCBridgeForDir(cfg.Claude.Home, p.Dir); known {
+				if bound {
+					rc = "active"
+				} else {
+					rc = "offline"
+				}
 			}
 		}
 
@@ -168,8 +170,8 @@ func runList(cmd *cobra.Command, args []string) error {
 			ms, tracked := managed[s.Name]
 			label := labelBySession[s.Name]
 			rc := rcBySession[s.Name] // orphans are always alive
-			if rcBridges != nil {
-				if rcBridges[daemon.RCName(s.Name, host)] {
+			if bound, known := daemon.RCBridgeForDir(cfg.Claude.Home, s.Path); known {
+				if bound {
 					rc = "active"
 				} else {
 					rc = "offline"
