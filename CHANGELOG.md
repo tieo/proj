@@ -10,6 +10,14 @@
   answers again.
 
 ### Added
+- `proj switch <project> <tool>` carries the conversation into the new
+  tool. Claude receives a native session; Codex receives a native thread
+  built through its app-server, and a Claude source goes through Codex's
+  own session importer so the thread renders in its UI; every other tool
+  starts from a handoff prompt read out of a file, which keeps a large
+  transcript under the tmux command-length boundary. Rollouts written
+  before Codex required a provider field in their metadata are repaired so
+  they stay resumable.
 - Per-project coding tools: `proj tool <name> [tool]` and `proj new
   --tool` select which CLI a session runs (built-ins: claude, codex, agy;
   more via `[tools.<name>]` in the config). Sessions resume through the

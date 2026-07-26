@@ -173,6 +173,22 @@ func TestLaunchCommandPlaceholders(t *testing.T) {
 	}
 }
 
+func TestPromptFileLaunchCommand(t *testing.T) {
+	spec := config.ToolSpec{Name: "codex", Command: "codex"}
+	cmd := PromptFileLaunchCommand(spec, "api", "api@work", "/tmp/api", "/tmp/handoff prompt.txt")
+	if !strings.Contains(cmd, `"$(cat '/tmp/handoff prompt.txt')"`) {
+		t.Errorf("prompt file command missing: %q", cmd)
+	}
+}
+
+func TestResumeIDLaunchCommand(t *testing.T) {
+	spec := config.ToolSpec{Name: "codex", ResumeCommand: "codex resume --last --dangerously-bypass-approvals-and-sandbox"}
+	cmd, err := ResumeIDLaunchCommand(spec, "api", "api@work", "/tmp/api", "thread-id")
+	if err != nil || !strings.Contains(cmd, "resume 'thread-id'") || strings.Contains(cmd, "--last") {
+		t.Fatalf("ResumeIDLaunchCommand = %q, %v", cmd, err)
+	}
+}
+
 func TestAgyHasHistory(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)

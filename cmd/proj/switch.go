@@ -7,6 +7,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/tieo/proj/internal/codex"
 	"github.com/tieo/proj/internal/config"
 	"github.com/tieo/proj/internal/daemon"
 	"github.com/tieo/proj/internal/handoff"
@@ -31,10 +32,10 @@ var switchCmd = &cobra.Command{
 The running session's conversation is read from the current tool's native
 transcript into an intermediate transcript (user turns, assistant turns, tool
 actions flattened to text; thinking and raw tool records don't survive any
-translation). For claude and codex targets it is written as a native session
-the new tool resumes as its own; agy's conversation store cannot be written,
-so there the transcript rides in as an initial prompt. The running session is
-closed and relaunched with the new tool.
+translation). For Claude, the transcript is written as a native session. Codex
+and Agy start with the transcript as their first visible user message because
+their local conversation stores are not stable import formats. The running
+session is closed and relaunched with the new tool.
 
 Each switch saves the intermediate transcript under the proj state directory,
 so a bad translation can be inspected. --dry-run prints it and changes
@@ -64,7 +65,11 @@ func runSwitch(cmd *cobra.Command, args []string) error {
 		return err
 	}
 	if from == to {
-		return fmt.Errorf("%s already runs %s", p.Name, to)
+		if switchDryRun {
+			fmt.Printf("%s already runs %s; would open existing session\n", p.Name, to)
+			return nil
+		}
+		return openInTmux(cfg, p)
 	}
 
 	t, err := extractTranscript(cfg, from, p.Dir)
@@ -95,6 +100,8 @@ func runSwitch(cmd *cobra.Command, args []string) error {
 	// Translate before touching anything live: a failed write leaves the
 	// project on its old tool with its session intact.
 	prompt := ""
+	promptPath := ""
+	codexThreadID := ""
 	if !t.Empty() {
 		switch to {
 		case config.DefaultTool:
@@ -104,13 +111,31 @@ func runSwitch(cmd *cobra.Command, args []string) error {
 			}
 			fmt.Printf("translated into claude session %s\n", id)
 		case "codex":
-			id, err := handoff.WriteCodex(t, handoff.CodexHome(), p.Dir, artifactPath)
-			if err != nil {
-				return fmt.Errorf("write codex rollout: %w", err)
+			if from == config.DefaultTool {
+				path := daemon.RecentSessionFile(cfg.Claude.Home, p.Dir)
+				if path == "" {
+					return fmt.Errorf("no Claude session available to import into visible Codex history")
+				}
+				id, err := codex.ImportClaudeSession(path, p.Dir)
+				if err != nil {
+					return fmt.Errorf("import Claude session into Codex: %w", err)
+				}
+				codexThreadID = id
+				fmt.Printf("imported Claude session into codex thread %s\n", id)
+				break
 			}
-			fmt.Printf("translated into codex session %s\n", id)
+			id, err := codex.WriteThread(t, p.Dir, artifactPath)
+			if err != nil {
+				return fmt.Errorf("write codex thread: %w", err)
+			}
+			codexThreadID = id
+			fmt.Printf("translated into codex thread %s\n", id)
 		default:
 			prompt = t.PromptWithArtifact(artifactPath)
+			promptPath = artifactPath + ".prompt"
+			if err := os.WriteFile(promptPath, []byte(prompt), 0o600); err != nil {
+				return fmt.Errorf("write %s handoff prompt: %w", to, err)
+			}
 		}
 	}
 
@@ -127,8 +152,14 @@ func runSwitch(cmd *cobra.Command, args []string) error {
 	// picks up the session that was just written for it.
 	cmdLine := daemon.LaunchCommand(spec, cfg.Claude.Home, p.Name, session, p.Dir)
 	handoffVia := ""
+	if codexThreadID != "" {
+		cmdLine, err = daemon.ResumeIDLaunchCommand(spec, p.Name, session, p.Dir, codexThreadID)
+		if err != nil {
+			return err
+		}
+	}
 	if prompt != "" {
-		cmdLine = daemon.PromptLaunchCommand(spec, p.Name, session, p.Dir, prompt)
+		cmdLine = daemon.PromptFileLaunchCommand(spec, p.Name, session, p.Dir, promptPath)
 		handoffVia = " (handoff via initial prompt)"
 	}
 

@@ -1379,6 +1379,29 @@ func PromptLaunchCommand(spec config.ToolSpec, projName, session, dir, prompt st
 	return renderLaunch(spec.Command, extra, projName, session, dir)
 }
 
+// PromptFileLaunchCommand reads an initial prompt from promptPath inside the
+// pane shell. Tmux transports command strings over a smaller boundary than the
+// operating system's exec argument limit, so large handoffs cannot travel as a
+// literal tmux command argument.
+func PromptFileLaunchCommand(spec config.ToolSpec, projName, session, dir, promptPath string) string {
+	extra := ""
+	if spec.PromptFlag != "" {
+		extra = " " + spec.PromptFlag
+	}
+	extra += " \"$(cat " + shellout.Quote(promptPath) + ")\""
+	return renderLaunch(spec.Command, extra, projName, session, dir)
+}
+
+// ResumeIDLaunchCommand resumes a specific native Codex thread. Built-in Codex
+// recipes use --last for ordinary opens; a translated thread must name its id.
+func ResumeIDLaunchCommand(spec config.ToolSpec, projName, session, dir, id string) (string, error) {
+	if !strings.Contains(spec.ResumeCommand, "--last") {
+		return "", fmt.Errorf("tool %q has no --last resume command to replace", spec.Name)
+	}
+	tpl := strings.Replace(spec.ResumeCommand, "--last", shellout.Quote(id), 1)
+	return renderLaunch(tpl, "", projName, session, dir), nil
+}
+
 func renderLaunch(tpl, extra, projName, session, dir string) string {
 	host, _ := os.Hostname()
 	cmdLine := strings.NewReplacer(

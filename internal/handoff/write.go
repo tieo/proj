@@ -1,6 +1,7 @@
 package handoff
 
 import (
+	"bufio"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -102,7 +103,7 @@ func WriteCodex(t *Transcript, codexHome, dir, artifactPath string) (string, err
 	}
 	meta, _ := json.Marshal(map[string]any{"timestamp": stamp, "type": "session_meta", "payload": map[string]any{
 		"id": id, "timestamp": stamp, "cwd": dir,
-		"originator": "codex-tui", "cli_version": "0.139.0", "source": "cli", "thread_source": "user",
+		"originator": "codex-tui", "cli_version": "0.139.0", "source": "cli", "thread_source": "user", "model_provider": "openai",
 	}})
 	b.Write(meta)
 	b.WriteByte('\n')
@@ -140,4 +141,117 @@ func WriteCodex(t *Transcript, codexHome, dir, artifactPath string) (string, err
 		return "", fmt.Errorf("rollout written but index not updated: %w", err)
 	}
 	return id, nil
+}
+
+// RepairCodexRollouts adds the provider field required by current Codex builds
+// to older rollout metadata. The rest of each JSONL transcript is retained.
+func RepairCodexRollouts(codexHome string) (int, error) {
+	root := filepath.Join(codexHome, "sessions")
+	repaired := 0
+	err := filepath.WalkDir(root, func(path string, d os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if d.IsDir() || !strings.HasPrefix(d.Name(), "rollout-") || !strings.HasSuffix(d.Name(), ".jsonl") {
+			return nil
+		}
+		changed, err := repairCodexRollout(path)
+		if err != nil {
+			return err
+		}
+		if changed {
+			repaired++
+		}
+		return nil
+	})
+	if os.IsNotExist(err) {
+		return 0, nil
+	}
+	return repaired, err
+}
+
+func repairCodexRollout(path string) (bool, error) {
+	// A rollout runs to tens of megabytes and the field sits on its first
+	// line, so the decision is made from that line alone; only a rollout that
+	// needs the field is read whole.
+	complete, err := rolloutHasProvider(path)
+	if err != nil || complete {
+		return false, err
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return false, err
+	}
+	newline := strings.IndexByte(string(data), '\n')
+	if newline < 0 {
+		return false, nil
+	}
+	var record struct {
+		Type    string                     `json:"type"`
+		Payload map[string]json.RawMessage `json:"payload"`
+	}
+	if err := json.Unmarshal(data[:newline], &record); err != nil || record.Type != "session_meta" || record.Payload == nil {
+		return false, nil
+	}
+	if _, ok := record.Payload["model_provider"]; ok {
+		return false, nil
+	}
+	provider, _ := json.Marshal("openai")
+	record.Payload["model_provider"] = provider
+	meta, err := json.Marshal(record)
+	if err != nil {
+		return false, err
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		return false, err
+	}
+	temporary, err := os.CreateTemp(filepath.Dir(path), ".proj-rollout-*")
+	if err != nil {
+		return false, err
+	}
+	temporaryName := temporary.Name()
+	defer os.Remove(temporaryName)
+	if _, err := temporary.Write(meta); err == nil {
+		_, err = temporary.Write(data[newline:])
+	}
+	if err == nil {
+		err = temporary.Chmod(info.Mode())
+	}
+	if closeErr := temporary.Close(); err == nil {
+		err = closeErr
+	}
+	if err != nil {
+		return false, err
+	}
+	if err := os.Rename(temporaryName, path); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+// rolloutHasProvider reports whether path's metadata already names a provider,
+// which also covers a file whose first line is not session_meta: neither has
+// anything to repair.
+func rolloutHasProvider(path string) (bool, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return false, err
+	}
+	defer f.Close()
+	scanner := bufio.NewScanner(f)
+	scanner.Buffer(make([]byte, 0, 64*1024), 8*1024*1024)
+	if !scanner.Scan() {
+		return true, scanner.Err()
+	}
+	var record struct {
+		Type    string `json:"type"`
+		Payload struct {
+			ModelProvider string `json:"model_provider"`
+		} `json:"payload"`
+	}
+	if json.Unmarshal(scanner.Bytes(), &record) != nil {
+		return true, nil
+	}
+	return record.Type != "session_meta" || record.Payload.ModelProvider != "", nil
 }

@@ -9,6 +9,8 @@ import (
 	"os"
 
 	"github.com/spf13/cobra"
+
+	"github.com/tieo/proj/internal/handoff"
 )
 
 const Version = "0.1.0"
@@ -25,8 +27,16 @@ Each project is a uniquely-named directory under base_dir; open one by its name 
 	// Flag and argument validation run before any PreRun, so reaching here means
 	// the command actually started: a later error is a runtime one, and main
 	// should not bury it under a usage dump.
-	PersistentPreRun: func(cmd *cobra.Command, args []string) { cmdStarted = true },
-	RunE:             runOpen,
+	PersistentPreRun: func(cmd *cobra.Command, args []string) {
+		cmdStarted = true
+		// Codex refuses to resume a rollout whose metadata predates its
+		// provider field. Repairing them is housekeeping for a later switch,
+		// so a failure here reports and leaves the command it precedes alone.
+		if _, err := handoff.RepairCodexRollouts(handoff.CodexHome()); err != nil {
+			fmt.Fprintf(os.Stderr, "warning: repair codex rollouts: %v\n", err)
+		}
+	},
+	RunE: runOpen,
 }
 
 var (

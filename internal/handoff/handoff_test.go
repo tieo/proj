@@ -143,6 +143,18 @@ func TestWriteCodex(t *testing.T) {
 	if len(lines) != 9 {
 		t.Fatalf("got %d lines", len(lines))
 	}
+	var meta struct {
+		Type    string `json:"type"`
+		Payload struct {
+			ModelProvider string `json:"model_provider"`
+		} `json:"payload"`
+	}
+	if err := json.Unmarshal([]byte(lines[0]), &meta); err != nil {
+		t.Fatal(err)
+	}
+	if meta.Type != "session_meta" || meta.Payload.ModelProvider != "openai" {
+		t.Fatalf("session_meta model provider = %#v, want openai", meta)
+	}
 	for _, ln := range lines {
 		var v map[string]any
 		if json.Unmarshal([]byte(ln), &v) != nil {
@@ -158,6 +170,27 @@ func TestWriteCodex(t *testing.T) {
 	idx, err := os.ReadFile(filepath.Join(home, "session_index.jsonl"))
 	if err != nil || !strings.Contains(string(idx), id) {
 		t.Errorf("index missing session: %v %s", err, idx)
+	}
+}
+
+func TestRepairCodexRollouts(t *testing.T) {
+	home := t.TempDir()
+	legacy := filepath.Join(home, "sessions", "2026", "07", "24", "rollout-legacy.jsonl")
+	current := filepath.Join(home, "sessions", "2026", "07", "24", "rollout-current.jsonl")
+	writeFile(t, legacy, "{\"type\":\"session_meta\",\"payload\":{\"cwd\":\"/p/legacy\"}}\n{\"type\":\"event_msg\"}\n")
+	writeFile(t, current, "{\"type\":\"session_meta\",\"payload\":{\"cwd\":\"/p/current\",\"model_provider\":\"openai\"}}\n")
+
+	repaired, err := RepairCodexRollouts(home)
+	if err != nil || repaired != 1 {
+		t.Fatalf("RepairCodexRollouts = %d, %v", repaired, err)
+	}
+	data, err := os.ReadFile(legacy)
+	if err != nil || !strings.Contains(string(data), `"model_provider":"openai"`) {
+		t.Fatalf("legacy rollout = %q, %v", data, err)
+	}
+	data, err = os.ReadFile(current)
+	if err != nil || strings.Count(string(data), `"model_provider"`) != 1 {
+		t.Fatalf("current rollout changed = %q, %v", data, err)
 	}
 }
 
@@ -256,6 +289,20 @@ func TestPromptAndCaps(t *testing.T) {
 	}
 }
 
+func TestPromptWithArtifactFitsLaunchArgument(t *testing.T) {
+	tr := &Transcript{SourceTool: "claude"}
+	for i := 0; i < 100; i++ {
+		tr.Turns = append(tr.Turns, Turn{Role: "assistant", Text: strings.Repeat("x", maxTurnText)})
+	}
+	prompt := tr.PromptWithArtifact("/tmp/full.json")
+	if len(prompt) > maxPromptChars+4096 {
+		t.Fatalf("prompt length = %d, want at most %d", len(prompt), maxPromptChars+4096)
+	}
+	if !strings.Contains(prompt, "launch-safe prompt omits") || !strings.Contains(prompt, "/tmp/full.json") {
+		t.Fatalf("prompt lacks cutoff artifact notice: %s", prompt[:500])
+	}
+}
+
 func TestTargetContextCutoffKeepsSavedTurns(t *testing.T) {
 	turns := make([]Turn, 500)
 	for i := range turns {
@@ -340,6 +387,87 @@ func TestHandoffNotesDoNotAccumulate(t *testing.T) {
 	}
 	if !strings.Contains(tr.PromptWithArtifact(""), "real instruction") {
 		t.Error("real user turn lost")
+	}
+}
+
+func TestReadCodexResponseItems(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "rollout.jsonl")
+	writeFile(t, path, strings.Join([]string{
+		`{"type":"response_item","payload":{"type":"message","role":"developer","content":[{"type":"input_text","text":"internal"}]}}`,
+		`{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"<environment_context>internal</environment_context>"}]}}`,
+		`{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"# AGENTS.md instructions\n\n<INSTRUCTIONS>be terse</INSTRUCTIONS>"}]}}`,
+		`{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"restore this project"}]}}`,
+		`{"type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"restored"}]}}`,
+		`{"type":"event_msg","payload":{"type":"user_message","message":"restore this project"}}`,
+	}, "\n"))
+	tr, err := ReadCodex(path, "/p/api")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []Turn{{Role: "user", Text: "restore this project"}, {Role: "assistant", Text: "restored"}}
+	if len(tr.Turns) != len(want) {
+		t.Fatalf("turns = %+v, want %+v", tr.Turns, want)
+	}
+	for i := range want {
+		if tr.Turns[i] != want[i] {
+			t.Errorf("turn %d = %+v, want %+v", i, tr.Turns[i], want[i])
+		}
+	}
+}
+
+// Tool calls are recorded once, outside both conversation streams, so they
+// have to reach the IR whichever stream the rollout is read from.
+func TestReadCodexToolCalls(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "rollout.jsonl")
+	writeFile(t, path, strings.Join([]string{
+		`{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"run the tests"}]}}`,
+		`{"type":"response_item","payload":{"type":"custom_tool_call","name":"exec","input":"go test ./..."}}`,
+		`{"type":"response_item","payload":{"type":"function_call","name":"shell","arguments":{"command":["git","status"]}}}`,
+		`{"type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"green"}]}}`,
+	}, "\n"))
+	tr, err := ReadCodex(path, "/p/api")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []Turn{
+		{Role: "user", Text: "run the tests"},
+		{Role: "tool", Name: "exec", Text: "go test ./..."},
+		{Role: "tool", Name: "shell", Text: `{"command":["git","status"]}`},
+		{Role: "assistant", Text: "green"},
+	}
+	if len(tr.Turns) != len(want) {
+		t.Fatalf("turns = %+v, want %+v", tr.Turns, want)
+	}
+	for i := range want {
+		if tr.Turns[i] != want[i] {
+			t.Errorf("turn %d = %+v, want %+v", i, tr.Turns[i], want[i])
+		}
+	}
+}
+
+func TestLegacyPromptDoesNotAccumulate(t *testing.T) {
+	prior := newTranscript("claude", "/p/api", []Turn{
+		{Role: "user", Text: "original instruction"},
+		{Role: "assistant", Text: "original response"},
+	})
+	legacy := prior.PromptWithArtifact("/tmp/hop1.json")
+
+	tr := newTranscript("codex", "/p/api", []Turn{
+		{Role: "user", Text: legacy},
+		{Role: "user", Text: "continue from the actual work"},
+		{Role: "assistant", Text: "continuing"},
+	})
+	target := tr.TargetTurns()
+	if len(target) != 2 {
+		t.Fatalf("target turns = %d, want 2", len(target))
+	}
+	for _, turn := range target {
+		if strings.Contains(turn.Text, legacyPromptPrefix) || strings.Contains(turn.Text, "[claude]") {
+			t.Errorf("legacy prompt survived into target: %q", turn.Text)
+		}
+	}
+	if tr.omittedTurns() != 0 {
+		t.Errorf("stripping a legacy prompt is not an omission, got %d", tr.omittedTurns())
 	}
 }
 

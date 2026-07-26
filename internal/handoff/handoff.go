@@ -9,10 +9,9 @@
 // against provider-specific tool namespaces (Bash/Read/Edit vs
 // shell/apply_patch), so neither can move between tools.
 //
-// Readers parse a tool's native store into the IR; writers emit the IR as a
-// native session the target tool resumes as its own (claude jsonl, codex
-// rollout), or as a prompt for tools whose store cannot be written (agy keeps
-// conversations as undocumented protobuf blobs in sqlite).
+// Readers parse a tool's native store into the IR. Claude accepts a native
+// session writer; Codex and Agy receive an initial handoff prompt because their
+// local conversation stores are not stable import formats.
 package handoff
 
 import (
@@ -49,6 +48,7 @@ type Transcript struct {
 const (
 	maxTurnText        = 4000
 	maxTranscriptChars = 240000
+	maxPromptChars     = 60 * 1024
 )
 
 func capText(s string) string {
@@ -105,14 +105,22 @@ func (t *Transcript) targetTurns() []Turn {
 // never evicts.
 const notePrefix = "[Handoff:"
 
-// stripHandoffNotes drops the notes left by earlier switches. Nothing is lost:
-// the note names the artifact of its own hop, and that artifact holds the note
-// of the hop before it, so the chain stays walkable from the newest artifact
-// backwards. The saved IR keeps every note for audit.
+const (
+	legacyPromptPrefix = "You are taking over an ongoing coding session in this directory from "
+	legacyPromptSuffix = "Continue the work where it left off. Inspect the repository state (git status, recent commits) before changing anything if the next step is unclear."
+)
+
+// stripHandoffNotes drops generated handoff wrappers from target history. The
+// saved IR keeps them for audit, while the next native thread receives only
+// the conversation they wrapped.
 func stripHandoffNotes(turns []Turn) []Turn {
 	kept := make([]Turn, 0, len(turns))
 	for _, turn := range turns {
-		if turn.Role == "user" && strings.HasPrefix(strings.TrimSpace(turn.Text), notePrefix) {
+		text := strings.TrimSpace(turn.Text)
+		if turn.Role == "user" && strings.HasPrefix(text, notePrefix) {
+			continue
+		}
+		if strings.HasPrefix(text, legacyPromptPrefix) && strings.HasSuffix(text, legacyPromptSuffix) {
 			continue
 		}
 		kept = append(kept, turn)
@@ -175,6 +183,9 @@ func Prune(dir, project string, keep int) error {
 		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
 			return err
 		}
+		if err := os.Remove(path + ".prompt"); err != nil && !os.IsNotExist(err) {
+			return err
+		}
 	}
 	return nil
 }
@@ -201,6 +212,18 @@ func (t *Transcript) HandoffNote(artifactPath string) string {
 // written, which a cutoff notice has to say outright, or the model is told
 // that turns are missing with no way to reach them.
 func (t *Transcript) PromptWithArtifact(artifactPath string) string {
+	turns := t.targetTurns()
+	dropped := 0
+	chars := 0
+	for _, turn := range turns {
+		chars += len(turn.Text)
+	}
+	for len(turns) > 0 && chars > maxPromptChars {
+		chars -= len(turns[0].Text)
+		turns = turns[1:]
+		dropped++
+	}
+
 	var b strings.Builder
 	fmt.Fprintf(&b, "You are taking over an ongoing coding session in this directory from %s (the user switched tools). Recent conversation:\n\n", t.SourceTool)
 	if omitted := t.omittedTurns(); omitted > 0 {
@@ -214,7 +237,16 @@ func (t *Transcript) PromptWithArtifact(artifactPath string) string {
 	} else if artifactPath != "" {
 		fmt.Fprintf(&b, "Full extracted handoff JSON: %s\n\n", artifactPath)
 	}
-	for _, turn := range t.targetTurns() {
+	if dropped > 0 {
+		fmt.Fprintf(&b, "This launch-safe prompt omits %d earlier recent turns.", dropped)
+		if artifactPath != "" {
+			fmt.Fprintf(&b, " Read them in the full extracted handoff JSON: %s", artifactPath)
+		} else {
+			b.WriteString(" No handoff JSON was written, so they cannot be recovered.")
+		}
+		b.WriteString("\n\n")
+	}
+	for _, turn := range turns {
 		switch turn.Role {
 		case "user":
 			fmt.Fprintf(&b, "[User] %s\n", turn.Text)

@@ -102,20 +102,33 @@ func ReadClaude(path, cwd string) (*Transcript, error) {
 	return newTranscript("claude", cwd, turns), nil
 }
 
-// ReadCodex parses a codex rollout (jsonl) into the IR. The event_msg
-// user_message/agent_message records carry the clean conversation text (the
-// response_item user messages also contain injected environment context, which
-// the event stream does not repeat). function_call items become tool turns.
+// agentsInstructionsHeading opens the block Codex builds from the AGENTS.md
+// files in scope and sends as the first user message of a thread.
+const agentsInstructionsHeading = "# AGENTS.md instructions"
+
+// ReadCodex parses a Codex rollout into the IR. A rollout carries the
+// conversation twice: as response_item messages, which also hold threads
+// restored through app-server injection, and as the event_msg stream, which
+// older rollouts have alone. Only one of the two feeds the IR, while tool
+// calls, recorded once, join whichever wins.
 func ReadCodex(path, cwd string) (*Transcript, error) {
-	var turns []Turn
+	var messages []Turn
+	var events []Turn
+	responseMessages := false
 	err := scanLines(path, func(line []byte) {
 		var rec struct {
 			Type    string `json:"type"`
 			Payload struct {
 				Type      string          `json:"type"`
+				Role      string          `json:"role"`
 				Message   string          `json:"message"`
 				Name      string          `json:"name"`
 				Arguments json.RawMessage `json:"arguments"`
+				Input     string          `json:"input"`
+				Content   []struct {
+					Type string `json:"type"`
+					Text string `json:"text"`
+				} `json:"content"`
 			} `json:"payload"`
 		}
 		if json.Unmarshal(line, &rec) != nil {
@@ -123,17 +136,46 @@ func ReadCodex(path, cwd string) (*Transcript, error) {
 		}
 		switch {
 		case rec.Type == "event_msg" && rec.Payload.Type == "user_message":
-			turns = append(turns, Turn{Role: "user", Text: capText(rec.Payload.Message)})
+			events = append(events, Turn{Role: "user", Text: capText(rec.Payload.Message)})
 		case rec.Type == "event_msg" && rec.Payload.Type == "agent_message":
-			turns = append(turns, Turn{Role: "assistant", Text: capText(rec.Payload.Message)})
+			events = append(events, Turn{Role: "assistant", Text: capText(rec.Payload.Message)})
+		case rec.Type == "response_item" && rec.Payload.Type == "message":
+			for _, content := range rec.Payload.Content {
+				if content.Text == "" || (content.Type != "input_text" && content.Type != "output_text") {
+					continue
+				}
+				text := strings.TrimSpace(content.Text)
+				// Codex prepends its own blocks to the user side of the
+				// response stream: tagged ones (environment context, plugin
+				// listings) and the AGENTS.md instructions it inlines under
+				// that heading. Both are harness input, not conversation.
+				if rec.Payload.Role == "user" && (strings.HasPrefix(text, "<") || strings.HasPrefix(text, agentsInstructionsHeading)) {
+					continue
+				}
+				if rec.Payload.Role == "user" || rec.Payload.Role == "assistant" {
+					messages = append(messages, Turn{Role: rec.Payload.Role, Text: capText(content.Text)})
+					responseMessages = true
+				}
+			}
 		case rec.Type == "response_item" && rec.Payload.Type == "function_call":
-			turns = append(turns, Turn{Role: "tool", Name: rec.Payload.Name, Text: compactJSON(rec.Payload.Arguments)})
+			tool := Turn{Role: "tool", Name: rec.Payload.Name, Text: compactJSON(rec.Payload.Arguments)}
+			messages = append(messages, tool)
+			events = append(events, tool)
+		case rec.Type == "response_item" && rec.Payload.Type == "custom_tool_call":
+			// Freeform tools (exec, apply_patch) carry their call as a raw
+			// string rather than a JSON argument object.
+			tool := Turn{Role: "tool", Name: rec.Payload.Name, Text: capText(rec.Payload.Input)}
+			messages = append(messages, tool)
+			events = append(events, tool)
 		}
 	})
 	if err != nil {
 		return nil, err
 	}
-	return newTranscript("codex", cwd, turns), nil
+	if responseMessages {
+		return newTranscript("codex", cwd, messages), nil
+	}
+	return newTranscript("codex", cwd, events), nil
 }
 
 // ReadAgy builds an IR from agy's history.jsonl, which records one line per
