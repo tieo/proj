@@ -157,7 +157,7 @@ func runList(cmd *cobra.Command, args []string) error {
 			indicator: buildIndicator(alive, ms.Pinned, label, rc),
 			name:      p.Name,
 			tags:      strings.Join(p.Tags, " "),
-			model:     modelLabel(p, cfg.Claude.Home),
+			model:     modelLabel(p, cfg.Claude.Home, cfg.Claude.Command),
 			ts:        sessionTS(p, alive),
 			note:      buildNote(label, rc, ms, tracked, alive, unrCfg.KeepAlive),
 			noteColor: noteColor(label, rc, alive),
@@ -265,11 +265,17 @@ func shortPath(path string, max int) string {
 //	● ·  alive; colored dot + space (1+1 cols)
 //	○ ·  dead ; grey circle + space (1+1 cols)
 //
-// modelLabel fills the model column with the detected model when available.
-func modelLabel(p projects.Project, claudeHome string) string {
+// modelLabel fills the model column with the model the project runs. For
+// Claude that is the configured one, which stays right for a project whose
+// last recorded turn ran an older model; the last turn answers only for a
+// project no settings file pins a model for.
+func modelLabel(p projects.Project, claudeHome, claudeCommand string) string {
 	tool := daemon.ToolName(p.Tool)
 	switch tool {
 	case config.DefaultTool:
+		if model := daemon.ConfiguredClaudeModel(claudeHome, p.Dir, claudeCommand); model != "" {
+			return model
+		}
 		if model := daemon.ModelFromDir(claudeHome, p.Dir); model != "" {
 			return model
 		}

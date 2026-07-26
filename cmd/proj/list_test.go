@@ -19,7 +19,7 @@ func TestShortPath(t *testing.T) {
 
 func TestModelLabelFallsBackToDefaultTool(t *testing.T) {
 	p := projects.Project{Tool: "", Dir: t.TempDir()}
-	if got := modelLabel(p, t.TempDir()); got != "" {
+	if got := modelLabel(p, t.TempDir(), ""); got != "" {
 		t.Fatalf("modelLabel = %q, want empty", got)
 	}
 }

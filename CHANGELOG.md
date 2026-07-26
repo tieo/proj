@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+### Changed
+- The model column reports the model a Claude project is configured to run
+  (`--model` on the launch command, then project and user settings files),
+  falling back to the model of its last recorded turn. A project whose
+  settings moved to a newer model no longer shows the old one until it
+  answers again.
+
 ### Added
 - Per-project coding tools: `proj tool <name> [tool]` and `proj new
   --tool` select which CLI a session runs (built-ins: claude, codex, agy;
