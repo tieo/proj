@@ -5,8 +5,11 @@ import { Sketch } from "./Sketch.jsx";
 
 const SAVE_AFTER_IDLE_MS = 800;
 
+/** Where this book is mounted: "/" when it is alone, "/arbay/" when it is one of several. */
+export const base = location.pathname.replace(/[^/]*$/, "");
+
 async function api(path, options) {
-  const response = await fetch(path, options);
+  const response = await fetch(base + path, options);
   if (!response.ok) throw new Error(`${options?.method ?? "GET"} ${path}: ${response.status}`);
   return response.json();
 }
@@ -33,8 +36,8 @@ function App() {
   const timer = useRef(null);
 
   const reload = useCallback(() => {
-    api("/api/model").then(setModel);
-    api("/api/config").then(setConfig);
+    api("api/model").then(setModel);
+    api("api/config").then(setConfig);
   }, []);
 
   useEffect(() => { reload(); }, [reload]);
@@ -46,7 +49,7 @@ function App() {
   // screenshot tool waits for exactly that.
   useEffect(() => {
     if (new URLSearchParams(location.search).has("static")) return undefined;
-    const stream = new EventSource("/api/events");
+    const stream = new EventSource(base + "api/events");
     stream.addEventListener("changed", () => {
       reload();
       setSaved("updated");
@@ -60,7 +63,7 @@ function App() {
     setSaved("saving…");
     clearTimeout(timer.current);
     timer.current = setTimeout(() => {
-      api("/api/model", {
+      api("api/model", {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(next),
@@ -162,7 +165,7 @@ function IndexPage({ views, model }) {
             <a className="card" key={view.uid} href={`#/view/${slug(view.uid)}`}>
               <div className="shot">
                 {view.screenshot ? (
-                  <img src={`/img/card/${view.screenshot}`} alt={view.title} loading="lazy" />
+                  <img src={`${base}img/card/${view.screenshot}`} alt={view.title} loading="lazy" />
                 ) : (
                   <div className="noshot">nothing renders this yet</div>
                 )}
@@ -234,7 +237,7 @@ function ViewPage({ model, view, onChange }) {
         <section className="render">
           <h3>As it renders today</h3>
           {view.screenshot ? (
-            <img src={`/img/small/${view.screenshot}`} alt={`${view.title} as rendered`} />
+            <img src={`${base}img/small/${view.screenshot}`} alt={`${view.title} as rendered`} />
           ) : (
             <div className="noshot tall">
               <span>Nothing renders this yet.</span>
@@ -313,7 +316,7 @@ function TablePage({ table }) {
   const [data, setData] = useState(null);
   useEffect(() => {
     setData(null);
-    api(`/api/table/${table.name}`).then(setData).catch(() => setData({}));
+    api(`api/table/${table.name}`).then(setData).catch(() => setData({}));
   }, [table.name]);
 
   if (!data) return <div className="page"><h1>{table.title}</h1><p>Reading…</p></div>;

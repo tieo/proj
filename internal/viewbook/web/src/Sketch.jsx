@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import { Excalidraw, MainMenu } from "@excalidraw/excalidraw";
 import "@excalidraw/excalidraw/index.css";
+import { base } from "./main.jsx";
 
 const SAVE_AFTER_IDLE_MS = 1200;
 
@@ -19,7 +20,7 @@ export function Sketch({ name, title }) {
 
   useEffect(() => {
     let alive = true;
-    fetch(`/api/sketch/${name}`)
+    fetch(`${base}api/sketch/${name}`)
       .then((r) => r.json())
       .then((data) => {
         if (!alive) return;
@@ -39,7 +40,7 @@ export function Sketch({ name, title }) {
       setSaved("saving…");
       clearTimeout(timer.current);
       timer.current = setTimeout(() => {
-        fetch(`/api/sketch/${name}`, {
+        fetch(`${base}api/sketch/${name}`, {
           method: "PUT",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({

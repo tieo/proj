@@ -39,6 +39,7 @@ type Server struct {
 	Say func(message string) error
 
 	watchers sync.Map // chan struct{} per subscriber
+	prefix   string
 }
 
 // Config is what a project says about its own book: what it is called, and
@@ -71,27 +72,39 @@ type Column struct {
 }
 
 // Handler is the whole site: the interface, the project's files, and the
-// stream that tells a browser one of them changed.
-func (s *Server) Handler() http.Handler {
+// stream that tells a browser one of them changed. Mounted under prefix, which
+// is "/" when this book is alone and "/name/" when it is one of several.
+func (s *Server) Handler(prefix string) http.Handler {
+	if prefix == "" {
+		prefix = "/"
+	}
 	mux := http.NewServeMux()
-	mux.HandleFunc("/api/config", s.getConfig)
-	mux.HandleFunc("/api/model", s.model)
-	mux.HandleFunc("/api/table/", s.table)
-	mux.HandleFunc("/api/sketch/", s.sketch)
-	mux.HandleFunc("/api/events", s.events)
-	mux.HandleFunc("/img/", s.image)
+	mux.HandleFunc(prefix+"api/config", s.getConfig)
+	mux.HandleFunc(prefix+"api/model", s.model)
+	mux.HandleFunc(prefix+"api/table/", s.table)
+	mux.HandleFunc(prefix+"api/sketch/", s.sketch)
+	mux.HandleFunc(prefix+"api/events", s.events)
+	mux.HandleFunc(prefix+"img/", s.image)
+	s.prefix = prefix
 
 	built, err := fs.Sub(site, "web/dist")
 	if err != nil {
 		panic(fmt.Sprintf("viewbook: built interface missing: %v", err))
 	}
-	files := http.FileServer(http.FS(built))
-	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+	files := http.StripPrefix(strings.TrimSuffix(prefix, "/"), http.FileServer(http.FS(built)))
+	mux.HandleFunc(prefix, func(w http.ResponseWriter, r *http.Request) {
+		// A book mounted at /name must be reached as /name/, or every relative
+		// request under it resolves one level too high.
+		if prefix != "/" && r.URL.Path == strings.TrimSuffix(prefix, "/") {
+			http.Redirect(w, r, prefix, http.StatusMovedPermanently)
+			return
+		}
 		// Anything that is not a file is the interface itself, so reloading
-		// /#/view/results works rather than 404ing.
-		if _, err := fs.Stat(built, strings.TrimPrefix(r.URL.Path, "/")); err != nil || r.URL.Path == "/" {
+		// /name/#/view/results works rather than 404ing.
+		within := strings.TrimPrefix(strings.TrimPrefix(r.URL.Path, strings.TrimSuffix(prefix, "/")), "/")
+		if _, err := fs.Stat(built, within); err != nil || within == "" {
 			r = r.Clone(r.Context())
-			r.URL.Path = "/"
+			r.URL.Path = prefix
 		}
 		files.ServeHTTP(w, r)
 	})
@@ -171,7 +184,7 @@ func (s *Server) model(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) table(w http.ResponseWriter, r *http.Request) {
-	wanted := strings.TrimPrefix(r.URL.Path, "/api/table/")
+	wanted := strings.TrimPrefix(r.URL.Path, s.prefix+"api/table/")
 	for _, table := range s.config().Tables {
 		if table.Name == wanted {
 			s.serveFile(w, s.path(table.Source), "application/json")
@@ -182,7 +195,7 @@ func (s *Server) table(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) sketch(w http.ResponseWriter, r *http.Request) {
-	sketch := strings.TrimPrefix(r.URL.Path, "/api/sketch/")
+	sketch := strings.TrimPrefix(r.URL.Path, s.prefix+"api/sketch/")
 	if !name.MatchString(sketch) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "bad name"})
 		return
@@ -223,7 +236,7 @@ func (s *Server) sketch(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) image(w http.ResponseWriter, r *http.Request) {
-	wanted := filepath.Clean(strings.TrimPrefix(r.URL.Path, "/img/"))
+	wanted := filepath.Clean(strings.TrimPrefix(r.URL.Path, s.prefix+"img/"))
 	path := s.path("img", wanted)
 	if !strings.HasPrefix(path, s.path("img")+string(os.PathSeparator)) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "outside"})

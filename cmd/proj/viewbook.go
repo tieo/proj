@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
@@ -20,15 +21,19 @@ import (
 )
 
 var (
-	viewbookPort int
-	viewbookDir  string
+	viewbookListen string
+	viewbookDir    string
 )
 
 var viewbookCmd = &cobra.Command{
 	Use:   "viewbook [project]",
 	Short: "serve a project's model of its own views, wired to its session",
-	Long: `Serve a project's viewbook: every view of its app, what each has to do, the
-states it can be in, and how each renders today.
+	Long: `Serve a viewbook: every view of an app, what each has to do, the states it
+can be in, and how each renders today.
+
+Named a project, it serves that one at the root. Named none, it serves every
+project that has a model, each under its own path, with a list of them at the
+root - one address per project, so a link to a view stays a link to that view.
 
 The model is plain files in the project's working tree, so whoever is working in
 that session edits exactly what the browser shows, and the page updates itself
@@ -36,16 +41,29 @@ the moment one of those files changes. A change made in the browser is sent into
 that project's session as a message, because the session is where the
 conversation lives and a second inbox would only split it.
 
-The model lives in docs/model by default; --dir points elsewhere. With no
-project named, the project holding the working directory is used.`,
+The model lives in docs/model by default; --dir points elsewhere.`,
 	Args: cobra.MaximumNArgs(1),
 	RunE: runViewbook,
 }
 
 func init() {
-	viewbookCmd.Flags().IntVar(&viewbookPort, "port", 8099, "port to serve on")
+	viewbookCmd.Flags().StringVar(&viewbookListen, "listen", "127.0.0.1:8099", "address to serve on")
 	viewbookCmd.Flags().StringVar(&viewbookDir, "dir", "docs/model", "model directory, relative to the project")
 	rootCmd.AddCommand(viewbookCmd)
+}
+
+// sayInto delivers a message to the project's session, which is where its
+// conversation happens. A project with no session running keeps its change in
+// the file and says so rather than pretending it was passed on.
+func sayInto(p projects.Project) func(string) error {
+	session := projects.SessionName(p.Name, p.Tags)
+	return func(message string) error {
+		pane := paneForSession(session)
+		if pane == "" {
+			return fmt.Errorf("%s has no running session", p.Name)
+		}
+		return daemon.SendPrompt(daemon.DefaultConfig(), pane, message)
+	}
 }
 
 func runViewbook(cmd *cobra.Command, args []string) error {
@@ -54,62 +72,64 @@ func runViewbook(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	query := ""
+	var chosen []projects.Project
 	if len(args) == 1 {
-		query = args[0]
-	} else {
-		here, err := os.Getwd()
+		p, err := projects.Resolve(cfg.BaseDir, args[0])
 		if err != nil {
 			return err
 		}
-		query = filepath.Base(here)
-	}
-	p, err := projects.Resolve(cfg.BaseDir, query)
-	if err != nil {
-		return err
-	}
-
-	root := filepath.Join(p.Dir, viewbookDir)
-	if _, err := os.Stat(filepath.Join(root, "model.json")); err != nil {
-		return fmt.Errorf("no model.json in %s; point --dir at the model directory", root)
-	}
-
-	session := projects.SessionName(p.Name, p.Tags)
-	server := &viewbook.Server{
-		Root: root,
-		// Everything the browser changes is spoken into the session, so the
-		// project has one conversation rather than a page and a chat that each
-		// know half of it.
-		Say: func(message string) error {
-			pane := paneForSession(session)
-			if pane == "" {
-				return fmt.Errorf("%s has no running session", p.Name)
-			}
-			return daemon.SendPrompt(daemon.DefaultConfig(), pane, message)
-		},
-	}
-
-	listener, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", viewbookPort))
-	if err != nil {
-		return fmt.Errorf("listen on %d: %w", viewbookPort, err)
+		chosen = []projects.Project{p}
+	} else {
+		chosen = projects.All(cfg.BaseDir)
 	}
 
 	stop := make(chan struct{})
-	go server.Watch(stop)
+	var books []viewbook.Book
+	for _, p := range chosen {
+		root := filepath.Join(p.Dir, viewbookDir)
+		if _, err := os.Stat(filepath.Join(root, "model.json")); err != nil {
+			if len(args) == 1 {
+				return fmt.Errorf("no model.json in %s; point --dir at the model directory", root)
+			}
+			continue // a project without a model simply has no book
+		}
+		server := &viewbook.Server{Root: root, Say: sayInto(p)}
+		go server.Watch(stop)
+		books = append(books, viewbook.Book{
+			Name:   strings.ToLower(p.Name),
+			Title:  p.Name,
+			Server: server,
+		})
+	}
+	if len(books) == 0 {
+		return fmt.Errorf("no project under %s has a %s/model.json", cfg.BaseDir, viewbookDir)
+	}
 
-	http := &http.Server{Handler: server.Handler(), ReadHeaderTimeout: 10 * time.Second}
+	listener, err := net.Listen("tcp", viewbookListen)
+	if err != nil {
+		return fmt.Errorf("listen on %s: %w", viewbookListen, err)
+	}
+
+	var handler http.Handler
+	if len(books) == 1 && len(args) == 1 {
+		handler = books[0].Server.Handler("/")
+	} else {
+		handler = viewbook.Serve(books)
+	}
+	http := &http.Server{Handler: handler, ReadHeaderTimeout: 10 * time.Second}
 	go func() {
 		if err := http.Serve(listener); err != nil {
 			fmt.Fprintln(os.Stderr, "viewbook:", err)
 		}
 	}()
 
-	fmt.Printf("%s viewbook on http://127.0.0.1:%d\n", p.Name, viewbookPort)
-	fmt.Printf("model  %s\n", root)
-	if paneForSession(session) == "" {
-		fmt.Printf("note   %s has no running session, so changes have nowhere to go yet\n", p.Name)
-	} else {
-		fmt.Printf("speaks into session %s\n", session)
+	fmt.Printf("viewbook on http://%s\n", viewbookListen)
+	for _, book := range books {
+		where := "/"
+		if len(books) > 1 || len(args) != 1 {
+			where = "/" + book.Name + "/"
+		}
+		fmt.Printf("  %-24s %s\n", where, book.Server.Root)
 	}
 
 	quit := make(chan os.Signal, 1)
