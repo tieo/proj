@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"syscall"
 	"time"
@@ -27,7 +28,9 @@ var (
 )
 
 var viewbookCmd = &cobra.Command{
-	Use:   "viewbook [project]",
+	// Named "book", not "viewbook": a subcommand shadows a project of the same
+	// name, and viewbook is a project here like any other.
+	Use:   "book [project]",
 	Short: "serve a project's model of its own views, wired to its session",
 	Long: `Serve a viewbook: every view of an app, what each has to do, the states it
 can be in, and how each renders today.
@@ -67,8 +70,12 @@ func sayInto(p projects.Project) func(string) error {
 	}
 }
 
-// readSession returns what the project's session currently shows, so a page can
-// display the reply to what it just said instead of leaving someone guessing.
+// readSession returns what the project's session has been saying, so a page can
+// show the reply to what it just asked instead of leaving someone guessing.
+//
+// The pane's own furniture - the composer, the status line, the hint bar - is
+// cut off the end: it is the same three lines on every read and says nothing
+// about the conversation.
 func readSession(p projects.Project) func() string {
 	session := projects.SessionName(p.Name, p.Tags)
 	return func() string {
@@ -76,8 +83,34 @@ func readSession(p projects.Project) func() string {
 		if pane == "" {
 			return ""
 		}
-		return tmux.CapturePane(pane, 200)
+		return conversation(tmux.CapturePane(pane, 600))
 	}
+}
+
+// composerTop matches the rule the input box is drawn above, which is where the
+// conversation ends and the TUI's own chrome begins.
+var composerTop = regexp.MustCompile(`^[\s]*[─━]{10,}`)
+
+func conversation(pane string) string {
+	lines := strings.Split(strings.TrimRight(pane, "\n"), "\n")
+	// The composer is drawn between two rules, with the status bar under the
+	// lower one. Cutting at the first rule found from the end would leave the
+	// input box in view, so the highest rule near the end is the one to cut at.
+	cut := len(lines)
+	for i := len(lines) - 1; i >= 0 && i > len(lines)-14; i-- {
+		if composerTop.MatchString(lines[i]) {
+			cut = i
+		}
+	}
+	lines = lines[:cut]
+	// Blank tails are what an idle pane is mostly made of.
+	for len(lines) > 0 && strings.TrimSpace(lines[len(lines)-1]) == "" {
+		lines = lines[:len(lines)-1]
+	}
+	if len(lines) > 60 {
+		lines = lines[len(lines)-60:]
+	}
+	return strings.Join(lines, "\n")
 }
 
 func runViewbook(cmd *cobra.Command, args []string) error {
