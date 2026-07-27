@@ -531,39 +531,87 @@ textarea.ask:focus { min-height: 130px; }
   color: var(--quiet);
 }
 
-/* ── Asking, docked where a conversation belongs ──────── */
+/* ── The render, what is asked, and what came back ────── */
 
-.dock {
-  position: fixed;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  z-index: 6;
-  padding: 10px clamp(14px, 3vw, 34px) calc(10px + env(safe-area-inset-bottom));
-  background: var(--panel);
-  border-top: 1px solid var(--line);
+.work {
+  display: grid;
+  gap: 20px;
+  align-items: stretch;
+  grid-template-columns: minmax(0, 1fr);
+  /* The bar, the heading and the page's own margins are what the window has
+     already spent; the three things share what is left of it. */
+  height: calc(100vh - 215px);
+  height: calc(100dvh - 215px);
+  min-height: 380px;
 }
+
+/* An upright render is narrow, so the conversation takes the rest of the width.
+   A wide one takes the width itself and the conversation goes under it. */
+.work.portrait { grid-template-columns: minmax(240px, 34%) minmax(0, 1fr); }
+.work.landscape { grid-template-rows: minmax(0, 3fr) minmax(160px, 2fr); }
+
+.work .render {
+  position: static;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.work .render .frame { flex: 1; min-height: 0; max-height: none; height: auto; }
+.work .render img { width: 100%; height: auto; }
+
+.talk { display: flex; flex-direction: column; gap: 8px; min-height: 0; }
+
+.talk .reply {
+  flex: 1;
+  min-height: 90px;
+  max-height: none;
+  margin: 0;
+}
+
+.talk .hint { flex: 1; margin: 0; }
 
 .dock-row { display: flex; gap: 10px; align-items: flex-end; }
 
-.dock textarea.ask { background: var(--bg); flex: 1; }
+.talk textarea.ask { flex: 1; min-height: 74px; }
+.talk textarea.ask:focus { min-height: 74px; }
 
-.dock .reply, .dock .hint { margin: 0 0 8px; max-height: min(30vh, 220px); }
+.ask-bar { margin-top: 0; min-height: 16px; }
 
-/* Held upright there is less height to lend the conversation, and the document
-   is what the rest of it is for. */
-@media (orientation: portrait) {
-  .dock .reply { max-height: 24vh; }
-  .page:has(.dock) { padding-bottom: 240px; }
+/* ── What else is known about the view, when there is room ── */
+
+.more { margin-top: 26px; }
+
+.more > summary {
+  cursor: pointer;
+  font-size: 12px;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: var(--quiet);
+  padding: 8px 0;
 }
 
-/* A phone on its side keeps a quarter of its height for the conversation and
-   the rest for the view. */
+.more > summary:hover { color: var(--accent); }
+
+.more .statement {
+  margin: 6px 0 20px;
+  color: var(--quiet);
+  font-size: 14px;
+  line-height: 1.5;
+  max-width: 62ch;
+  white-space: pre-wrap;
+}
+
+/* Upright, or short: one thing under the next, each bounded so all three are
+   reachable without hunting. */
+@media (orientation: portrait), (max-width: 860px) {
+  .work, .work.portrait { grid-template-columns: minmax(0, 1fr); height: auto; }
+  .work.portrait .render .frame, .work.landscape .render .frame { max-height: 46vh; height: auto; }
+  .talk .reply { min-height: 22vh; max-height: 30vh; }
+}
+
 @media (orientation: landscape) and (max-height: 560px) {
-  .dock { padding-top: 6px; }
-  .dock .reply { max-height: 84px; }
-  .dock textarea.ask { min-height: 40px; }
-  .dock textarea.ask:focus { min-height: 90px; }
-  .ask-bar { margin-top: 2px; }
-  .page:has(.dock) { padding-bottom: 210px; }
+  .work { height: calc(100dvh - 150px); }
+  .talk textarea.ask, .talk textarea.ask:focus { min-height: 48px; }
 }

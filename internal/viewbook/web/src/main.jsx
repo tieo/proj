@@ -293,9 +293,13 @@ function SketchBox() {
   );
 }
 
+/** Whether this screen has room for anything beyond the render and the conversation. */
+const roomToSpare = () => window.matchMedia("(min-width: 1000px) and (min-height: 800px)").matches;
+
 function ViewPage({ model, view, onChange }) {
   const uid = view.uid;
   const [shape, setShape] = useState("portrait");
+  const [more, setMore] = useState(roomToSpare);
   const states = model.states.filter((s) =>
     s.relations.some((r) => r.to === uid && r.role === "State of"));
   const requirements = requirementsOf(model, uid).all;
@@ -412,7 +416,7 @@ function ViewPage({ model, view, onChange }) {
             />
           </section>
         </div>
-      </div>
+      </details>
     </div>
   );
 }
@@ -434,9 +438,7 @@ function Ask({ about }) {
   const [shots, setShots] = useState([]);
   const [state, setState] = useState("");
   const [reply, setReply] = useState("");
-  // Whether the session is in view is a choice that outlives the page.
-  const [open, setOpen] = useState(() => localStorage.getItem("viewbook.session") !== "hidden");
-  useEffect(() => localStorage.setItem("viewbook.session", open ? "shown" : "hidden"), [open]);
+  const talk = useRef(null);
   // The conversation is there whether or not this page asked the last question,
   // so it is shown on arrival rather than only after sending something.
 
@@ -485,6 +487,11 @@ function Ask({ about }) {
     });
   };
 
+  // The newest line is the one being waited for, so the pane stays at its end.
+  useEffect(() => {
+    if (talk.current) talk.current.scrollTop = talk.current.scrollHeight;
+  }, [reply]);
+
   // After saying something, follow the session for a while so the answer shows
   // up here rather than only in a terminal somewhere.
   useEffect(() => {
@@ -494,14 +501,13 @@ function Ask({ about }) {
     return () => clearInterval(every);
   }, []);
 
-  // The composer sits at the bottom of the window rather than at the top of the
-  // page: what the view is and what it has to do is what someone came to read,
-  // and a box to type in belongs where a conversation keeps it.
+  // The conversation stands beside the render, because those two and what is
+  // typed between them are what the page is for.
   return (
-    <section className="dock">
-      {open && (reply
-        ? <pre className="reply">{reply.trimEnd().split("\n").slice(-40).join("\n")}</pre>
-        : <p className="hint">Nothing in the session yet.</p>)}
+    <section className="talk">
+      {reply
+        ? <pre className="reply" ref={talk}>{reply.trimEnd().split("\n").slice(-80).join("\n")}</pre>
+        : <p className="hint">Nothing in the session yet.</p>}
       <div className="dock-row">
       <textarea
         className="ask"
@@ -540,9 +546,6 @@ function Ask({ about }) {
       </div>
       <div className="ask-bar">
         <span className={state.startsWith("not sent") ? "bad" : ""}>{state}</span>
-        <button className="quiet" onClick={() => setOpen(!open)}>
-          {open ? "hide the session" : "show the session"}
-        </button>
       </div>
     </section>
   );
