@@ -74,16 +74,26 @@ func Guard(key string, next http.Handler) http.Handler {
 // sameOrigin is whether the request came from this book rather than from
 // another site that happens to be open in the same browser.
 //
-// Fetch metadata says so directly and every current browser sends it; Origin
-// covers a form post, which is the one cross-site request that carries no
-// preflight. A request with neither is not from a browser at all - curl, the
-// health check, the screenshot tool - and is judged by the key alone.
+// What has to be refused is a request another site makes on the browser's
+// behalf: a form post, a fetch, an image that is really a command. Following a
+// link here is none of those - arriving from a login portal or from a chat
+// window is how anyone gets here at all - so a plain navigation is let through
+// and judged by the key.
+//
+// Fetch metadata says where a request came from and every current browser sends
+// it; Origin covers a form post, which is the one cross-site request that
+// carries no preflight. A request with neither is not from a browser - curl, a
+// health check, the screenshot tool - and the key alone decides.
 func sameOrigin(r *http.Request) bool {
+	reading := r.Method == http.MethodGet || r.Method == http.MethodHead
+	if reading && r.Header.Get("Sec-Fetch-Mode") == "navigate" {
+		return true
+	}
 	switch r.Header.Get("Sec-Fetch-Site") {
 	case "cross-site", "same-site":
 		return false
 	}
-	if origin := r.Header.Get("Origin"); origin != "" {
+	if origin := r.Header.Get("Origin"); origin != "" && !reading {
 		from, err := url.Parse(origin)
 		if err != nil || from.Host != r.Host {
 			return false

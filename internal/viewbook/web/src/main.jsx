@@ -324,7 +324,6 @@ function ViewPage({ model, view, onChange }) {
             {view.title}
             {view.status === "Missing" && <span className="pill missing">not built</span>}
           </h1>
-          <p>{view.statement}</p>
           {reachedFrom.length > 0 && (
             <p className="from">
               Reached from{" "}
@@ -339,17 +338,21 @@ function ViewPage({ model, view, onChange }) {
         </div>
       </header>
 
-      <Ask about={view.title} />
-
-      {/* An upright render stands beside what it is a render of; a wide one
-          spans the page, because squeezing it into a column makes it too small
-          to read. */}
-      <div className={`columns ${shape}`}>
+      {/* Three things fill the screen: how the view renders, what is being
+          asked about it, and what came back. An upright render stands beside
+          the conversation; a wide one takes the width and the conversation goes
+          under it. Everything else is behind the fold, and on a screen with no
+          room for it, out of the way entirely. */}
+      <div className={`work ${shape}`}>
         <section className="render">
-          <h3>As it renders today</h3>
           <Render view={view} onShape={setShape} />
         </section>
+        <Ask about={view.title} />
+      </div>
 
+      <details className="more" open={more} onToggle={(e) => setMore(e.target.open)}>
+        <summary>What it has to do{states.length > 0 && ", the states it can be in"}, and notes</summary>
+        <p className="statement">{view.statement}</p>
         <div className="detail">
           <section>
             <h3>What it has to do</h3>
