@@ -17,6 +17,7 @@ import (
 	"github.com/tieo/proj/internal/config"
 	"github.com/tieo/proj/internal/daemon"
 	"github.com/tieo/proj/internal/projects"
+	"github.com/tieo/proj/internal/tmux"
 	"github.com/tieo/proj/internal/viewbook"
 )
 
@@ -66,6 +67,19 @@ func sayInto(p projects.Project) func(string) error {
 	}
 }
 
+// readSession returns what the project's session currently shows, so a page can
+// display the reply to what it just said instead of leaving someone guessing.
+func readSession(p projects.Project) func() string {
+	session := projects.SessionName(p.Name, p.Tags)
+	return func() string {
+		pane := paneForSession(session)
+		if pane == "" {
+			return ""
+		}
+		return tmux.CapturePane(pane, 200)
+	}
+}
+
 func runViewbook(cmd *cobra.Command, args []string) error {
 	cfg, err := config.Load()
 	if err != nil {
@@ -93,7 +107,7 @@ func runViewbook(cmd *cobra.Command, args []string) error {
 			}
 			continue // a project without a model simply has no book
 		}
-		server := &viewbook.Server{Root: root, Say: sayInto(p)}
+		server := &viewbook.Server{Root: root, Say: sayInto(p), Session: readSession(p)}
 		go server.Watch(stop)
 		books = append(books, viewbook.Book{
 			Name:   strings.ToLower(p.Name),

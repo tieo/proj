@@ -37,6 +37,10 @@ type Server struct {
 	// Say delivers a message to whoever is working on this project. Nothing here
 	// knows how: a tmux session, a log, a webhook are all the same to it.
 	Say func(message string) error
+	// Session returns what the conversation looks like right now, so a page can
+	// show the answer rather than leaving someone wondering whether anything
+	// happened. Empty when there is nothing to read.
+	Session func() string
 
 	watchers sync.Map // chan struct{} per subscriber
 	prefix   string
@@ -84,6 +88,8 @@ func (s *Server) Handler(prefix string) http.Handler {
 	mux.HandleFunc(prefix+"api/table/", s.table)
 	mux.HandleFunc(prefix+"api/sketch/", s.sketch)
 	mux.HandleFunc(prefix+"api/events", s.events)
+	mux.HandleFunc(prefix+"api/say", s.say)
+	mux.HandleFunc(prefix+"api/session", s.session)
 	mux.HandleFunc(prefix+"img/", s.image)
 	s.prefix = prefix
 
@@ -175,12 +181,49 @@ func (s *Server) model(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 			return
 		}
-		s.tell(changes(before, readModel(s.path("model.json"))))
+		if r.Header.Get("X-Viewbook-Announce") == "1" {
+			s.tell(changes(before, readModel(s.path("model.json"))))
+		}
 		s.changed()
 		writeJSON(w, http.StatusOK, map[string]bool{"saved": true})
 	default:
 		w.WriteHeader(http.StatusMethodNotAllowed)
 	}
+}
+
+// say carries a message from the page into the conversation. The page is not a
+// second inbox: it hands what was typed to the session and shows what came back.
+func (s *Server) say(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	var asked struct {
+		Text string `json:"text"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&asked); err != nil || strings.TrimSpace(asked.Text) == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "nothing to say"})
+		return
+	}
+	if s.Say == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "nowhere to say it"})
+		return
+	}
+	if err := s.Say(asked.Text); err != nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"sent": true})
+}
+
+// session is the tail of the conversation, for a page that has just said
+// something and wants to show the reply.
+func (s *Server) session(w http.ResponseWriter, r *http.Request) {
+	text := ""
+	if s.Session != nil {
+		text = s.Session()
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"text": text})
 }
 
 func (s *Server) table(w http.ResponseWriter, r *http.Request) {
@@ -257,16 +300,16 @@ func (s *Server) tell(said []string) {
 }
 
 // writeWhole replaces a file in one move, so a reader never sees half of one.
+//
+// The body is written exactly as it arrived. Re-encoding it here would sort every
+// object's keys, so changing one word rewrote the whole file and the diff said
+// nothing about what was done; the sender formats it instead.
 func writeWhole(path string, body []byte) error {
-	pretty := body
-	var shaped any
-	if err := json.Unmarshal(body, &shaped); err == nil {
-		if indented, err := json.MarshalIndent(shaped, "", "  "); err == nil {
-			pretty = append(indented, '\n')
-		}
+	if len(body) == 0 || body[len(body)-1] != '\n' {
+		body = append(body, '\n')
 	}
 	temporary := path + ".writing"
-	if err := os.WriteFile(temporary, pretty, 0o644); err != nil {
+	if err := os.WriteFile(temporary, body, 0o644); err != nil {
 		return err
 	}
 	return os.Rename(temporary, path)

@@ -58,15 +58,19 @@ function App() {
   }, [reload]);
 
   // The model on disk is the document; an edit here is written back after a pause.
-  const save = useCallback((next) => {
+  const save = useCallback((next, announce = false) => {
     setModel(next);
     setSaved("saving…");
     clearTimeout(timer.current);
     timer.current = setTimeout(() => {
       api("api/model", {
         method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(next),
+        headers: {
+          "Content-Type": "application/json",
+          ...(announce ? { "X-Viewbook-Announce": "1" } : {}),
+        },
+        // Written to the file as sent, so a changed note is a changed line.
+        body: JSON.stringify(next, null, 2),
       })
         .then(() => setSaved("saved"))
         .catch((error) => setSaved(`not saved: ${error.message}`));
@@ -199,10 +203,10 @@ function ViewPage({ model, view, onChange }) {
     .map((r) => model.views.find((v) => v.uid === r.to))
     .filter(Boolean);
 
-  const editView = (patch) => onChange({
+  const editView = (patch, announce) => onChange({
     ...model,
     views: model.views.map((v) => (v.uid === uid ? { ...v, ...patch } : v)),
-  });
+  }, announce);
 
   const setStatus = (reqUid, status) => onChange({
     ...model,
@@ -246,6 +250,8 @@ function ViewPage({ model, view, onChange }) {
         </section>
 
         <div className="detail">
+          <Ask about={view.title} />
+
           <section>
             <h3>What it has to do</h3>
             <ul className="reqs">
@@ -298,8 +304,9 @@ function ViewPage({ model, view, onChange }) {
             <h3>Notes</h3>
             <textarea
               value={view.notes ?? ""}
-              placeholder="What you want changed here. Written straight into model.json."
-              onChange={(e) => editView({ notes: e.target.value })}
+              placeholder="Kept with the view. Saved as you type; sent to the session when you click away."
+              onChange={(e) => editView({ notes: e.target.value }, false)}
+              onBlur={() => editView({ notes: view.notes ?? "" }, true)}
             />
           </section>
         </div>
@@ -312,6 +319,77 @@ function ViewPage({ model, view, onChange }) {
  * A table a project declares in viewbook.json: where the rows come from, which columns to show,
  * and how to say a value that is a list or a flag. Nothing here knows what the rows are about.
  */
+/**
+ * Say something to the session, and see it land.
+ *
+ * The page had a notes box that saved silently, so asking for something looked
+ * exactly like doing nothing: no button, no confirmation, no reply. This is the
+ * other half of the loop - what is typed goes to the conversation, and what the
+ * conversation says comes back underneath.
+ */
+function Ask({ about }) {
+  const [text, setText] = useState("");
+  const [state, setState] = useState("");
+  const [reply, setReply] = useState("");
+  const [watching, setWatching] = useState(false);
+
+  const send = () => {
+    const message = text.trim();
+    if (!message) return;
+    setState("sending…");
+    api("api/say", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text: about ? `About ${about}: ${message}` : message }),
+    })
+      .then(() => {
+        setState("sent to the session");
+        setText("");
+        setWatching(true);
+      })
+      .catch((error) => setState(`not sent: ${error.message}`));
+  };
+
+  // After saying something, follow the session for a while so the answer shows
+  // up here rather than only in a terminal somewhere.
+  useEffect(() => {
+    if (!watching) return undefined;
+    const read = () => api("api/session").then((r) => setReply(r.text || "")).catch(() => {});
+    read();
+    const every = setInterval(read, 2500);
+    const until = setTimeout(() => setWatching(false), 5 * 60 * 1000);
+    return () => {
+      clearInterval(every);
+      clearTimeout(until);
+    };
+  }, [watching]);
+
+  return (
+    <section>
+      <h3>Ask about this view</h3>
+      <textarea
+        className="ask"
+        value={text}
+        placeholder={`Tell the session what to change about ${about ?? "this"}. Ctrl+Enter sends.`}
+        onChange={(e) => setText(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) send();
+        }}
+      />
+      <div className="ask-bar">
+        <button className="send" onClick={send} disabled={!text.trim()}>Send to the session</button>
+        <span className={state.startsWith("not sent") ? "bad" : ""}>{state}</span>
+        {reply && (
+          <button className="quiet" onClick={() => setWatching((w) => !w)}>
+            {watching ? "stop following" : "follow again"}
+          </button>
+        )}
+      </div>
+      {reply && <pre className="reply">{reply.trimEnd().split("\n").slice(-24).join("\n")}</pre>}
+    </section>
+  );
+}
+
 function TablePage({ table }) {
   const [data, setData] = useState(null);
   useEffect(() => {

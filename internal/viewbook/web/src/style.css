@@ -349,3 +349,66 @@ textarea:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
 .sketch { display: flex; flex-direction: column; height: 100%; }
 .sketch .page-head { padding: 22px 30px 14px; margin: 0; }
 .canvas { flex: 1; min-height: 0; }
+
+/* ── Asking, and what came back ──────────────────────── */
+
+textarea.ask { min-height: 90px; }
+
+.ask-bar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 8px;
+}
+
+.send {
+  font: inherit;
+  font-size: 13px;
+  padding: 8px 16px;
+  border-radius: 8px;
+  border: 0;
+  background: var(--accent);
+  color: #fff;
+  cursor: pointer;
+}
+
+.send:disabled { opacity: 0.45; cursor: default; }
+
+.quiet {
+  font: inherit;
+  font-size: 12px;
+  padding: 4px 10px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  background: transparent;
+  color: var(--quiet);
+  cursor: pointer;
+  margin-left: auto;
+}
+
+.ask-bar span { font-size: 12.5px; color: var(--quiet); }
+.ask-bar span.bad { color: var(--broken); }
+
+.reply {
+  margin: 10px 0 0;
+  padding: 12px 14px;
+  border-radius: 10px;
+  border: 1px solid var(--line);
+  background: var(--panel);
+  font-size: 12px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  max-height: 320px;
+  overflow: auto;
+}
+
+/* The render is a phone screen, which is four times taller than it is wide: it
+   has to be bounded by the window rather than by its own size. */
+.render img {
+  max-height: 72vh;
+  width: auto;
+  max-width: 100%;
+  object-fit: contain;
+}
+
+.shot img { object-fit: cover; object-position: top; }
