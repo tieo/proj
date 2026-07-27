@@ -22,5 +22,7 @@ github.com/tieo/viewbook v0.0.0-20260727202720-54645a72975f h1:wrfxYyQcV3aWiTWnH
 github.com/tieo/viewbook v0.0.0-20260727202720-54645a72975f/go.mod h1:7P8InTmSifIRQow7oJEpjVTDtncLjvwqiLF7VsC01iY=
 github.com/tieo/viewbook v0.0.0-20260727204421-cf7aa013139e h1:HOwDnHGnFdUB84cNj4sSLPdadzKSXaicHIVnUuH58lk=
 github.com/tieo/viewbook v0.0.0-20260727204421-cf7aa013139e/go.mod h1:7P8InTmSifIRQow7oJEpjVTDtncLjvwqiLF7VsC01iY=
+github.com/tieo/viewbook v0.0.0-20260727210138-8df4050b97c5 h1:kB95lOjr048kNmMApLmZXW90XMJVP5u7i6ABSehXOZ8=
+github.com/tieo/viewbook v0.0.0-20260727210138-8df4050b97c5/go.mod h1:7P8InTmSifIRQow7oJEpjVTDtncLjvwqiLF7VsC01iY=
 gopkg.in/check.v1 v0.0.0-20161208181325-20d25e280405/go.mod h1:Co6ibVJAznAaIkqp8huTwlJQCZ016jof/cbN4VW5Yz0=
 gopkg.in/yaml.v3 v3.0.1/go.mod h1:K4uyk7z7BCEPqu6E+C64Yfv1cQ7kz7rIZviUmN+EgEM=
