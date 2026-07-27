@@ -207,7 +207,6 @@ func donerProjects() []string {
 func runDonerHook(cmd *cobra.Command, args []string) error {
 	raw, _ := io.ReadAll(os.Stdin)
 	var in struct {
-		StopHookActive       bool   `json:"stop_hook_active"`
 		Cwd                  string `json:"cwd"`
 		LastAssistantMessage string `json:"last_assistant_message"`
 	}
@@ -216,9 +215,13 @@ func runDonerHook(cmd *cobra.Command, args []string) error {
 	if json.Unmarshal(raw, &in) != nil {
 		return nil
 	}
-	if in.StopHookActive {
-		return nil // loop guard: Claude Code already re-drove on our block
-	}
+	// stop_hook_active (this stop follows one we already blocked) is NOT a reason
+	// to stand down. Treating it as one made doner nudge exactly once per
+	// message: the session continued, reported where it had got to, and was let
+	// go still unfinished - which is the whole thing doner exists to prevent.
+	// Only the reply decides, and Claude Code caps consecutive blocks on its own,
+	// so a session that never reports done is released by that cap rather than
+	// held forever.
 	// Background shells are deliberately NOT a reason to hold off. Holding off
 	// looks right - a session waiting on a shell has nothing to continue - but
 	// the shells that matter here are ssh wait loops that sit for hours, so it
