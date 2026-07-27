@@ -86,6 +86,7 @@ func (s *Server) Handler(prefix string) http.Handler {
 	mux.HandleFunc(prefix+"api/config", s.getConfig)
 	mux.HandleFunc(prefix+"api/model", s.model)
 	mux.HandleFunc(prefix+"api/table/", s.table)
+	mux.HandleFunc(prefix+"api/sketches", s.sketches)
 	mux.HandleFunc(prefix+"api/sketch/", s.sketch)
 	mux.HandleFunc(prefix+"api/events", s.events)
 	mux.HandleFunc(prefix+"api/say", s.say)
@@ -148,9 +149,6 @@ func (s *Server) config() Config {
 	}
 	if cfg.Title == "" {
 		cfg.Title = filepath.Base(s.Root)
-	}
-	if cfg.Subtitle == "" {
-		cfg.Subtitle = "the model"
 	}
 	if cfg.Tables == nil {
 		cfg.Tables = []Table{}
@@ -274,6 +272,22 @@ func (s *Server) table(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusNotFound, map[string]string{"error": "no such table"})
 }
 
+// sketches is every sketch this project holds, so a screen drawn before it
+// exists stays findable instead of living at an address someone has to
+// remember.
+func (s *Server) sketches(w http.ResponseWriter, r *http.Request) {
+	drawn := []string{}
+	entries, err := os.ReadDir(s.path("wireframes"))
+	if err == nil {
+		for _, entry := range entries {
+			if sketch := strings.TrimSuffix(entry.Name(), ".excalidraw"); sketch != entry.Name() {
+				drawn = append(drawn, sketch)
+			}
+		}
+	}
+	writeJSON(w, http.StatusOK, drawn)
+}
+
 func (s *Server) sketch(w http.ResponseWriter, r *http.Request) {
 	sketch := strings.TrimPrefix(r.URL.Path, s.prefix+"api/sketch/")
 	if !name.MatchString(sketch) {
@@ -315,12 +329,22 @@ func (s *Server) sketch(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// image serves a render out of the project's img directory.
+//
+// A project that keeps sized copies in img/small and img/card is served those;
+// one that drops a single file in img/ is served that same file for both, so
+// having renders at all costs a project nothing but the renders.
 func (s *Server) image(w http.ResponseWriter, r *http.Request) {
 	wanted := filepath.Clean(strings.TrimPrefix(r.URL.Path, s.prefix+"img/"))
 	path := s.path("img", wanted)
 	if !strings.HasPrefix(path, s.path("img")+string(os.PathSeparator)) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "outside"})
 		return
+	}
+	if _, err := os.Stat(path); err != nil {
+		if sized := filepath.Dir(wanted); sized == "small" || sized == "card" {
+			path = s.path("img", filepath.Base(wanted))
+		}
 	}
 	s.serveFile(w, path, "image/png")
 }

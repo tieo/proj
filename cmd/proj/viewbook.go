@@ -25,6 +25,7 @@ import (
 var (
 	viewbookListen string
 	viewbookDir    string
+	viewbookKey    string
 )
 
 var viewbookCmd = &cobra.Command{
@@ -53,7 +54,20 @@ The model lives in docs/model by default; --dir points elsewhere.`,
 func init() {
 	viewbookCmd.Flags().StringVar(&viewbookListen, "listen", "127.0.0.1:8099", "address to serve on")
 	viewbookCmd.Flags().StringVar(&viewbookDir, "dir", "docs/model", "model directory, relative to the project")
+	viewbookCmd.Flags().StringVar(&viewbookKey, "key-file", defaultKeyPath(),
+		"file holding the key the browser must carry; empty serves to anyone who reaches the port")
 	rootCmd.AddCommand(viewbookCmd)
+}
+
+// defaultKeyPath is where the key that opens the books is kept, next to the
+// rest of proj's state and readable by its owner alone.
+func defaultKeyPath() string {
+	base := os.Getenv("XDG_STATE_HOME")
+	if base == "" {
+		home, _ := os.UserHomeDir()
+		base = filepath.Join(home, ".local", "state")
+	}
+	return filepath.Join(base, "proj", "viewbook.key")
 }
 
 // sayInto delivers a message to the project's session, which is where its
@@ -163,14 +177,30 @@ func runViewbook(cmd *cobra.Command, args []string) error {
 	} else {
 		handler = viewbook.Serve(books)
 	}
-	http := &http.Server{Handler: handler, ReadHeaderTimeout: 10 * time.Second}
+
+	// What is typed here lands in a session that can run anything, so the book
+	// is opened by whoever can read the key file and by nobody else.
+	key := ""
+	if viewbookKey != "" {
+		key, err = viewbook.KeyAt(viewbookKey)
+		if err != nil {
+			return fmt.Errorf("read %s: %w", viewbookKey, err)
+		}
+	}
+	http := &http.Server{Handler: viewbook.Guard(key, handler), ReadHeaderTimeout: 10 * time.Second}
 	go func() {
 		if err := http.Serve(listener); err != nil {
 			fmt.Fprintln(os.Stderr, "viewbook:", err)
 		}
 	}()
 
-	fmt.Printf("viewbook on http://%s\n", viewbookListen)
+	// The key goes in the address once. The browser keeps it from then on, and
+	// the same key opens the book wherever it is published from here.
+	opening := "http://" + viewbookListen + "/"
+	if key != "" {
+		opening += "?key=" + key
+	}
+	fmt.Printf("viewbook on %s\n", opening)
 	for _, book := range books {
 		where := "/"
 		if len(books) > 1 || len(args) != 1 {

@@ -98,15 +98,16 @@ function App() {
   // One bar across the top rather than a column down the side: a screen in
   // landscape has width to spare and height to save, and a phone has neither to
   // give to a permanent list.
+  //
+  // The book's name is the way back to the index, so nothing else has to be.
   return (
     <div className="shell">
       <header className="bar">
-        <a className="brand" href="#/">
+        <a className={`brand ${route === "" ? "on" : ""}`} href="#/">
           {config.title}
-          <span>{config.subtitle}</span>
+          {config.subtitle && <span>{config.subtitle}</span>}
         </a>
         <nav className="tabs">
-          <a className={route === "" ? "on" : ""} href="#/">All views</a>
           {views.map((view) => (
             <a
               key={view.uid}
@@ -149,6 +150,73 @@ function requirementsOf(model, uid) {
   };
 }
 
+/**
+ * What a view looks like today, at whatever shape it actually is.
+ *
+ * The same screen is upright on a phone and wide on a desktop, and a view can
+ * carry both. Which one an image is, is measured when it loads rather than
+ * declared in the model, so a project only has to drop the file in img/.
+ */
+function Render({ view, onShape }) {
+  const shots = rendersOf(view);
+  const [chosen, setChosen] = useState(0);
+
+  useEffect(() => setChosen(0), [view.uid]);
+
+  if (shots.length === 0) {
+    return <div className="noshot tall"><span>Nothing renders this yet.</span></div>;
+  }
+  const shot = shots[Math.min(chosen, shots.length - 1)];
+  return (
+    <>
+      <div className="frame">
+        <img
+          src={`${base}img/small/${shot.file}`}
+          alt={`${view.title} as rendered`}
+          onLoad={(e) => onShape(e.target.naturalWidth > e.target.naturalHeight ? "landscape" : "portrait")}
+        />
+      </div>
+      {shots.length > 1 && (
+        <div className="shapes">
+          {shots.map((one, index) => (
+            <button
+              key={one.file}
+              className={index === chosen ? "on" : ""}
+              onClick={() => setChosen(index)}
+            >
+              {one.label ?? one.file.replace(/\.[a-z]+$/, "")}
+            </button>
+          ))}
+        </div>
+      )}
+    </>
+  );
+}
+
+/** Every render a view carries: one screenshot, or a list of them. */
+function rendersOf(view) {
+  if (Array.isArray(view.renders) && view.renders.length > 0) {
+    return view.renders.map((one) => (typeof one === "string" ? { file: one } : one));
+  }
+  return view.screenshot ? [{ file: view.screenshot }] : [];
+}
+
+/** A thumbnail, cropped when it is a tall screen and shown whole when it is wide. */
+function Thumb({ view }) {
+  const [shape, setShape] = useState("portrait");
+  const shots = rendersOf(view);
+  if (shots.length === 0) return <div className="noshot">nothing renders this yet</div>;
+  return (
+    <img
+      className={shape}
+      src={`${base}img/card/${shots[0].file}`}
+      alt={view.title}
+      loading="lazy"
+      onLoad={(e) => setShape(e.target.naturalWidth > e.target.naturalHeight ? "landscape" : "portrait")}
+    />
+  );
+}
+
 function IndexPage({ views, model }) {
   const open = model.requirements.filter((r) => r.status !== "Built");
   return (
@@ -168,11 +236,7 @@ function IndexPage({ views, model }) {
           return (
             <a className="card" key={view.uid} href={`#/view/${slug(view.uid)}`}>
               <div className="shot">
-                {view.screenshot ? (
-                  <img src={`${base}img/card/${view.screenshot}`} alt={view.title} loading="lazy" />
-                ) : (
-                  <div className="noshot">nothing renders this yet</div>
-                )}
+                <Thumb view={view} />
               </div>
               <div className="card-body">
                 <h2>{view.title}</h2>
@@ -187,12 +251,51 @@ function IndexPage({ views, model }) {
           );
         })}
       </div>
+      <SketchBox />
     </div>
+  );
+}
+
+/**
+ * Sketching, which is for a screen that does not exist yet.
+ *
+ * It sits with the index rather than on a view: a view that already renders has
+ * a render, and drawing over it says nothing the screenshot does not.
+ */
+function SketchBox() {
+  const [drawn, setDrawn] = useState([]);
+  const [name, setName] = useState("");
+  useEffect(() => {
+    api("api/sketches").then(setDrawn).catch(() => setDrawn([]));
+  }, []);
+
+  const start = () => {
+    const called = name.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
+    if (called) location.hash = `#/sketch/${called}`;
+  };
+
+  return (
+    <section className="sketches">
+      <h3>Sketches</h3>
+      <div className="sketch-row">
+        {drawn.map((one) => (
+          <a className="button" key={one} href={`#/sketch/${one}`}>{one}</a>
+        ))}
+        <input
+          value={name}
+          placeholder="a screen that does not exist yet"
+          onChange={(e) => setName(e.target.value)}
+          onKeyDown={(e) => e.key === "Enter" && start()}
+        />
+        <button className="send" onClick={start} disabled={!name.trim()}>Sketch it</button>
+      </div>
+    </section>
   );
 }
 
 function ViewPage({ model, view, onChange }) {
   const uid = view.uid;
+  const [shape, setShape] = useState("portrait");
   const states = model.states.filter((s) =>
     s.relations.some((r) => r.to === uid && r.role === "State of"));
   const requirements = requirementsOf(model, uid).all;
@@ -234,24 +337,20 @@ function ViewPage({ model, view, onChange }) {
             </p>
           )}
         </div>
-        <a className="button" href={`#/sketch/${slug(uid)}`}>Sketch it</a>
       </header>
 
-      <div className="columns">
+      <Ask about={view.title} />
+
+      {/* An upright render stands beside what it is a render of; a wide one
+          spans the page, because squeezing it into a column makes it too small
+          to read. */}
+      <div className={`columns ${shape}`}>
         <section className="render">
           <h3>As it renders today</h3>
-          {view.screenshot ? (
-            <img src={`${base}img/small/${view.screenshot}`} alt={`${view.title} as rendered`} />
-          ) : (
-            <div className="noshot tall">
-              <span>Nothing renders this yet.</span>
-            </div>
-          )}
+          <Render view={view} onShape={setShape} />
         </section>
 
         <div className="detail">
-          <Ask about={view.title} />
-
           <section>
             <h3>What it has to do</h3>
             <ul className="reqs">
@@ -332,9 +431,12 @@ function Ask({ about }) {
   const [shots, setShots] = useState([]);
   const [state, setState] = useState("");
   const [reply, setReply] = useState("");
+  // Whether the session is in view is a choice that outlives the page.
+  const [open, setOpen] = useState(() => localStorage.getItem("viewbook.session") !== "hidden");
+  useEffect(() => localStorage.setItem("viewbook.session", open ? "shown" : "hidden"), [open]);
   // The conversation is there whether or not this page asked the last question,
   // so it is shown on arrival rather than only after sending something.
-  const [watching, setWatching] = useState(true);
+
 
   const send = () => {
     const message = text.trim();
@@ -353,7 +455,6 @@ function Ask({ about }) {
         setState("sent to the session");
         setText("");
         setShots([]);
-        setWatching(true);
       })
       .catch((error) => setState(`not sent: ${error.message}`));
   };
@@ -384,24 +485,34 @@ function Ask({ about }) {
   // After saying something, follow the session for a while so the answer shows
   // up here rather than only in a terminal somewhere.
   useEffect(() => {
-    if (!watching) return undefined;
     const read = () => api("api/session").then((r) => setReply(r.text || "")).catch(() => {});
     read();
     const every = setInterval(read, 2500);
     return () => clearInterval(every);
-  }, [watching]);
+  }, []);
 
+  // The composer sits at the bottom of the window rather than at the top of the
+  // page: what the view is and what it has to do is what someone came to read,
+  // and a box to type in belongs where a conversation keeps it.
   return (
-    <section>
-      <h3>Ask about this view</h3>
+    <section className="dock">
+      {open && (reply
+        ? <pre className="reply">{reply.trimEnd().split("\n").slice(-40).join("\n")}</pre>
+        : <p className="hint">Nothing in the session yet.</p>)}
+      <div className="dock-row">
       <textarea
         className="ask"
         value={text}
-        placeholder={`Tell the session what to change about ${about ?? "this"}. Paste a screenshot if it helps. Ctrl+Enter sends.`}
+        placeholder={`Tell the session what to change about ${about ?? "this"}. Paste a screenshot if it helps. Enter sends, Shift+Enter is a newline.`}
         onChange={(e) => setText(e.target.value)}
         onPaste={paste}
+        // Enter sends, because this is a message rather than a document.
+        // Shift+Enter is the newline.
         onKeyDown={(e) => {
-          if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) send();
+          if (e.key === "Enter" && !e.shiftKey) {
+            e.preventDefault();
+            send();
+          }
         }}
       />
       {shots.length > 0 && (
@@ -416,26 +527,20 @@ function Ask({ about }) {
           ))}
         </div>
       )}
-      <div className="ask-bar">
         <button
           className="send"
           onClick={send}
           disabled={!text.trim() && shots.length === 0}
         >
-          Send to the session
-        </button>
-        <span className={state.startsWith("not sent") ? "bad" : ""}>{state}</span>
-        <button className="quiet" onClick={() => setWatching((w) => !w)}>
-          {watching ? "following the session" : "not following"}
+          Send
         </button>
       </div>
-      {reply ? (
-        <pre className="reply">{reply.trimEnd().split("\n").slice(-24).join("\n")}</pre>
-      ) : (
-        <p className="hint">
-          {watching ? "Nothing in the session yet." : "Following is off."}
-        </p>
-      )}
+      <div className="ask-bar">
+        <span className={state.startsWith("not sent") ? "bad" : ""}>{state}</span>
+        <button className="quiet" onClick={() => setOpen(!open)}>
+          {open ? "hide the session" : "show the session"}
+        </button>
+      </div>
     </section>
   );
 }
