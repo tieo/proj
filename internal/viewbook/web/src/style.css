@@ -37,58 +37,65 @@ a { color: inherit; text-decoration: none; }
 
 .shell { display: flex; height: 100%; }
 
-/* ── Sidebar ─────────────────────────────────────────── */
+/* ── The bar ─────────────────────────────────────────── */
 
-aside {
-  width: 232px;
-  flex: none;
-  border-right: 1px solid var(--line);
-  padding: 22px 14px;
+.shell { flex-direction: column; }
+
+.bar {
   display: flex;
-  flex-direction: column;
-  gap: 6px;
-  overflow-y: auto;
+  align-items: center;
+  gap: 16px;
+  padding: 8px 18px;
+  border-bottom: 1px solid var(--line);
+  background: var(--panel);
+  position: sticky;
+  top: 0;
+  z-index: 5;
 }
 
 .brand {
-  font-size: 19px;
-  font-weight: 700;
-  padding: 0 10px 14px;
   display: flex;
-  flex-direction: column;
+  align-items: baseline;
+  gap: 7px;
+  font-size: 15px;
+  font-weight: 700;
+  flex: none;
 }
 
 .brand span {
-  font-size: 12px;
+  font-size: 11.5px;
   font-weight: 400;
   color: var(--quiet);
 }
 
-.label {
-  margin: 16px 10px 4px;
-  font-size: 11px;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  color: var(--quiet);
+.tabs {
+  display: flex;
+  gap: 2px;
+  overflow-x: auto;
+  scrollbar-width: thin;
+  flex: 1;
+  min-width: 0;
 }
 
-nav { display: flex; flex-direction: column; gap: 1px; }
-
-nav a {
-  padding: 7px 10px;
+.tabs a {
+  padding: 5px 11px;
   border-radius: 7px;
-  font-size: 14px;
+  font-size: 13.5px;
+  white-space: nowrap;
   display: flex;
   align-items: center;
-  gap: 7px;
+  gap: 6px;
 }
 
-nav a:hover { background: rgba(128, 128, 128, 0.12); }
+.tabs a:hover { background: rgba(128, 128, 128, 0.14); }
 
-nav a.on {
+.tabs a.on {
   background: var(--accent);
   color: #fff;
 }
+
+.tabs a.table-tab { color: var(--quiet); }
+.tabs a.table-tab.on { color: #fff; }
 
 .dot {
   width: 6px;
@@ -98,17 +105,23 @@ nav a.on {
 }
 
 .state {
-  margin: auto 10px 0;
+  flex: none;
   font-size: 12px;
   color: var(--quiet);
-  min-height: 16px;
+  min-width: 60px;
+  text-align: right;
+}
+
+@media (max-width: 640px) {
+  .brand span, .state { display: none; }
+  .bar { padding: 6px 10px; gap: 10px; }
 }
 
 /* ── Pages ───────────────────────────────────────────── */
 
 main { flex: 1; min-width: 0; overflow-y: auto; }
 
-.page { padding: 30px 34px 60px; max-width: 1180px; }
+.page { padding: 24px clamp(14px, 3vw, 34px) 60px; max-width: 1280px; }
 
 .page-head {
   display: flex;
@@ -227,13 +240,21 @@ main { flex: 1; min-width: 0; overflow-y: auto; }
 
 .columns {
   display: grid;
-  grid-template-columns: minmax(240px, 320px) 1fr;
-  gap: 30px;
+  grid-template-columns: minmax(220px, 300px) minmax(0, 1fr);
+  gap: 28px;
   align-items: start;
 }
 
-@media (max-width: 900px) {
-  .columns { grid-template-columns: 1fr; }
+/* Upright, or simply narrow: the render goes above what it is a render of. */
+@media (max-width: 860px) {
+  .columns { grid-template-columns: minmax(0, 1fr); }
+  .render { position: static; }
+  .render img { max-height: 46vh; }
+}
+
+/* Short and wide: the render has little height to use, so it takes less of it. */
+@media (max-height: 700px) and (orientation: landscape) {
+  .render img { max-height: 58vh; }
 }
 
 .render { position: sticky; top: 0; }
@@ -412,3 +433,29 @@ textarea.ask { min-height: 90px; }
 }
 
 .shot img { object-fit: cover; object-position: top; }
+
+.shots {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-top: 8px;
+}
+
+.shots span {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  align-items: center;
+}
+
+.shots img {
+  max-height: 110px;
+  border-radius: 8px;
+  border: 1px solid var(--line);
+}
+
+.hint {
+  margin: 10px 0 0;
+  font-size: 12.5px;
+  color: var(--quiet);
+}

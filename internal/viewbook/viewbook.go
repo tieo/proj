@@ -89,6 +89,7 @@ func (s *Server) Handler(prefix string) http.Handler {
 	mux.HandleFunc(prefix+"api/sketch/", s.sketch)
 	mux.HandleFunc(prefix+"api/events", s.events)
 	mux.HandleFunc(prefix+"api/say", s.say)
+	mux.HandleFunc(prefix+"api/paste", s.paste)
 	mux.HandleFunc(prefix+"api/session", s.session)
 	mux.HandleFunc(prefix+"img/", s.image)
 	s.prefix = prefix
@@ -214,6 +215,42 @@ func (s *Server) say(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]bool{"sent": true})
+}
+
+// paste keeps an image dropped into the page as a file in the project, and
+// answers with its path. A conversation can be handed a path; it cannot be
+// handed a clipboard.
+func (s *Server) paste(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	body, err := io.ReadAll(io.LimitReader(r.Body, 25<<20))
+	if err != nil || len(body) == 0 {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "no image"})
+		return
+	}
+	kind := "png"
+	switch r.Header.Get("Content-Type") {
+	case "image/jpeg":
+		kind = "jpg"
+	case "image/webp":
+		kind = "webp"
+	case "image/gif":
+		kind = "gif"
+	}
+	dir := s.path("img", "pasted")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	name := fmt.Sprintf("%s.%s", time.Now().Format("2006-01-02-150405.000"), kind)
+	path := filepath.Join(dir, name)
+	if err := os.WriteFile(path, body, 0o644); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"path": path, "url": "img/pasted/" + name})
 }
 
 // session is the tail of the conversation, for a page that has just said

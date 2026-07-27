@@ -95,27 +95,18 @@ function App() {
     page = <IndexPage views={views} model={model} />;
   }
 
+  // One bar across the top rather than a column down the side: a screen in
+  // landscape has width to spare and height to save, and a phone has neither to
+  // give to a permanent list.
   return (
     <div className="shell">
-      <aside>
+      <header className="bar">
         <a className="brand" href="#/">
           {config.title}
           <span>{config.subtitle}</span>
         </a>
-        <nav>
+        <nav className="tabs">
           <a className={route === "" ? "on" : ""} href="#/">All views</a>
-          {config.tables.map((table) => (
-            <a
-              key={table.name}
-              className={section === "table" && argument === table.name ? "on" : ""}
-              href={`#/table/${table.name}`}
-            >
-              {table.title}
-            </a>
-          ))}
-        </nav>
-        <p className="label">Views</p>
-        <nav>
           {views.map((view) => (
             <a
               key={view.uid}
@@ -126,9 +117,18 @@ function App() {
               {view.status === "Missing" && <span className="dot" title="not built" />}
             </a>
           ))}
+          {config.tables.map((table) => (
+            <a
+              key={table.name}
+              className={`table-tab ${section === "table" && argument === table.name ? "on" : ""}`}
+              href={`#/table/${table.name}`}
+            >
+              {table.title}
+            </a>
+          ))}
         </nav>
-        <p className="state">{saved}</p>
-      </aside>
+        <span className="state">{saved}</span>
+      </header>
       <main>{page}</main>
     </div>
   );
@@ -329,25 +329,56 @@ function ViewPage({ model, view, onChange }) {
  */
 function Ask({ about }) {
   const [text, setText] = useState("");
+  const [shots, setShots] = useState([]);
   const [state, setState] = useState("");
   const [reply, setReply] = useState("");
-  const [watching, setWatching] = useState(false);
+  // The conversation is there whether or not this page asked the last question,
+  // so it is shown on arrival rather than only after sending something.
+  const [watching, setWatching] = useState(true);
 
   const send = () => {
     const message = text.trim();
-    if (!message) return;
+    if (!message && shots.length === 0) return;
     setState("sending…");
+    // A pasted image is already a file in the project; the conversation is given
+    // its path, which is something it can actually open.
+    const attached = shots.map((s) => `\n${s.path}`).join("");
+    const said = (about ? `About ${about}: ${message}` : message) + attached;
     api("api/say", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ text: about ? `About ${about}: ${message}` : message }),
+      body: JSON.stringify({ text: said }),
     })
       .then(() => {
         setState("sent to the session");
         setText("");
+        setShots([]);
         setWatching(true);
       })
       .catch((error) => setState(`not sent: ${error.message}`));
+  };
+
+  const paste = (event) => {
+    const images = [...(event.clipboardData?.items ?? [])]
+      .filter((item) => item.type.startsWith("image/"));
+    if (images.length === 0) return;
+    event.preventDefault();
+    setState("keeping the image…");
+    images.forEach((item) => {
+      const file = item.getAsFile();
+      if (!file) return;
+      fetch(base + "api/paste", {
+        method: "POST",
+        headers: { "Content-Type": file.type },
+        body: file,
+      })
+        .then((r) => r.json())
+        .then((kept) => {
+          setShots((now) => [...now, kept]);
+          setState("image kept; it goes with the message");
+        })
+        .catch((error) => setState(`image not kept: ${error.message}`));
+    });
   };
 
   // After saying something, follow the session for a while so the answer shows
@@ -357,11 +388,7 @@ function Ask({ about }) {
     const read = () => api("api/session").then((r) => setReply(r.text || "")).catch(() => {});
     read();
     const every = setInterval(read, 2500);
-    const until = setTimeout(() => setWatching(false), 5 * 60 * 1000);
-    return () => {
-      clearInterval(every);
-      clearTimeout(until);
-    };
+    return () => clearInterval(every);
   }, [watching]);
 
   return (
@@ -370,22 +397,45 @@ function Ask({ about }) {
       <textarea
         className="ask"
         value={text}
-        placeholder={`Tell the session what to change about ${about ?? "this"}. Ctrl+Enter sends.`}
+        placeholder={`Tell the session what to change about ${about ?? "this"}. Paste a screenshot if it helps. Ctrl+Enter sends.`}
         onChange={(e) => setText(e.target.value)}
+        onPaste={paste}
         onKeyDown={(e) => {
           if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) send();
         }}
       />
+      {shots.length > 0 && (
+        <div className="shots">
+          {shots.map((shot) => (
+            <span key={shot.url}>
+              <img src={base + shot.url} alt="pasted" />
+              <button className="quiet" onClick={() => setShots((now) => now.filter((s) => s !== shot))}>
+                remove
+              </button>
+            </span>
+          ))}
+        </div>
+      )}
       <div className="ask-bar">
-        <button className="send" onClick={send} disabled={!text.trim()}>Send to the session</button>
+        <button
+          className="send"
+          onClick={send}
+          disabled={!text.trim() && shots.length === 0}
+        >
+          Send to the session
+        </button>
         <span className={state.startsWith("not sent") ? "bad" : ""}>{state}</span>
-        {reply && (
-          <button className="quiet" onClick={() => setWatching((w) => !w)}>
-            {watching ? "stop following" : "follow again"}
-          </button>
-        )}
+        <button className="quiet" onClick={() => setWatching((w) => !w)}>
+          {watching ? "following the session" : "not following"}
+        </button>
       </div>
-      {reply && <pre className="reply">{reply.trimEnd().split("\n").slice(-24).join("\n")}</pre>}
+      {reply ? (
+        <pre className="reply">{reply.trimEnd().split("\n").slice(-24).join("\n")}</pre>
+      ) : (
+        <p className="hint">
+          {watching ? "Nothing in the session yet." : "Following is off."}
+        </p>
+      )}
     </section>
   );
 }
