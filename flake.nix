@@ -19,7 +19,7 @@
           pname = "proj";
           version = "0.1.0";
           src = ./.;
-          vendorHash = "sha256-sO3lGDqWSjc3TP5Aczd7GBtMnYueCSzR0lfvW2cTIOo=";
+          vendorHash = "sha256-XU6ieWcIYV7Ra20pIAv18w5Ksyy2SxOC/yLNxZcYKGU=";
           subPackages = [ "cmd/proj" ];
           postInstall = ''
             install -Dm0644 -t $out/share/proj shells/proj.zsh shells/proj.bash shells/proj.fish
