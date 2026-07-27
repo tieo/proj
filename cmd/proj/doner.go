@@ -63,12 +63,17 @@ var (
 	donerUninstallCmd = &cobra.Command{Use: "uninstall", Args: cobra.NoArgs, Short: "remove the doner Stop hook from Claude Code settings", RunE: func(*cobra.Command, []string) error { return donerInstall(false) }}
 	donerHookCmd      = &cobra.Command{Use: "doner-hook", Hidden: true, Args: cobra.NoArgs, Short: "Stop-hook handler (reads hook JSON on stdin)", RunE: runDonerHook}
 	donerToggleCmd    = &cobra.Command{
-		Use:   "toggle",
+		Use:   "toggle [on|off]",
 		Short: "turn doner on or off for the project in the current directory",
 		Long: `Add or remove the doner tag on the project the working directory belongs to.
 This is what the /doner slash command runs, so a session can put itself on the
-doner leash (or take itself off) without leaving the session.`,
-		Args: cobra.NoArgs,
+doner leash (or take itself off) without leaving the session.
+
+With no argument it flips the current state. "on" and "off" set it outright,
+which is what a caller wants when it knows the state it is after rather than
+the change: running it twice then leaves doner on rather than back where it
+started.`,
+		Args: cobra.MaximumNArgs(1),
 		RunE: runDonerToggle,
 	}
 )
@@ -91,12 +96,31 @@ func runDonerToggle(cmd *cobra.Command, args []string) error {
 	if name == "" {
 		return fmt.Errorf("cannot tell which project %s belongs to", wd)
 	}
+	// No argument flips; "on"/"off" set the state outright.
+	want, declared := false, false
+	if len(args) == 1 {
+		switch args[0] {
+		case "on":
+			want, declared = true, true
+		case "off":
+			want, declared = false, true
+		default:
+			return fmt.Errorf("expected on or off, got %q", args[0])
+		}
+	}
 	on := false
 	if err := mutateTags(name, func(current []string) []string {
 		for i, t := range current {
 			if t == DonerTag {
+				if declared && want {
+					on = true
+					return current // already on
+				}
 				return append(current[:i], current[i+1:]...)
 			}
+		}
+		if declared && !want {
+			return current // already off
 		}
 		on = true
 		return append(current, DonerTag)
@@ -311,19 +335,22 @@ func donerSettingsPath(cfg config.Config) string {
 	return filepath.Join(daemon.ClaudeRoot(cfg.Claude.Home), "settings.json")
 }
 
-// donerHookCommand is the command string Claude Code runs for the Stop hook. The
-// handler is always this proj binary; only how it is reached differs. Under WSL,
-// claude.exe runs hooks through Git Bash, which both needs wsl.exe to cross into
-// the distro and mangles Linux paths unless MSYS_NO_PATHCONV is set.
-func donerHookCommand() (string, error) {
+// donerHookCommand is the command string Claude Code runs for the Stop hook.
+func donerHookCommand() (string, error) { return donerInvocation("doner-hook") }
+
+// donerInvocation renders how Claude Code should reach a proj subcommand. The
+// binary is always this one; only the way there differs. Under WSL, claude.exe
+// runs hooks and slash commands through Git Bash, which both needs wsl.exe to
+// cross into the distro and mangles Linux paths unless MSYS_NO_PATHCONV is set.
+func donerInvocation(sub string) (string, error) {
 	exe, err := os.Executable()
 	if err != nil {
 		return "", err
 	}
 	if tmux.IsWSL() {
-		return "MSYS_NO_PATHCONV=1 wsl.exe " + exe + " doner-hook", nil
+		return "MSYS_NO_PATHCONV=1 wsl.exe " + exe + " " + sub, nil
 	}
-	return quoteIfSpace(exe) + " doner-hook", nil
+	return quoteIfSpace(exe) + " " + sub, nil
 }
 
 func quoteIfSpace(s string) string {
@@ -416,18 +443,24 @@ func donerInstall(install bool) error {
 	return nil
 }
 
-// donerSlashCommand is the /doner command body. It tells the session to run the
-// toggle rather than executing it inline, so it does not depend on a particular
-// Claude Code version's command-substitution syntax.
-const donerSlashCommand = `---
-description: Toggle doner for this project (keep working until you report done)
----
-Run ` + "`proj doner toggle`" + ` and report its output in one short line. Do nothing else.
-
-Doner is a Stop hook: while it is on, ending a turn is intercepted and you are
-told to keep going unless your last message says you are finished. Reply with
-exactly "Yes" when the work is genuinely complete.
-`
+// donerSlashCommandBody builds the /doner command. The toggle runs inline (the
+// leading "!"), so invoking it costs no tool call and the model is not asked to
+// relay output the user is already looking at. $ARGUMENTS passes "on"/"off"
+// through, leaving a bare /doner to flip.
+func donerSlashCommandBody() (string, error) {
+	run, err := donerInvocation("doner toggle")
+	if err != nil {
+		return "", err
+	}
+	return "---\n" +
+		"description: Turn doner on or off for this project (/doner, /doner on, /doner off)\n" +
+		"allowed-tools: Bash(" + run + ":*)\n" +
+		"---\n" +
+		"!`" + run + " $ARGUMENTS`\n\n" +
+		"The command above has already run and its output is shown to the user.\n" +
+		"Do not comment on it or repeat it. Carry on with whatever you were doing;\n" +
+		"if there was nothing, stop.\n", nil
+}
 
 // writeDonerSlashCommand installs or removes the /doner command in the commands
 // directory Claude Code reads (the Windows-side one under WSL, alongside
@@ -443,7 +476,11 @@ func writeDonerSlashCommand(cfg config.Config, install bool) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
 	}
-	return os.WriteFile(path, []byte(donerSlashCommand), 0o644)
+	body, err := donerSlashCommandBody()
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(path, []byte(body), 0o644)
 }
 
 func readSettings(path string) (map[string]any, error) {
