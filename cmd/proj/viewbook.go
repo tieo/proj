@@ -19,7 +19,7 @@ import (
 	"github.com/tieo/proj/internal/daemon"
 	"github.com/tieo/proj/internal/projects"
 	"github.com/tieo/proj/internal/tmux"
-	"github.com/tieo/proj/internal/viewbook"
+	"github.com/tieo/viewbook"
 )
 
 var (
