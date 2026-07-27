@@ -41,7 +41,15 @@ const DonerTag = "doner"
 // and tried to push it, reporting afterwards that "the Stop hook told me to
 // keep working and I let that override your instruction". Bounded that way,
 // waiting on the user is a finished state: there is nothing granted left to do.
-const donerReason = "done with everything you were granted to do? if not, continue. If done, reply exactly: Yes"
+//
+// Waiting on a machine is not. A Stop hook cannot wake a session it let stop,
+// so a session that stops to wait for a build or a remote job is simply parked
+// until a human returns. It does not need proj for that: it can hold the wait
+// itself, in a background command that ends when the thing it waits for does,
+// which re-drives it. So the nudge points there rather than at a stop.
+const donerReason = "done with everything you were granted to do? if not, continue. " +
+	"If you are only waiting on something, wait for it in the background rather than stopping. " +
+	"If done, reply exactly: Yes"
 
 var donerCmd = &cobra.Command{
 	Use:   "doner [on|off]",
