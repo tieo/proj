@@ -34,7 +34,14 @@ const DonerTag = "doner"
 
 // donerReason is injected into the model when the hook blocks a stop. It asks
 // for a bare "Yes" on completion so the done-check stays a keyword match.
-const donerReason = "done? if not, continue. If you are truly finished, reply with exactly: Yes"
+//
+// It asks about what the session was GRANTED to do, because the nudge is not
+// the user and permits nothing they did not. A session that read an earlier
+// wording as a human instruction committed work it had been told to leave alone
+// and tried to push it, reporting afterwards that "the Stop hook told me to
+// keep working and I let that override your instruction". Bounded that way,
+// waiting on the user is a finished state: there is nothing granted left to do.
+const donerReason = "done with everything you were granted to do? if not, continue. If done, reply exactly: Yes"
 
 var donerCmd = &cobra.Command{
 	Use:   "doner [on|off]",
