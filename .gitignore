@@ -6,3 +6,4 @@ coverage.out
 .vscode/
 result
 result-*
+internal/viewbook/web/node_modules/

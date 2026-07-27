@@ -1,0 +1,21 @@
+{
+  "title": "My app",
+  "subtitle": "the model",
+  "tables": [
+    {
+      "name": "markets",
+      "title": "Markets",
+      "source": "markets.json",
+      "rows": "markets",
+      "sortBy": "name",
+      "statement": "Where the rows come from and what each column means is declared here, not in the tool.",
+      "columns": [
+        { "field": "name", "title": "Market" },
+        { "field": "country", "title": "Country", "empty": "home" },
+        { "field": "paginates", "title": "Pages", "yes": "every page", "no": "first only" },
+        { "field": "nativeCriteria", "title": "Filters at the source" },
+        { "field": "soldListings", "title": "Sold" }
+      ]
+    }
+  ]
+}
