@@ -428,6 +428,12 @@ func composerHasDraft(escContent string) bool {
 	return true // no input line found: treat as unsafe
 }
 
+// rcRebindCommand is the slash command the watchdog types to rebind Remote
+// Control. Spelled in full because the input box fuzzy-matches what is typed
+// and Enter runs the highlighted entry: "/rc" also matches "deep-research", so
+// the alias could fire an unrelated command.
+const rcRebindCommand = "/remote-control"
+
 // rcNudgeCooldown bounds how often the watchdog re-sends /rc to one pane, so a
 // session that genuinely can't bind (or one mid-restart) isn't spammed.
 const rcNudgeCooldown = 5 * time.Minute
@@ -2704,13 +2710,21 @@ func Tick(cfg Config, state State, errorState ErrorState, managed ManagedState, 
 					slog.Info("remote-control dropped; composer busy, leaving for manual /rc", logArgs...)
 					rcNudgedAt[p.ID] = now
 				default:
-					// Type "/rc" and Enter as separate keystrokes with a settle gap
-					// between, so the slash command runs rather than merging with the
-					// autocomplete expansion. No leading Escape: at a live input box
-					// (zoneOk) Claude may be mid-generation, and Escape would interrupt
-					// the turn.
-					slog.Info("remote-control dropped; rebinding with /rc", logArgs...)
-					if err := tmux.SendLiteral(p.ID, "/rc"); err != nil {
+					// Type the command and Enter as separate keystrokes with a settle
+					// gap between, so the slash command runs rather than merging with
+					// the autocomplete expansion. No leading Escape: at a live input
+					// box (zoneOk) Claude may be mid-generation, and Escape would
+					// interrupt the turn.
+					//
+					// The full name, never the "/rc" alias: typing a slash command
+					// opens a fuzzy-matched menu and Enter takes whatever it has
+					// highlighted, and "rc" also matches "deep-research"
+					// (deep-`r`esear`c`h). Which entry wins depends on the menu's
+					// ranking, so on a session with the right commands installed the
+					// rebind fired /deep-research instead - repeatedly, since the
+					// watchdog retries. The full name has no such rival.
+					slog.Info("remote-control dropped; rebinding with /remote-control", logArgs...)
+					if err := tmux.SendLiteral(p.ID, rcRebindCommand); err != nil {
 						slog.Error("send /rc failed", "session", p.Session, "err", err)
 					}
 					time.Sleep(cfg.DismissGap)
