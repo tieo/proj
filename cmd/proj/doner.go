@@ -207,10 +207,9 @@ func donerProjects() []string {
 func runDonerHook(cmd *cobra.Command, args []string) error {
 	raw, _ := io.ReadAll(os.Stdin)
 	var in struct {
-		StopHookActive       bool             `json:"stop_hook_active"`
-		Cwd                  string           `json:"cwd"`
-		LastAssistantMessage string           `json:"last_assistant_message"`
-		BackgroundTasks      []backgroundTask `json:"background_tasks"`
+		StopHookActive       bool   `json:"stop_hook_active"`
+		Cwd                  string `json:"cwd"`
+		LastAssistantMessage string `json:"last_assistant_message"`
 	}
 	// A hook must never fail loudly: an unreadable payload just means "let it
 	// stop", never a blocked session or a visible error.
@@ -220,13 +219,12 @@ func runDonerHook(cmd *cobra.Command, args []string) error {
 	if in.StopHookActive {
 		return nil // loop guard: Claude Code already re-drove on our block
 	}
-	if hasRunningTask(in.BackgroundTasks) {
-		// A session waiting on a background shell has nothing to continue: the
-		// work it would resume is the shell's, and the shell finishes on its own
-		// schedule. Nudging here only spends a turn re-reporting the wait, which
-		// is how one session collected 18 nudges while blocked on an ssh loop.
-		return nil
-	}
+	// Background shells are deliberately NOT a reason to hold off. Holding off
+	// looks right - a session waiting on a shell has nothing to continue - but
+	// the shells that matter here are ssh wait loops that sit for hours, so it
+	// means doner never fires on exactly the long sessions it exists for. A
+	// session with real work left can do it while a shell runs; one that is only
+	// waiting says so and stops, which is what the nudge asks.
 	cfg, err := config.Load()
 	if err != nil || !cfg.Daemon.Doner.Active() {
 		return nil
@@ -258,27 +256,6 @@ func projectHasDonerTag(cwd string) bool {
 	}
 	for _, t := range reg.Tags(name) {
 		if t == DonerTag {
-			return true
-		}
-	}
-	return false
-}
-
-// backgroundTask is one entry of the hook payload's background_tasks: the
-// shells a session has left running.
-type backgroundTask struct {
-	Status string `json:"status"`
-}
-
-// hasRunningTask reports whether the session still has a background task in
-// flight. Anything not finished counts, since a task in any live state is one
-// the session is waiting on.
-func hasRunningTask(tasks []backgroundTask) bool {
-	for _, t := range tasks {
-		switch strings.ToLower(t.Status) {
-		case "completed", "failed", "killed", "cancelled", "canceled", "":
-			continue
-		default:
 			return true
 		}
 	}
