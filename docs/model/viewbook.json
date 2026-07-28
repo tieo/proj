@@ -1,0 +1,10 @@
+{
+  "title": "proj",
+  "subtitle": "the model",
+  "states": ["Empty", "Failed"],
+  "renders": {
+    "command": ["./make-renders.sh"],
+    "dir": "../..",
+    "statement": "Runs the real binary against a fabricated home (its own config, projects, daemon state, tmux and Claude history) and photographs what it draws: the output is replayed through a small terminal model into HTML, and headless Chromium takes the picture. Two shapes, two terminal themes, about a minute for sixty pictures. Nothing reads the machine's own sessions, so the same pictures come out anywhere."
+  }
+}

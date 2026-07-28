@@ -241,7 +241,7 @@ func runViewbook(cmd *cobra.Command, args []string) error {
 			return fmt.Errorf("read %s: %w", viewbookKey, err)
 		}
 	}
-	http := &http.Server{Handler: viewbook.Guard(key, handler), ReadHeaderTimeout: 10 * time.Second}
+	http := &http.Server{Handler: viewbook.GuardFrom(key, viewbookKey, handler), ReadHeaderTimeout: 10 * time.Second}
 	go func() {
 		if err := http.Serve(listener); err != nil {
 			fmt.Fprintln(os.Stderr, "viewbook:", err)

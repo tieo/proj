@@ -1,0 +1,405 @@
+{
+  "views": [
+    {
+      "uid": "VIEW-LIST",
+      "tag": "VIEW",
+      "title": "The fleet",
+      "statement": "Say which projects have a session alive, what each one is running, and how long since it did anything.",
+      "status": "Built",
+      "notes": "What `proj` prints with no argument, and the screen every other command is reached from.",
+      "relations": [],
+      "renders": [
+        {"file": "list-wide-dark.png", "label": "wide dark"},
+        {"file": "list-wide-light.png", "label": "wide light"},
+        {"file": "list-narrow-dark.png", "label": "narrow dark"},
+        {"file": "list-narrow-light.png", "label": "narrow light"}
+      ]
+    },
+    {
+      "uid": "VIEW-SESSIONS",
+      "tag": "VIEW",
+      "title": "Sessions",
+      "statement": "Show every Claude session on disk, newest first, and act on the one under the cursor.",
+      "status": "Built",
+      "notes": "`proj sessions`. Driven by key: enter resumes, a adopts into a project, f forks at a chosen message, s stops, r removes. Piped or redirected it prints the same table without the cursor.",
+      "relations": [],
+      "renders": [
+        {"file": "sessions-wide-dark.png", "label": "wide dark"},
+        {"file": "sessions-wide-light.png", "label": "wide light"},
+        {"file": "sessions-narrow-dark.png", "label": "narrow dark"},
+        {"file": "sessions-narrow-light.png", "label": "narrow light"}
+      ]
+    },
+    {
+      "uid": "VIEW-DONER",
+      "tag": "VIEW",
+      "title": "Doner",
+      "statement": "Say whether the backstop that keeps a session working is on, whether its hook is installed, and which projects carry the tag.",
+      "status": "Built",
+      "notes": "`proj doner`. The whole control surface is the doner tag; the Stop hook reads it live, so tagging a project is all there is to do.",
+      "relations": [],
+      "renders": [
+        {"file": "doner-wide-dark.png", "label": "wide dark"},
+        {"file": "doner-wide-light.png", "label": "wide light"},
+        {"file": "doner-narrow-dark.png", "label": "narrow dark"},
+        {"file": "doner-narrow-light.png", "label": "narrow light"}
+      ]
+    },
+    {
+      "uid": "VIEW-SWITCH",
+      "tag": "VIEW",
+      "title": "Switch preview",
+      "statement": "Show what moving a project to another coding tool would carry over, before anything is moved.",
+      "status": "Built",
+      "notes": "`proj switch <project> <tool> --dry-run`. The same extraction the real switch performs, printed instead of written.",
+      "relations": [],
+      "renders": [
+        {"file": "switch-wide-dark.png", "label": "wide dark"},
+        {"file": "switch-wide-light.png", "label": "wide light"},
+        {"file": "switch-narrow-dark.png", "label": "narrow dark"},
+        {"file": "switch-narrow-light.png", "label": "narrow light"}
+      ]
+    },
+    {
+      "uid": "VIEW-MODEL",
+      "tag": "VIEW",
+      "title": "Model",
+      "statement": "Set the model every new session starts with, and say which running sessions are still on the old one.",
+      "status": "Broken",
+      "notes": "`proj model <model>`. It writes Claude Code's own default rather than typing into panes, because driving /model past an autocomplete and a confirmation once left four sessions sitting on an unanswered picker.",
+      "relations": [],
+      "renders": [
+        {"file": "model-wide-dark.png", "label": "wide dark"},
+        {"file": "model-wide-light.png", "label": "wide light"},
+        {"file": "model-narrow-dark.png", "label": "narrow dark"},
+        {"file": "model-narrow-light.png", "label": "narrow light"}
+      ]
+    }
+  ],
+  "states": [
+    {
+      "uid": "STATE-LIST-EMPTY",
+      "tag": "STATE",
+      "title": "Empty",
+      "statement": "The base directory holds no projects. The screen is blank: no heading, no count, no word about where proj looked or how a project is made.",
+      "relations": [{"to": "VIEW-LIST", "role": "State of"}],
+      "renders": [
+        {"file": "list-empty-wide-dark.png", "label": "wide dark"},
+        {"file": "list-empty-wide-light.png", "label": "wide light"},
+        {"file": "list-empty-narrow-dark.png", "label": "narrow dark"},
+        {"file": "list-empty-narrow-light.png", "label": "narrow light"}
+      ]
+    },
+    {
+      "uid": "STATE-LIST-FAILED",
+      "tag": "STATE",
+      "title": "Failed",
+      "statement": "The config file does not parse. One error line names the file, the line and what was expected, and the command exits non-zero.",
+      "relations": [{"to": "VIEW-LIST", "role": "State of"}],
+      "renders": [
+        {"file": "list-failed-wide-dark.png", "label": "wide dark"},
+        {"file": "list-failed-wide-light.png", "label": "wide light"},
+        {"file": "list-failed-narrow-dark.png", "label": "narrow dark"},
+        {"file": "list-failed-narrow-light.png", "label": "narrow light"}
+      ]
+    },
+    {
+      "uid": "STATE-SESSIONS-EMPTY",
+      "tag": "STATE",
+      "title": "Empty",
+      "statement": "No Claude session exists on disk. One line says so; older sessions past the age cutoff are counted separately when there are any.",
+      "relations": [{"to": "VIEW-SESSIONS", "role": "State of"}],
+      "renders": [
+        {"file": "sessions-empty-wide-dark.png", "label": "wide dark"},
+        {"file": "sessions-empty-wide-light.png", "label": "wide light"},
+        {"file": "sessions-empty-narrow-dark.png", "label": "narrow dark"},
+        {"file": "sessions-empty-narrow-light.png", "label": "narrow light"}
+      ]
+    },
+    {
+      "uid": "STATE-SESSIONS-FAILED",
+      "tag": "STATE",
+      "title": "Failed",
+      "statement": "The config cannot be read, so the list never opens and the error stands in its place.",
+      "relations": [{"to": "VIEW-SESSIONS", "role": "State of"}],
+      "renders": [
+        {"file": "sessions-failed-wide-dark.png", "label": "wide dark"},
+        {"file": "sessions-failed-wide-light.png", "label": "wide light"},
+        {"file": "sessions-failed-narrow-dark.png", "label": "narrow dark"},
+        {"file": "sessions-failed-narrow-light.png", "label": "narrow light"}
+      ]
+    },
+    {
+      "uid": "STATE-DONER-EMPTY",
+      "tag": "STATE",
+      "title": "Empty",
+      "statement": "Nothing is tagged and the hook is not installed. The tag line says how to tag a project; the hook line reports the state without saying that `proj doner install` is what fixes it.",
+      "relations": [{"to": "VIEW-DONER", "role": "State of"}],
+      "renders": [
+        {"file": "doner-empty-wide-dark.png", "label": "wide dark"},
+        {"file": "doner-empty-wide-light.png", "label": "wide light"},
+        {"file": "doner-empty-narrow-dark.png", "label": "narrow dark"},
+        {"file": "doner-empty-narrow-light.png", "label": "narrow light"}
+      ]
+    },
+    {
+      "uid": "STATE-DONER-FAILED",
+      "tag": "STATE",
+      "title": "Failed",
+      "statement": "The config cannot be read, so the tags cannot be looked up and the error is all there is.",
+      "relations": [{"to": "VIEW-DONER", "role": "State of"}],
+      "renders": [
+        {"file": "doner-failed-wide-dark.png", "label": "wide dark"},
+        {"file": "doner-failed-wide-light.png", "label": "wide light"},
+        {"file": "doner-failed-narrow-dark.png", "label": "narrow dark"},
+        {"file": "doner-failed-narrow-light.png", "label": "narrow light"}
+      ]
+    },
+    {
+      "uid": "STATE-SWITCH-EMPTY",
+      "tag": "STATE",
+      "title": "Empty",
+      "statement": "The project has no history to carry. It says nought turns and then prints the takeover prompt anyway, conversation section and all, empty.",
+      "relations": [{"to": "VIEW-SWITCH", "role": "State of"}],
+      "renders": [
+        {"file": "switch-empty-wide-dark.png", "label": "wide dark"},
+        {"file": "switch-empty-wide-light.png", "label": "wide light"},
+        {"file": "switch-empty-narrow-dark.png", "label": "narrow dark"},
+        {"file": "switch-empty-narrow-light.png", "label": "narrow light"}
+      ]
+    },
+    {
+      "uid": "STATE-SWITCH-FAILED",
+      "tag": "STATE",
+      "title": "Failed",
+      "statement": "The target tool is not one proj knows. The error names the known tools and the config section that would add another.",
+      "relations": [{"to": "VIEW-SWITCH", "role": "State of"}],
+      "renders": [
+        {"file": "switch-failed-wide-dark.png", "label": "wide dark"},
+        {"file": "switch-failed-wide-light.png", "label": "wide light"},
+        {"file": "switch-failed-narrow-dark.png", "label": "narrow dark"},
+        {"file": "switch-failed-narrow-light.png", "label": "narrow light"}
+      ]
+    },
+    {
+      "uid": "STATE-MODEL-EMPTY",
+      "tag": "STATE",
+      "title": "Empty",
+      "statement": "There is no project to affect. The line is the same one a full fleet gets, so setting a model on an empty machine reads as success.",
+      "relations": [{"to": "VIEW-MODEL", "role": "State of"}],
+      "renders": [
+        {"file": "model-empty-wide-dark.png", "label": "wide dark"},
+        {"file": "model-empty-wide-light.png", "label": "wide light"},
+        {"file": "model-empty-narrow-dark.png", "label": "narrow dark"},
+        {"file": "model-empty-narrow-light.png", "label": "narrow light"}
+      ]
+    },
+    {
+      "uid": "STATE-MODEL-FAILED",
+      "tag": "STATE",
+      "title": "Failed",
+      "statement": "The config cannot be read, so the default is not written and nothing changes.",
+      "relations": [{"to": "VIEW-MODEL", "role": "State of"}],
+      "renders": [
+        {"file": "model-failed-wide-dark.png", "label": "wide dark"},
+        {"file": "model-failed-wide-light.png", "label": "wide light"},
+        {"file": "model-failed-narrow-dark.png", "label": "narrow dark"},
+        {"file": "model-failed-narrow-light.png", "label": "narrow light"}
+      ]
+    }
+  ],
+  "requirements": [
+    {
+      "uid": "REQ-LIST-ALIVE",
+      "tag": "REQUIREMENT",
+      "tier": "1 canvas",
+      "title": "Say which sessions are alive",
+      "statement": "A filled dot for a live session, a hollow one for a project without, a pin for one the daemon always recreates.",
+      "status": "Built",
+      "relations": [{"to": "VIEW-LIST", "role": "Lives in"}, {"to": "STORY-FLEET", "role": "Fulfils"}]
+    },
+    {
+      "uid": "REQ-LIST-MODEL",
+      "tag": "REQUIREMENT",
+      "tier": "1 canvas",
+      "title": "Say what each project runs",
+      "statement": "The tool and the model a project is configured to run, so a project whose settings moved to a newer model does not keep showing the old one until it answers again.",
+      "status": "Built",
+      "relations": [{"to": "VIEW-LIST", "role": "Lives in"}, {"to": "STORY-MODEL", "role": "Fulfils"}]
+    },
+    {
+      "uid": "REQ-LIST-AGE",
+      "tag": "REQUIREMENT",
+      "tier": "1 canvas",
+      "title": "Say how long since each project spoke",
+      "statement": "One relative age per row, from the session when there is one and the directory when there is not, and older-than-the-cutoff projects folded into a count.",
+      "status": "Broken",
+      "notes": "The fold-away line reads \"+ 1 older projects hidden\" when one project is hidden.",
+      "relations": [{"to": "VIEW-LIST", "role": "Lives in"}, {"to": "STORY-FLEET", "role": "Fulfils"}]
+    },
+    {
+      "uid": "REQ-LIST-EMPTY",
+      "tag": "REQUIREMENT",
+      "tier": "1 canvas",
+      "title": "Say something when there is nothing",
+      "statement": "An empty base directory should say where proj looked and how a project is made, rather than printing nothing and exiting zero, which is indistinguishable from a broken install.",
+      "status": "Missing",
+      "relations": [{"to": "VIEW-LIST", "role": "Lives in"}, {"to": "STORY-FLEET", "role": "Fulfils"}]
+    },
+    {
+      "uid": "REQ-SESSIONS-TABLE",
+      "tag": "REQUIREMENT",
+      "tier": "1 canvas",
+      "title": "Show what each session was about",
+      "statement": "Id, age, message count, project, the last thing asked and the last thing answered, so a session is recognised without opening it.",
+      "status": "Built",
+      "relations": [{"to": "VIEW-SESSIONS", "role": "Lives in"}, {"to": "STORY-RESUME", "role": "Fulfils"}]
+    },
+    {
+      "uid": "REQ-SESSIONS-ACT",
+      "tag": "REQUIREMENT",
+      "tier": "1 canvas",
+      "title": "Act on the session under the cursor",
+      "statement": "Resume it, adopt it into a project, fork it at a chosen message, stop it, or remove it, with the keys named on screen.",
+      "status": "Built",
+      "relations": [{"to": "VIEW-SESSIONS", "role": "Lives in"}, {"to": "STORY-RESUME", "role": "Fulfils"}]
+    },
+    {
+      "uid": "REQ-SESSIONS-PIPED",
+      "tag": "REQUIREMENT",
+      "tier": "2 one key away",
+      "title": "Stay usable without a terminal",
+      "statement": "Piped or redirected, the same table prints without the cursor and without waiting for a key.",
+      "status": "Built",
+      "relations": [{"to": "VIEW-SESSIONS", "role": "Lives in"}]
+    },
+    {
+      "uid": "REQ-DONER-STATE",
+      "tag": "REQUIREMENT",
+      "tier": "1 canvas",
+      "title": "Say whether the backstop can act",
+      "statement": "Whether doner is on, whether the Stop hook is installed in Claude Code's settings, and which projects carry the tag.",
+      "status": "Built",
+      "relations": [{"to": "VIEW-DONER", "role": "Lives in"}, {"to": "STORY-UNATTENDED", "role": "Fulfils"}]
+    },
+    {
+      "uid": "REQ-DONER-FIX",
+      "tag": "REQUIREMENT",
+      "tier": "1 canvas",
+      "title": "Say how to fix a missing hook",
+      "statement": "\"hook not installed\" is a dead end: it should name `proj doner install` the way the tag line names `proj tag add`, since the tag alone does nothing without the hook.",
+      "status": "Missing",
+      "relations": [{"to": "VIEW-DONER", "role": "Lives in"}, {"to": "STORY-UNATTENDED", "role": "Fulfils"}]
+    },
+    {
+      "uid": "REQ-SWITCH-COUNT",
+      "tag": "REQUIREMENT",
+      "tier": "1 canvas",
+      "title": "Say how much would survive the move",
+      "statement": "How many turns were extracted and how many would reach the new tool, before anything is written or any session is touched.",
+      "status": "Built",
+      "relations": [{"to": "VIEW-SWITCH", "role": "Lives in"}, {"to": "STORY-TOOL-MOVE", "role": "Fulfils"}]
+    },
+    {
+      "uid": "REQ-SWITCH-PROMPT",
+      "tag": "REQUIREMENT",
+      "tier": "1 canvas",
+      "title": "Show the handoff as the new tool will read it",
+      "statement": "The takeover prompt in full, so a bad translation is visible before it becomes someone's first message.",
+      "status": "Built",
+      "relations": [{"to": "VIEW-SWITCH", "role": "Lives in"}, {"to": "STORY-TOOL-MOVE", "role": "Fulfils"}]
+    },
+    {
+      "uid": "REQ-SWITCH-NOTHING",
+      "tag": "REQUIREMENT",
+      "tier": "2 one key away",
+      "title": "Say when there is nothing to carry",
+      "statement": "A project with no history should stop at \"nothing to carry\" instead of printing a takeover prompt whose conversation section is empty.",
+      "status": "Broken",
+      "relations": [{"to": "VIEW-SWITCH", "role": "Lives in"}, {"to": "STORY-TOOL-MOVE", "role": "Fulfils"}]
+    },
+    {
+      "uid": "REQ-MODEL-SET",
+      "tag": "REQUIREMENT",
+      "tier": "1 canvas",
+      "title": "Set the model new sessions start with",
+      "statement": "One command writes Claude Code's own default, so every session started afterwards runs it, and no running session is typed into.",
+      "status": "Built",
+      "relations": [{"to": "VIEW-MODEL", "role": "Lives in"}, {"to": "STORY-MODEL", "role": "Fulfils"}]
+    },
+    {
+      "uid": "REQ-MODEL-LEFTBEHIND",
+      "tag": "REQUIREMENT",
+      "tier": "1 canvas",
+      "title": "Name the sessions left behind",
+      "statement": "A running session keeps the model it started with, so the command should name the ones that differ and how to restart them. It prints one line and names none.",
+      "status": "Missing",
+      "relations": [{"to": "VIEW-MODEL", "role": "Lives in"}, {"to": "STORY-MODEL", "role": "Fulfils"}]
+    },
+    {
+      "uid": "REQ-MODEL-SCOPE",
+      "tag": "REQUIREMENT",
+      "tier": "2 one key away",
+      "title": "Say what was actually affected",
+      "statement": "\"model: opus (new sessions)\" reads the same on a machine with nine projects and on one with none, so nothing distinguishes a fleet-wide change from a no-op.",
+      "status": "Broken",
+      "relations": [{"to": "VIEW-MODEL", "role": "Lives in"}, {"to": "STORY-MODEL", "role": "Fulfils"}]
+    },
+    {
+      "uid": "REQ-FAIL-CONFIG",
+      "tag": "REQUIREMENT",
+      "tier": "1 canvas",
+      "title": "Fail on the config in one line",
+      "statement": "Every command reads the same config, and when it does not parse each names the file, the line and what was expected, then exits non-zero without a usage dump.",
+      "status": "Built",
+      "relations": [
+        {"to": "VIEW-LIST", "role": "Lives in"},
+        {"to": "VIEW-SESSIONS", "role": "Lives in"},
+        {"to": "VIEW-DONER", "role": "Lives in"},
+        {"to": "VIEW-MODEL", "role": "Lives in"}
+      ]
+    }
+  ],
+  "stories": [
+    {
+      "uid": "STORY-FLEET",
+      "tag": "STORY",
+      "title": "See the whole fleet at once",
+      "statement": "I keep a dozen projects going at the same time. I want one screen that says which have a session alive, what each is running and which have gone quiet, without opening any of them.",
+      "status": "Served",
+      "relations": [{"to": "VIEW-LIST", "role": "Served by"}]
+    },
+    {
+      "uid": "STORY-RESUME",
+      "tag": "STORY",
+      "title": "Pick up yesterday's conversation",
+      "statement": "I want to find the session I was in yesterday by what it was about rather than by its id, and carry on from it, or branch it into a project of its own.",
+      "status": "Served",
+      "relations": [{"to": "VIEW-SESSIONS", "role": "Served by"}]
+    },
+    {
+      "uid": "STORY-UNATTENDED",
+      "tag": "STORY",
+      "title": "Leave a session working",
+      "statement": "I want a session to keep going while I am away instead of stopping at the first natural pause, and I want to see at a glance which projects that is switched on for.",
+      "status": "Served",
+      "relations": [{"to": "VIEW-DONER", "role": "Served by"}]
+    },
+    {
+      "uid": "STORY-TOOL-MOVE",
+      "tag": "STORY",
+      "title": "Move a project to another tool",
+      "statement": "When one coding tool is going badly I want to move the project to another one and keep the conversation, and I want to see what would survive the move before it happens.",
+      "status": "Served",
+      "relations": [{"to": "VIEW-SWITCH", "role": "Served by"}]
+    },
+    {
+      "uid": "STORY-MODEL",
+      "tag": "STORY",
+      "title": "Put the fleet on a new model",
+      "statement": "When a new model lands I want every project to start using it, and to be told which running sessions are still on the old one so I can restart those and no others.",
+      "status": "Partly served",
+      "relations": [{"to": "VIEW-MODEL", "role": "Served by"}, {"to": "VIEW-LIST", "role": "Served by"}]
+    }
+  ]
+}

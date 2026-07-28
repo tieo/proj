@@ -27,8 +27,8 @@ type shape struct {
 }
 
 var shapes = []shape{
-	{"wide", 104, 26},
-	{"narrow", 52, 34},
+	{"wide", 120, 28},
+	{"narrow", 56, 34},
 }
 
 // A theme is the terminal's own palette, which proj inherits: it never sets a
@@ -141,13 +141,23 @@ func run() error {
 				return fmt.Errorf("scene %s (%s): %w", sc.file, sh.name, err)
 			}
 			screen := replay(output, sh.cols)
+			// PROJ_RENDER_TEXT prints what each scene draws instead of
+			// photographing it, which is how a scene is checked without
+			// opening sixty pictures.
+			if os.Getenv("PROJ_RENDER_TEXT") != "" {
+				if sh.name != shapes[0].name {
+					continue
+				}
+				fmt.Printf("--- %s ---\n%s\n", sc.file, plain(screen))
+				continue
+			}
 			for _, th := range themes {
 				page := filepath.Join(work, fmt.Sprintf("%s-%s-%s.html", sc.file, sh.name, th.name))
 				if err := os.WriteFile(page, []byte(document(screen, sh, th)), 0o644); err != nil {
 					return err
 				}
 				png := filepath.Join(outDir, fmt.Sprintf("%s-%s-%s.png", sc.file, sh.name, th.name))
-				if err := shoot(page, png, sh); err != nil {
+				if err := shoot(page, png, sh, len(screen)); err != nil {
 					return fmt.Errorf("shoot %s: %w", filepath.Base(png), err)
 				}
 				written++
@@ -234,12 +244,19 @@ pre{margin:0;font-family:"JetBrains Mono","DejaVu Sans Mono",monospace;font-size
 	return b.String()
 }
 
-func shoot(page, png string, sh shape) error {
+func shoot(page, png string, sh shape, rows int) error {
 	// 8.42px per column and 20.3px per row is the JetBrains Mono cell at 14px,
-	// plus the page padding; the window is sized from the shape so the picture
-	// is the terminal and nothing else.
+	// plus the page padding. The width is the shape's, so a narrow picture is
+	// narrow even when the output is short; the height follows the output, so
+	// a short screen is not mostly empty terminal.
+	if rows < 6 {
+		rows = 6
+	}
+	if rows > sh.rows {
+		rows = sh.rows
+	}
 	width := int(float64(sh.cols)*8.42) + 44
-	height := int(float64(sh.rows)*20.3) + 40
+	height := int(float64(rows)*20.3) + 40
 	cmd := exec.Command("chromium",
 		"--headless=new",
 		"--disable-gpu",

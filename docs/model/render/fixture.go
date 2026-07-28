@@ -69,6 +69,15 @@ var fleet = []fixtureProject{
 	{name: "kicad-parts", ageDays: 40},
 }
 
+// sessionIDs give each fixture project's transcript the shape of a real
+// Claude session id, since the sessions view shows the id.
+var sessionIDs = map[string]string{
+	"Arbay": "6f1c2c4a",
+	"proj":  "b28d0e71",
+	"tldr":  "3a7c91d0",
+	"nasx":  "e41b58aa",
+}
+
 func buildFixture(kind, home string) error {
 	projectsDir := filepath.Join(home, "projects")
 	for _, dir := range []string{
@@ -132,10 +141,6 @@ func buildFixture(kind, home string) error {
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			return err
 		}
-		stamp := time.Now().Add(-time.Duration(p.ageDays * float64(24*time.Hour)))
-		if err := os.Chtimes(dir, stamp, stamp); err != nil {
-			return err
-		}
 		meta := map[string]any{}
 		if len(p.tags) > 0 {
 			meta["tags"] = p.tags
@@ -177,7 +182,18 @@ func buildFixture(kind, home string) error {
 			return err
 		}
 	}
-	return writeTmuxState(home, projects, projectsDir)
+	if err := writeTmuxState(home, projects, projectsDir); err != nil {
+		return err
+	}
+	// A project's age is its directory's mtime, so the ages are stamped after
+	// everything inside the directories has been written.
+	for _, p := range projects {
+		stamp := time.Now().Add(-time.Duration(p.ageDays * float64(24*time.Hour)))
+		if err := os.Chtimes(filepath.Join(projectsDir, p.name), stamp, stamp); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func withoutTag(projects []fixtureProject, tag string) []fixtureProject {
@@ -278,7 +294,11 @@ func writeTranscripts(home, dir string, p fixtureProject) error {
 				},
 			}),
 		}
-		path := filepath.Join(root, fmt.Sprintf("session-%s-%d.jsonl", strings.ToLower(p.name), i))
+		id := sessionIDs[p.name]
+		if id == "" {
+			id = "0a1b2c3d"
+		}
+		path := filepath.Join(root, fmt.Sprintf("%s-4f%02d-a1b2-9c3d-7e5f10a2b3c4.jsonl", id, i))
 		if err := os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0o644); err != nil {
 			return err
 		}

@@ -267,3 +267,16 @@ func atoiDefault(params string, fallback int) int {
 	}
 	return n
 }
+
+// plain renders a screen as the text it shows, for checking a scene without
+// looking at its picture.
+func plain(screen []line) string {
+	var b strings.Builder
+	for _, l := range screen {
+		for _, c := range l.cells {
+			b.WriteRune(c.char)
+		}
+		b.WriteString("\n")
+	}
+	return b.String()
+}
