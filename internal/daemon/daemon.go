@@ -26,6 +26,7 @@ import (
 
 	"github.com/tieo/proj/internal/config"
 	"github.com/tieo/proj/internal/projects"
+	"github.com/tieo/proj/internal/projstate"
 	"github.com/tieo/proj/internal/shellout"
 	"github.com/tieo/proj/internal/tmux"
 )
@@ -82,14 +83,7 @@ func DefaultConfig() Config {
 	}
 }
 
-func defaultStatePath() string {
-	base := os.Getenv("XDG_STATE_HOME")
-	if base == "" {
-		home, _ := os.UserHomeDir()
-		base = filepath.Join(home, ".local", "state")
-	}
-	return filepath.Join(base, "proj", "daemon.json")
-}
+func defaultStatePath() string { return projstate.Dir("daemon.json") }
 
 // recentWindow is a loose first filter on where in the pane capture the
 // match must appear. The toolPrefix check below is the actual structural

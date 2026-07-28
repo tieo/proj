@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/tieo/proj/internal/projstate"
 	"github.com/tieo/proj/internal/tmux"
 )
 
@@ -186,7 +187,7 @@ func deliver(target, text string) error {
 // writeHandoff stores a prompt too long to type and returns its path. The name
 // carries the session so a stale file says who it was meant for.
 func writeHandoff(target, text string) (string, error) {
-	dir := filepath.Join(stateHome(), "proj", "sends")
+	dir := projstate.Dir("sends")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return "", err
 	}
@@ -201,12 +202,4 @@ func writeHandoff(target, text string) (string, error) {
 		return "", err
 	}
 	return path, nil
-}
-
-func stateHome() string {
-	if base := os.Getenv("XDG_STATE_HOME"); base != "" {
-		return base
-	}
-	home, _ := os.UserHomeDir()
-	return filepath.Join(home, ".local", "state")
 }

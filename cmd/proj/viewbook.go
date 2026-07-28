@@ -61,14 +61,7 @@ func init() {
 
 // defaultKeyPath is where the key that opens the books is kept, next to the
 // rest of proj's state and readable by its owner alone.
-func defaultKeyPath() string {
-	base := os.Getenv("XDG_STATE_HOME")
-	if base == "" {
-		home, _ := os.UserHomeDir()
-		base = filepath.Join(home, ".local", "state")
-	}
-	return filepath.Join(base, "proj", "viewbook.key")
-}
+func defaultKeyPath() string { return projStateDir("viewbook.key") }
 
 // sayInto delivers a message to the project's session, which is where its
 // conversation happens. A project with no session running keeps its change in
