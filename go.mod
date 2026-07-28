@@ -6,7 +6,7 @@ require (
 	github.com/BurntSushi/toml v1.4.0
 	github.com/mattn/go-runewidth v0.0.24
 	github.com/spf13/cobra v1.8.1
-	github.com/tieo/viewbook v0.0.0-20260728145805-b0345fa2e053
+	github.com/tieo/viewbook v0.0.0-20260728150254-b2ecb1dc01b3
 )
 
 require (
