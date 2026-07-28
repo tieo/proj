@@ -42,14 +42,21 @@ const DonerTag = "doner"
 // keep working and I let that override your instruction". Bounded that way,
 // waiting on the user is a finished state: there is nothing granted left to do.
 //
-// Waiting on a machine is not. A Stop hook cannot wake a session it let stop,
-// so a session that stops to wait for a build or a remote job is simply parked
-// until a human returns. It does not need proj for that: it can hold the wait
-// itself, in a background command that ends when the thing it waits for does,
-// which re-drives it. So the nudge points there rather than at a stop.
+// "Yes" is the only way past the hook, so it has to be an honest answer for
+// every reason a session may legitimately stop, not just completion. When it
+// meant "finished", a session out of context and facing a multi-hour build it
+// should not start had no truthful exit: it wrote a full account of why it was
+// stopping, was nudged again, and then answered "Yes" to the same question it
+// had just answered "no" to. Naming the real reasons, and asking for the one
+// that applies, makes the honest answer the available one.
+//
+// It rules out the plausible non-reasons by name, because those are what a
+// session reaches for: finishing a large piece of work, or judging that it has
+// reached "a good place to end", are the states doner exists to push through.
 const donerReason = "done with everything you were granted to do? if not, continue. " +
-	"If you are only waiting on something, wait for it in the background rather than stopping. " +
-	"If done, reply exactly: Yes"
+	"If you must stop: finished, blocked, out of context, or it needs the user " +
+	"(being done with a big chunk or arriving at a 'good place to end' do NOT count!), " +
+	"say why in one line, then reply exactly: Yes"
 
 var donerCmd = &cobra.Command{
 	Use:   "doner [on|off]",
