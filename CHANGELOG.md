@@ -10,6 +10,11 @@
   answers again.
 
 ### Added
+- `proj say --now` interrupts whatever a session is doing and delivers the
+  message as the next turn. Without it, a session busy with a foreground
+  command is offered the TUI's own way out first (ctrl+b ctrl+b), so the
+  message is read at once and the command keeps running; a session busy with
+  anything else keeps the message queued until its turn ends.
 - `proj switch <project> <tool>` carries the conversation into the new
   tool. Claude receives a native session; Codex receives a native thread
   built through its app-server, and a Claude source goes through Codex's

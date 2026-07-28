@@ -29,14 +29,23 @@ pipes into it:
     echo "the price band should be a filter" | proj say Arbay
     proj say Arbay "restart the crawler and report"
 
-The project must have a session running with a coding tool at its input box;
-without one there is nothing to say it to, and the command says so rather than
-dropping the message.`,
+The project must have a session running with a coding tool. A session busy with
+a foreground command is offered the TUI's own way out first ("ctrl+b ctrl+b to
+run in background"), so the message is read now and the command keeps running.
+A session busy with anything else - thinking, a tool call, a reply still
+arriving - keeps the message waiting until the turn ends, unless --now, which
+stops the turn where it stands and loses that work.
+
+Without a session, or at a picker or a prompt where keystrokes would choose
+something nobody chose, the command says so rather than dropping the message.`,
 	Args: cobra.MinimumNArgs(1),
 	RunE: runSay,
 }
 
+var sayNow bool
+
 func init() {
+	sayCmd.Flags().BoolVar(&sayNow, "now", false, "interrupt whatever the session is doing, losing that turn's work")
 	rootCmd.AddCommand(sayCmd)
 }
 
@@ -67,7 +76,11 @@ func runSay(cmd *cobra.Command, args []string) error {
 	if pane == "" {
 		return fmt.Errorf("%s has no running session; start one with `proj %s` first", p.Name, p.Name)
 	}
-	if err := daemon.SendPrompt(daemon.DefaultConfig(), pane, text); err != nil {
+	send := daemon.SendPrompt
+	if sayNow {
+		send = daemon.SendPromptNow
+	}
+	if err := send(daemon.DefaultConfig(), pane, text); err != nil {
 		return err
 	}
 	fmt.Printf("said to %s (%d chars)\n", p.Name, len([]rune(text)))

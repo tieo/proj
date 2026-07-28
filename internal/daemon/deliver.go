@@ -147,6 +147,51 @@ func typeVerifiedVia(io paneIO, target, text string) (bool, error) {
 // the input box: press it and the command keeps running out of the way.
 var backgroundHint = regexp.MustCompile(`ctrl\+b[^\n]*?to run in background`)
 
+// busyHint marks a turn in flight: the interrupt hint, or the spinner's running
+// timer ("Perusing… (5s · thinking)"). The hint alone is not enough, since the
+// TUI shows it only some of the time, and the "… (" signature belongs to a
+// spinner that is still counting - a finished status ("Cogitated for 2m") has
+// no ellipsis. Nothing is interrupted unless one of them is on screen.
+var busyHint = regexp.MustCompile(`(?i)esc to interrupt|…[ \t]*\(`)
+
+// interrupt stops a turn so the message that follows is read now. It is the
+// expensive move: the turn's work is dropped where it stands, so it is only
+// made when the session says it is busy and the gentler offer does not apply.
+func interrupt(target string) bool {
+	screen := tmux.CapturePane(target, 0)
+	if backgroundHint.MatchString(screen) {
+		// A foreground command has an offer of its own that costs nothing.
+		return false
+	}
+	if !busyHint.MatchString(screen) {
+		return false
+	}
+	if err := tmux.SendKey(target, "Escape"); err != nil {
+		return false
+	}
+	// An interrupted turn puts its own line on screen ("Interrupted · What
+	// should Claude do instead?") and repaints around it. Typing into that
+	// repaint is what a fixed pause gets wrong, so the box is waited for.
+	return waitForComposer(target, 5*time.Second)
+}
+
+// waitForComposer waits until the input box is on screen and has stopped being
+// repainted, and reports whether it got there.
+func waitForComposer(target string, timeout time.Duration) bool {
+	deadline := time.Now().Add(timeout)
+	for {
+		if _, _, present := ComposerBox(tmux.CapturePane(target, 0)); present {
+			time.Sleep(composerSettle)
+			_, _, present = ComposerBox(tmux.CapturePane(target, 0))
+			return present
+		}
+		if time.Now().After(deadline) {
+			return false
+		}
+		time.Sleep(150 * time.Millisecond)
+	}
+}
+
 // toBackground takes the offer. Interrupting would throw away work the session
 // is in the middle of; waiting would drop the message. Backgrounding is the one
 // move that costs nothing, and the TUI only offers it when it applies.
@@ -165,12 +210,30 @@ func toBackground(target string) bool {
 }
 
 func SendPrompt(cfg Config, target, text string) error {
+	return sendPrompt(cfg, target, text, false)
+}
+
+// SendPromptNow delivers text into a session that is busy with something the
+// TUI does not offer to put aside: a turn being thought out, a tool call, a
+// stream still arriving. It stops that first, so the message is read now rather
+// than whenever the turn ends. What the session was doing is lost, which is the
+// difference between this and SendPrompt, and why it is asked for by name.
+func SendPromptNow(cfg Config, target, text string) error {
+	return sendPrompt(cfg, target, text, true)
+}
+
+func sendPrompt(cfg Config, target, text string, now bool) error {
 	if strings.TrimSpace(text) == "" {
 		// An empty send used to clear the target's box, submit nothing, and -
 		// once the box would not verify - hand over a file holding a single
 		// newline. Whatever produced the empty text is the caller's bug, and it
 		// must not reach the target as a task.
 		return fmt.Errorf("refusing to send an empty prompt to %s", target)
+	}
+	if now {
+		// Asked for by name: whatever the session is doing yields, including
+		// the work no offer covers.
+		interrupt(target)
 	}
 	if _, _, present := ComposerBox(tmux.CapturePane(target, 0)); !present {
 		// A command running in the foreground hides the box behind it. The TUI

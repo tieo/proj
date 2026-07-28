@@ -139,3 +139,27 @@ func TestBackgroundHint(t *testing.T) {
 		}
 	}
 }
+
+func TestBusyHint(t *testing.T) {
+	busy := []string{
+		"✢ Sock-hopping… (3m 25s · ↓ 3.6k tokens)",
+		"✢ Perusing… (5s · thinking)",
+		"  Running 1 shell command · 1m 58s… (esc to interrupt)",
+	}
+	for _, pane := range busy {
+		if !busyHint.MatchString(pane) {
+			t.Errorf("busy pane not recognised: %q", pane)
+		}
+	}
+	idle := []string{
+		"❯ ",
+		"  ⏵⏵ bypass permissions on (shift+tab to cycle)",
+		"press esc to close",
+		"  ⎿  Cogitated for 2m 27s",
+	}
+	for _, pane := range idle {
+		if busyHint.MatchString(pane) {
+			t.Errorf("idle pane read as busy: %q", pane)
+		}
+	}
+}
