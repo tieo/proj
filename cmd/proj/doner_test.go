@@ -105,3 +105,19 @@ func writeMust(t *testing.T, path string, v map[string]any) {
 		t.Fatal(err)
 	}
 }
+
+// The nudge asks for a reason line and then the word, so the last line answers.
+func TestIsDoneReadsTheLastLine(t *testing.T) {
+	if !isDone("Finished: everything is committed and pushed.\nYes") {
+		t.Error("a reason line followed by Yes should read as done")
+	}
+	if !isDone("Blocked: needs your approval.\n\n  Yes  ") {
+		t.Error("trailing blank lines and padding should not hide the answer")
+	}
+	if isDone("Yes, I will do that next.\nStill working on the parser") {
+		t.Error("a Yes on an earlier line must not end the nudge")
+	}
+	if isDone("Not done yet") {
+		t.Error("a status line alone is not done")
+	}
+}

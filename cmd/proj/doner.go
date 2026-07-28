@@ -303,22 +303,37 @@ var doneReplies = map[string]bool{
 // message match against a small affirmative set, never a substring test: a long
 // message that merely ends in "yes" is work, not a completion report, so the
 // text is reduced to lowercase letters and single spaces and matched whole.
+// The nudge asks for a reason line and then the word, so the LAST line is what
+// answers it: a whole-message match would reject every reply that obeyed the
+// instruction and nudge again, which is the loop it is meant to end.
 func isDone(text string) bool {
+	lines := strings.Split(strings.TrimSpace(text), "\n")
+	for i := len(lines) - 1; i >= 0; i-- {
+		if line := letterWords(lines[i]); line != "" {
+			return doneReplies[line]
+		}
+	}
+	return false
+}
+
+// letterWords reduces a line to lowercase letters and single spaces, so
+// punctuation and markdown around the word do not hide it.
+func letterWords(s string) string {
 	var b strings.Builder
 	prevSpace := false
-	for _, r := range strings.ToLower(text) {
+	for _, r := range strings.ToLower(s) {
 		switch {
 		case r >= 'a' && r <= 'z':
 			b.WriteRune(r)
 			prevSpace = false
-		case r == ' ' || r == '\t' || r == '\n' || r == '\r':
+		case r == ' ' || r == '\t' || r == '\r':
 			if !prevSpace && b.Len() > 0 {
 				b.WriteByte(' ')
 			}
 			prevSpace = true
 		}
 	}
-	return doneReplies[strings.TrimSpace(b.String())]
+	return strings.TrimSpace(b.String())
 }
 
 // ----- hook installation -----
