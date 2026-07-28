@@ -16,14 +16,15 @@ import (
 // so no picture can leak a session or change with the day's work.
 
 type fixtureProject struct {
-	name     string
-	tags     []string
-	tool     string
-	model    string // written as that project's Claude settings model
-	ageDays  float64
-	alive    bool
-	pinned   bool
-	sessions []fixtureSession
+	name      string
+	tags      []string
+	tool      string
+	model     string // written as that project's Claude settings model
+	turnModel string // model recorded on its last turn, when it differs
+	ageDays   float64
+	alive     bool
+	pinned    bool
+	sessions  []fixtureSession
 }
 
 type fixtureSession struct {
@@ -34,7 +35,7 @@ type fixtureSession struct {
 }
 
 var fleet = []fixtureProject{
-	{name: "Arbay", tags: []string{"kotlin", "doner"}, ageDays: 0.02, alive: true,
+	{name: "Arbay", tags: []string{"kotlin", "doner"}, ageDays: 0.02, alive: true, turnModel: "claude-sonnet-5",
 		sessions: []fixtureSession{{
 			title:    "Arbay @book [kotlin,doner]",
 			prompt:   "the price band should filter the list, not just colour it",
@@ -222,13 +223,23 @@ func sessionName(p fixtureProject) string {
 // have: a tmux holding the fixture's sessions, and an stty reporting the shape
 // the render is being taken in.
 func writeStubs(home string) error {
+	// display-message answers the one question proj asks of a pane it did not
+	// list: where that pane is. Without it a live session has no directory, and
+	// everything keyed on the directory (the model a session is running, above
+	// all) silently finds nothing.
 	tmux := `#!/bin/sh
 state="$HOME/.local/state/proj/tmux"
 case "$1" in
   list-sessions) cat "$state/sessions" 2>/dev/null ;;
   list-panes)    cat "$state/panes" 2>/dev/null ;;
   capture-pane)  ;;
-  display-message) ;;
+  display-message)
+    for arg in "$@"; do
+      case "$prev" in -t) pane="$arg" ;; esac
+      prev="$arg"
+    done
+    grep "^$pane	" "$state/paths" 2>/dev/null | cut -f2
+    ;;
   has-session)   exit 1 ;;
 esac
 exit 0
@@ -250,20 +261,24 @@ func writeTmuxState(home string, projects []fixtureProject, projectsDir string) 
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
-	var sessions, panes []string
+	var sessions, panes, paths []string
 	for i, p := range projects {
 		if !p.alive {
 			continue
 		}
 		name := sessionName(p)
+		projectDir := filepath.Join(projectsDir, p.name)
 		activity := time.Now().Add(-time.Duration(p.ageDays * float64(24*time.Hour))).Unix()
-		sessions = append(sessions, fmt.Sprintf("%s\t%s\t%d", name, filepath.Join(projectsDir, p.name), activity))
+		sessions = append(sessions, fmt.Sprintf("%s\t%s\t%d", name, projectDir, activity))
 		panes = append(panes, fmt.Sprintf("%s\t%%%d", name, i+1))
+		paths = append(paths, fmt.Sprintf("%%%d\t%s", i+1, projectDir))
 	}
-	if err := os.WriteFile(filepath.Join(dir, "sessions"), []byte(strings.Join(sessions, "\n")+"\n"), 0o644); err != nil {
-		return err
+	for file, lines := range map[string][]string{"sessions": sessions, "panes": panes, "paths": paths} {
+		if err := os.WriteFile(filepath.Join(dir, file), []byte(strings.Join(lines, "\n")+"\n"), 0o644); err != nil {
+			return err
+		}
 	}
-	return os.WriteFile(filepath.Join(dir, "panes"), []byte(strings.Join(panes, "\n")+"\n"), 0o644)
+	return nil
 }
 
 // writeTranscripts lays down the Claude session files a project's history is
@@ -289,7 +304,7 @@ func writeTranscripts(home, dir string, p fixtureProject) error {
 			jsonLine(map[string]any{
 				"type": "assistant", "cwd": dir, "timestamp": iso,
 				"message": map[string]any{
-					"role": "assistant", "model": "claude-opus-5",
+					"role": "assistant", "model": turnModel(p),
 					"content": []any{map[string]any{"type": "text", "text": s.answer}},
 				},
 			}),
@@ -307,6 +322,15 @@ func writeTranscripts(home, dir string, p fixtureProject) error {
 		}
 	}
 	return nil
+}
+
+// turnModel is the model a project's last turn was answered by, which is what
+// a running session is still on until it restarts.
+func turnModel(p fixtureProject) string {
+	if p.turnModel != "" {
+		return p.turnModel
+	}
+	return "claude-opus-5"
 }
 
 func writeCodexRollout(home, dir string) error {

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"sort"
+	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -56,7 +57,13 @@ func runModel(cmd *cobra.Command, args []string) error {
 	if err := setDefaultModel(cfg, model); err != nil {
 		return err
 	}
-	fmt.Printf("model: %s (new sessions)\n", model)
+	// Naming the scope is what distinguishes a fleet-wide change from writing
+	// a default nothing will read yet: both used to print the same line.
+	if count := len(projects.All(cfg.BaseDir)); count > 0 {
+		fmt.Printf("model: %s (new sessions in %d %s)\n", model, count, plural(count, "project", "projects"))
+	} else {
+		fmt.Printf("model: %s (no projects in %s yet; new sessions will use it)\n", model, cfg.BaseDir)
+	}
 
 	if stale := sessionsOnOtherModel(cfg, model); len(stale) > 0 {
 		fmt.Printf("still running their old model: %s\n", joinSorted(stale))
@@ -94,11 +101,28 @@ func sessionsOnOtherModel(cfg config.Config, model string) []string {
 			continue
 		}
 		seen[pane.Session] = true
-		if got := daemon.ModelFromDir(cfg.Claude.Home, dir); got != "" && got != model {
+		if got := daemon.ModelFromDir(cfg.Claude.Home, dir); got != "" && !sameModel(got, model) {
 			out = append(out, pane.Session)
 		}
 	}
 	return out
+}
+
+// sameModel reports whether a session's recorded model is the one just set.
+// A recorded model is always a full id ("claude-opus-5"), while the one set is
+// often an alias for the latest of a family ("opus"), and comparing the two as
+// strings made every session in the family read as left behind the moment the
+// family's own name was set. An alias therefore matches its family, at the
+// price of not naming a session on an older member of it: which id an alias
+// resolves to is Claude Code's to know, not proj's.
+func sameModel(recorded, wanted string) bool {
+	if recorded == wanted {
+		return true
+	}
+	if strings.Contains(wanted, "-") {
+		return false
+	}
+	return strings.HasPrefix(recorded, "claude-"+wanted+"-")
 }
 
 func joinSorted(names []string) string {

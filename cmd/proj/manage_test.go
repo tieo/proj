@@ -184,3 +184,27 @@ func TestRenameProjectWithoutLiveSession(t *testing.T) {
 		t.Error("the conversation did not move to the new path")
 	}
 }
+
+func TestSameModel(t *testing.T) {
+	same := [][2]string{
+		{"claude-opus-5", "claude-opus-5"},
+		{"claude-opus-5", "opus"},
+		{"claude-opus-4-8[1m]", "opus"},
+		{"claude-sonnet-5", "sonnet"},
+	}
+	for _, pair := range same {
+		if !sameModel(pair[0], pair[1]) {
+			t.Errorf("sameModel(%q, %q) = false, want true", pair[0], pair[1])
+		}
+	}
+	differ := [][2]string{
+		{"claude-sonnet-5", "opus"},
+		{"claude-opus-5", "claude-opus-4-8"},
+		{"claude-haiku-4-5-20251001", "opus"},
+	}
+	for _, pair := range differ {
+		if sameModel(pair[0], pair[1]) {
+			t.Errorf("sameModel(%q, %q) = true, want false", pair[0], pair[1])
+		}
+	}
+}

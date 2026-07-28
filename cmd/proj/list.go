@@ -225,7 +225,16 @@ func runList(cmd *cobra.Command, args []string) error {
 		fmt.Println(line)
 	}
 	if hidden > 0 {
-		fmt.Printf("%s  + %d older projects hidden (--all to show)%s\n", ansiDim, hidden, ansiReset)
+		fmt.Printf("%s  + %d older %s hidden (--all to show)%s\n", ansiDim, hidden, plural(hidden, "project", "projects"), ansiReset)
+	}
+	// A list with nothing in it and nothing hidden looks exactly like a broken
+	// install, so it says where proj looked and what would fill it.
+	if len(rows) == 0 && hidden == 0 {
+		if listTagF != "" {
+			fmt.Printf("%s  no project tagged %q (proj tag add <name> %s)%s\n", ansiDim, listTagF, listTagF, ansiReset)
+			return nil
+		}
+		fmt.Printf("%s  no projects in %s (make one with `proj new <name>`)%s\n", ansiDim, cfg.BaseDir, ansiReset)
 	}
 	return nil
 }

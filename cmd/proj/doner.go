@@ -184,7 +184,14 @@ func runDoner(cmd *cobra.Command, args []string) error {
 func printDonerStatus(cfg config.Config) {
 	on := cfg.Daemon.Doner.Active()
 	installed := donerHookInstalled(cfg)
-	fmt.Printf("doner: %s, hook %s\n", onOff(on), map[bool]string{true: "installed", false: "not installed"}[installed])
+	// A missing hook is the one state here that stops doner working, and the
+	// tag alone does nothing without it, so the line that reports it names the
+	// command that fixes it the way the tag line names its own.
+	if installed {
+		fmt.Printf("doner: %s, hook installed\n", onOff(on))
+	} else {
+		fmt.Printf("doner: %s, hook not installed (install it with `proj doner install`)\n", onOff(on))
+	}
 	tagged := donerProjects()
 	if len(tagged) == 0 {
 		fmt.Println("no projects tagged (tag one with `proj tag add <name> doner`)")
