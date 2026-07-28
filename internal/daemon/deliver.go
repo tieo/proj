@@ -123,8 +123,14 @@ func typeVerifiedVia(io paneIO, target, text string) (bool, error) {
 	if err := io.send(target, text); err != nil {
 		return false, err
 	}
-	box, placeholder, present := io.read(target)
-	return present && !placeholder && composerEndsWith(box, text), nil
+	box, _, present := io.read(target)
+	// Whether the box holds a paste marker somewhere is not the question: the
+	// question is whether it ends with what was just typed. A marker left in the
+	// box by an earlier message used to veto every send into that session for
+	// good, and the text piled up unsent behind it. When the marker swallowed
+	// this text, the suffix check fails on its own and the file handover
+	// follows, which is what it is for.
+	return present && composerEndsWith(box, text), nil
 }
 
 // SendPrompt delivers text into a session's input box and submits it as a turn
