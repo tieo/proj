@@ -50,12 +50,19 @@ const DonerTag = "doner"
 // had just answered "no" to. Naming the real reasons, and asking for the one
 // that applies, makes the honest answer the available one.
 //
+// Waiting is named as its own instruction because a session that stops to wait
+// is not waiting: nothing wakes it, so it is parked until a human returns. A
+// background command that ends when the thing it waits for does wakes the
+// session itself, which is the difference between waiting and stopping.
+//
 // It rules out the plausible non-reasons by name, because those are what a
 // session reaches for: finishing a large piece of work, judging that it has
 // reached "a good place to end", or running low on context are the states doner
 // exists to push through. A session near its limit still has turns left, and
 // the work it hands back is worth more finished than tidily summarised.
 const donerReason = "done with everything you were granted to do? if not, continue. " +
+	"Waiting on something? wait for it actively: a background command that ends when it does, " +
+	"which wakes you. Stopping is not waiting. " +
 	"If you must stop: finished, blocked, or it needs the user " +
 	"(being done with a big chunk, arriving at a 'good place to end', " +
 	"or being at the end of your context do NOT count!), " +
