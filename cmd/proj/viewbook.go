@@ -67,14 +67,30 @@ func defaultKeyPath() string { return projStateDir("viewbook.key") }
 // conversation happens. A project with no session running keeps its change in
 // the file and says so rather than pretending it was passed on.
 func sayInto(p projects.Project) func(string) error {
-	session := projects.SessionName(p.Name, p.Tags)
 	return func(message string) error {
-		pane := paneForSession(session)
+		pane := paneForProject(p)
 		if pane == "" {
 			return fmt.Errorf("%s has no running session", p.Name)
 		}
 		return daemon.SendPrompt(daemon.DefaultConfig(), pane, message)
 	}
+}
+
+// paneForProject finds the project's session now rather than remembering what
+// it was called when this server started. A session is renamed whenever its
+// tags change - turning doner on and off does exactly that - and a book that
+// held the old name told everyone the project had no session at all.
+func paneForProject(p projects.Project) string {
+	if pane := paneForSession(projects.SessionName(p.Name, p.Tags)); pane != "" {
+		return pane
+	}
+	// Tags may have changed since; the name before the @ is the project.
+	for _, pane := range tmux.ListPanes() {
+		if name, _, _ := strings.Cut(pane.Session, "@"); name == projects.SessionName(p.Name, nil) {
+			return pane.ID
+		}
+	}
+	return ""
 }
 
 // readSession returns what the project's session has been saying, so a page can
@@ -84,9 +100,8 @@ func sayInto(p projects.Project) func(string) error {
 // cut off the end: it is the same three lines on every read and says nothing
 // about the conversation.
 func readSession(p projects.Project) func() string {
-	session := projects.SessionName(p.Name, p.Tags)
 	return func() string {
-		pane := paneForSession(session)
+		pane := paneForProject(p)
 		if pane == "" {
 			return ""
 		}
