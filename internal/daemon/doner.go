@@ -51,10 +51,27 @@ func donerTick(cfg Config, reg projects.Registry, p tmux.Pane, dir, content, ses
 	if !hasTag(reg.Tags(filepath.Base(dir)), DonerTag) {
 		return
 	}
-	// Still generating, or no live input box (starting up, in a picker): not a
-	// session that has gone still.
-	if connDropBusyRE.MatchString(content) || !inputPromptRE.MatchString(content) {
+	// Still generating: not a session that has gone still.
+	if connDropBusyRE.MatchString(content) {
 		return
+	}
+	// No input box means a view has taken the pane over: the shell-details
+	// overlay, a picker. Nothing the session does clears that - it is waiting on
+	// a keystroke nobody is there to send - so it would sit there for good.
+	// Escape is what those views offer ("Esc to close"), and it is safe here:
+	// the busy check above has ruled out interrupting a live turn, and the trust
+	// prompt, the one place Escape exits Claude Code, is handled earlier in the
+	// tick and never reaches this.
+	if !inputPromptRE.MatchString(content) {
+		slog.Info("doner: closing an overlay to reach the input box", "session", p.Session)
+		if err := tmux.SendKey(p.ID, "Escape"); err != nil {
+			return
+		}
+		time.Sleep(cfg.DismissGap)
+		content = tmux.CapturePane(p.ID, cfg.Capture)
+		if !inputPromptRE.MatchString(content) {
+			return // still no input box; leave the pane alone
+		}
 	}
 	// A draft is the user mid-sentence. Typing now would both overwrite it and
 	// nudge someone who is already here.
