@@ -3,7 +3,6 @@ package main
 import (
 	"fmt"
 	"os"
-	"path/filepath"
 
 	"github.com/spf13/cobra"
 
@@ -196,14 +195,7 @@ func runSwitch(cmd *cobra.Command, args []string) error {
 	return tmux.Attach(session)
 }
 
-func handoffDir() string {
-	base := os.Getenv("XDG_STATE_HOME")
-	if base == "" {
-		home, _ := os.UserHomeDir()
-		base = filepath.Join(home, ".local", "state")
-	}
-	return filepath.Join(base, "proj", "handoffs")
-}
+func handoffDir() string { return projStateDir("handoffs") }
 
 // extractTranscript reads the current tool's native transcript for dir into
 // the intermediate representation. A tool with no history yields an empty

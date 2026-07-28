@@ -294,14 +294,7 @@ func projectHasDonerTag(cwd string) bool {
 
 // nudgeLogPath holds when each project was last nudged. The hook is a fresh
 // process every time, so the gap between nudges has to survive on disk.
-func nudgeLogPath() string {
-	base := os.Getenv("XDG_STATE_HOME")
-	if base == "" {
-		home, _ := os.UserHomeDir()
-		base = filepath.Join(home, ".local", "state")
-	}
-	return filepath.Join(base, "proj", "doner-nudges.json")
-}
+func nudgeLogPath() string { return projStateDir("doner-nudges.json") }
 
 func readNudgeLog() map[string]time.Time {
 	out := map[string]time.Time{}
