@@ -1,9 +1,12 @@
 package daemon
 
 import (
+	"encoding/json"
+	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/tieo/proj/internal/projects"
@@ -85,6 +88,12 @@ func donerTick(cfg Config, reg projects.Registry, p tmux.Pane, dir, content, ses
 	if composerHasDraft(tmux.CapturePaneEsc(p.ID)) {
 		return
 	}
+	// Already reported done. The Stop hook lets such a session go, and the
+	// backstop has to agree: without this it re-nudged a session that had
+	// answered, every grace period, for as long as it sat there.
+	if IsDone(lastAssistantText(sessFile)) {
+		return
+	}
 	grace := cfg.Doner.GraceDuration()
 	// The transcript's last write is when the session last did or was told
 	// anything, so a reply from the user or a finishing job restarts the clock.
@@ -101,6 +110,118 @@ func donerTick(cfg Config, reg projects.Registry, p tmux.Pane, dir, content, ses
 	donerNudgedAt[p.Session] = now
 	slog.Info("doner nudged an idle session", "session", p.Session,
 		"quiet_for", now.Sub(transcriptMTime(sessFile)).Round(time.Second))
+}
+
+// doneReplies are the affirmatives a session sends when it reports finished.
+// The nudge asks for "Yes"; the rest cover the phrasings a cooperating session
+// still tends to use.
+var doneReplies = map[string]bool{
+	"yes": true, "yep": true, "yeah": true, "yup": true, "y": true,
+	"done": true, "complete": true, "completed": true, "finished": true,
+	"all done": true, "yes done": true, "task complete": true,
+	"task completed": true, "yes complete": true, "yes finished": true,
+	"already done": true, "its done": true,
+}
+
+// IsDone reports whether a reply reads as "finished". The nudge asks for a
+// reason line and then the word, so the LAST line answers it; a whole-message
+// match would reject every reply that obeyed the instruction. A "Yes" earlier
+// in the message ends nothing.
+func IsDone(text string) bool {
+	lines := strings.Split(strings.TrimSpace(text), "\n")
+	for i := len(lines) - 1; i >= 0; i-- {
+		if line := letterWords(lines[i]); line != "" {
+			return doneReplies[line]
+		}
+	}
+	return false
+}
+
+// letterWords reduces a line to lowercase letters and single spaces, so
+// punctuation and markdown around the word do not hide it.
+func letterWords(s string) string {
+	var b strings.Builder
+	prevSpace := false
+	for _, r := range strings.ToLower(s) {
+		switch {
+		case r >= 'a' && r <= 'z':
+			b.WriteRune(r)
+			prevSpace = false
+		case r == ' ' || r == '\t' || r == '\r':
+			if !prevSpace && b.Len() > 0 {
+				b.WriteByte(' ')
+			}
+			prevSpace = true
+		}
+	}
+	return strings.TrimSpace(b.String())
+}
+
+// lastAssistantText returns the text of the session's most recent assistant
+// turn, which is what the Stop hook judges as last_assistant_message. Only the
+// tail is read: the answer is at the end, and these transcripts run to tens of
+// megabytes.
+func lastAssistantText(sessFile string) string {
+	f, err := os.Open(sessFile)
+	if err != nil {
+		return ""
+	}
+	defer f.Close()
+	const readBytes = 200 * 1024
+	// Measuring the file leaves the offset at its end, so the read has to be
+	// positioned again even when the whole file fits: without that a short
+	// transcript read nothing and no session ever looked done.
+	size, _ := f.Seek(0, io.SeekEnd)
+	start := size - readBytes
+	if start < 0 {
+		start = 0
+	}
+	if _, err := f.Seek(start, io.SeekStart); err != nil {
+		return ""
+	}
+	buf := make([]byte, readBytes)
+	n, _ := f.Read(buf)
+	lines := strings.Split(string(buf[:n]), "\n")
+	for i := len(lines) - 1; i >= 0; i-- {
+		var r struct {
+			Type    string `json:"type"`
+			Message struct {
+				Content json.RawMessage `json:"content"`
+			} `json:"message"`
+		}
+		if json.Unmarshal([]byte(strings.TrimSpace(lines[i])), &r) != nil || r.Type != "assistant" {
+			continue
+		}
+		if text := assistantText(r.Message.Content); text != "" {
+			return text
+		}
+	}
+	return ""
+}
+
+// assistantText flattens an assistant message's content to its text blocks.
+func assistantText(raw json.RawMessage) string {
+	var s string
+	if json.Unmarshal(raw, &s) == nil {
+		return strings.TrimSpace(s)
+	}
+	var blocks []struct {
+		Type string `json:"type"`
+		Text string `json:"text"`
+	}
+	if json.Unmarshal(raw, &blocks) != nil {
+		return ""
+	}
+	var b strings.Builder
+	for _, bl := range blocks {
+		if bl.Type == "text" && strings.TrimSpace(bl.Text) != "" {
+			if b.Len() > 0 {
+				b.WriteByte('\n')
+			}
+			b.WriteString(bl.Text)
+		}
+	}
+	return strings.TrimSpace(b.String())
 }
 
 // transcriptMTime is when the session's transcript was last written, which is
