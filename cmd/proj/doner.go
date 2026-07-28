@@ -60,13 +60,7 @@ const DonerTag = "doner"
 // reached "a good place to end", or running low on context are the states doner
 // exists to push through. A session near its limit still has turns left, and
 // the work it hands back is worth more finished than tidily summarised.
-const donerReason = "done with everything you were granted to do? if not, continue. " +
-	"Waiting on something? wait for it actively: a background command that ends when it does, " +
-	"which wakes you. Stopping is not waiting. " +
-	"If you must stop: finished, blocked, or it needs the user " +
-	"(being done with a big chunk, arriving at a 'good place to end', " +
-	"or being at the end of your context do NOT count!), " +
-	"say why in one line, then reply exactly: Yes"
+const donerReason = daemon.DonerReason
 
 var donerCmd = &cobra.Command{
 	Use:   "doner [on|off]",

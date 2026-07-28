@@ -125,10 +125,25 @@ type ListConfig struct {
 // a global kill switch for that behaviour; per-session opt-in is the tag.
 type DonerConfig struct {
 	Enabled bool `toml:"enabled"` // run the doner backstop (default true; opt in per session with the doner tag)
+	// Grace is how long a tagged session may sit quiet before the daemon nudges
+	// it. It only measures silence: a message from the user or a job finishing
+	// writes to the transcript and starts it again, so a session that is being
+	// worked with is never nudged.
+	Grace string `toml:"grace"`
 }
+
+// DonerGraceDefault is how long a quiet session is left alone when no grace is
+// configured.
+const DonerGraceDefault = 5 * time.Minute
 
 // Active reports whether the doner backstop runs.
 func (d DonerConfig) Active() bool { return d.Enabled }
+
+// GraceDuration is Grace parsed, falling back to the default when unset or
+// unreadable.
+func (d DonerConfig) GraceDuration() time.Duration {
+	return Duration(d.Grace, DonerGraceDefault)
+}
 
 func Default() Config {
 	home, _ := os.UserHomeDir()
@@ -143,7 +158,7 @@ func Default() Config {
 			MaxWait:      "5h",
 			ResumeText:   "continue",
 			CaptureLines: 300,
-			Doner:        DonerConfig{Enabled: true},
+			Doner:        DonerConfig{Enabled: true, Grace: "5m"},
 		},
 		List: ListConfig{
 			MaxAgeDays: 14,

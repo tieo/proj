@@ -374,6 +374,7 @@ func daemonConfig() daemon.Config {
 		}
 	}
 	out.ClaudeHome = user.Claude.Home
+	out.Doner = user.Daemon.Doner
 	return out
 }
 

@@ -68,6 +68,7 @@ type Config struct {
 	KeepAlive   bool                       // recreate vanished sessions that weren't cleanly closed
 	Tools       map[string]config.ToolSpec // resolved launch recipes keyed by tool name, "claude" included
 	ClaudeHome  string                     // [claude] home override; where Claude Code keeps transcripts (the Windows home under WSL)
+	Doner       config.DonerConfig         // keep doner-tagged sessions going when they go quiet
 }
 
 func DefaultConfig() Config {
@@ -2457,6 +2458,13 @@ func Tick(cfg Config, state State, errorState ErrorState, managed ManagedState, 
 			delete(rcEverActive, id)
 		}
 	}
+	// The doner stamps are keyed by session name rather than pane, so they are
+	// pruned against the live names.
+	liveNames := make(map[string]bool, len(live))
+	for _, name := range live {
+		liveNames[name] = true
+	}
+	pruneDonerNudges(liveNames)
 
 	// Authoritative RC connection state, from Claude's own per-session bridge
 	// files (RCBridges). This is a local, non-rotating signal: bridgeSessionId is
@@ -2853,9 +2861,10 @@ func Tick(cfg Config, state State, errorState ErrorState, managed ManagedState, 
 				slog.Info("drop tracked", "session", t.Session, "reason", reason, "attempts", t.Attempts)
 				delete(state, p.ID)
 			}
-			// No stall: the session is either working or has gone idle. Nothing
-			// to do - keeping a doner-tagged session going is a Claude Code Stop
-			// hook (see `proj doner`), not the daemon's job.
+			// No stall: the session is either working or has gone idle. The Stop
+			// hook keeps a doner session going while it answers; this catches the
+			// one that stopped anyway and has since gone quiet.
+			donerTick(cfg, reg, p, paneDir, content, sessFile, now)
 			continue
 		}
 		prev := state[p.ID]
