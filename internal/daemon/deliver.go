@@ -158,11 +158,32 @@ func SendPrompt(cfg Config, target, text string) error {
 		// chose and still deliver nothing.
 		return fmt.Errorf("%s is not at an input box (starting up, or on a prompt or picker); nothing sent", target)
 	}
+	clearBox(target)
 	if err := deliver(target, text); err != nil {
 		return err
 	}
 	time.Sleep(cfg.DismissGap)
 	return tmux.SendKey(target, "Enter")
+}
+
+// clearBox empties the input box before a prompt goes into it.
+//
+// Leaving what stood there was the older rule, and it cost more than it saved:
+// a paste marker or an abandoned half-sentence stayed in the box, the typed
+// prompt was appended behind it, and every send after that went out carrying
+// somebody else's words. What is in the box is a draft nobody submitted; the
+// message being delivered is one somebody did.
+func clearBox(target string) {
+	for i := 0; i < 40; i++ {
+		text, _, present := ComposerBox(tmux.CapturePane(target, 0))
+		if !present || strings.TrimSpace(text) == "" {
+			return
+		}
+		if err := tmux.SendKey(target, "C-u"); err != nil {
+			return
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
 }
 
 func deliver(target, text string) error {
