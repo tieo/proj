@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -254,8 +255,16 @@ func runDonerHook(cmd *cobra.Command, args []string) error {
 		return nil
 	}
 	if isDone(in.LastAssistantMessage) {
+		clearNudgedAt(in.Cwd)
 		return nil // the session reported finished
 	}
+	// One nudge per cooldown. Without it a session whose turns take seconds is
+	// nudged as fast as it can finish them, which reads as doner talking over
+	// its own work rather than keeping it going.
+	if since, ok := sinceNudged(in.Cwd); ok && since < cfg.Daemon.Doner.CooldownDuration() {
+		return nil
+	}
+	recordNudgedAt(in.Cwd)
 	out, _ := json.Marshal(map[string]string{"decision": "block", "reason": donerReason})
 	fmt.Println(string(out))
 	return nil
@@ -282,6 +291,62 @@ func projectHasDonerTag(cwd string) bool {
 	}
 	return false
 }
+
+// nudgeLogPath holds when each project was last nudged. The hook is a fresh
+// process every time, so the gap between nudges has to survive on disk.
+func nudgeLogPath() string {
+	base := os.Getenv("XDG_STATE_HOME")
+	if base == "" {
+		home, _ := os.UserHomeDir()
+		base = filepath.Join(home, ".local", "state")
+	}
+	return filepath.Join(base, "proj", "doner-nudges.json")
+}
+
+func readNudgeLog() map[string]time.Time {
+	out := map[string]time.Time{}
+	data, err := os.ReadFile(nudgeLogPath())
+	if err != nil {
+		return out
+	}
+	_ = json.Unmarshal(data, &out)
+	return out
+}
+
+// sinceNudged reports how long ago dir was last nudged, and whether it ever was.
+func sinceNudged(dir string) (time.Duration, bool) {
+	at, ok := readNudgeLog()[nudgeKey(dir)]
+	if !ok {
+		return 0, false
+	}
+	return time.Since(at), true
+}
+
+func recordNudgedAt(dir string) { writeNudgeLog(dir, true) }
+func clearNudgedAt(dir string)  { writeNudgeLog(dir, false) }
+
+// writeNudgeLog stamps or drops one project's entry. Best effort throughout: a
+// log that cannot be written costs a cooldown, never a missed nudge.
+func writeNudgeLog(dir string, set bool) {
+	log := readNudgeLog()
+	if set {
+		log[nudgeKey(dir)] = time.Now()
+	} else {
+		delete(log, nudgeKey(dir))
+	}
+	data, err := json.Marshal(log)
+	if err != nil {
+		return
+	}
+	if os.MkdirAll(filepath.Dir(nudgeLogPath()), 0o755) != nil {
+		return
+	}
+	_ = os.WriteFile(nudgeLogPath(), data, 0o644)
+}
+
+// nudgeKey identifies a project by name, so the same session is recognised
+// whichever spelling of its directory the hook is handed.
+func nudgeKey(dir string) string { return lastPathSegment(dir) }
 
 func lastPathSegment(p string) string {
 	p = strings.TrimRight(p, `/\`)
