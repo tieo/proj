@@ -8,14 +8,17 @@ import (
 )
 
 func TestIsDone(t *testing.T) {
-	done := []string{
-		"Yes", "yes", "  yes.  ", "Yes!", "**Yes**", "yes\n", "Done", "done.",
-		"All done", "all done!", "finished", "Completed.", "Yes, done.", "yes done",
-	}
+	// The nudge asks for this word exactly, so only this word ends it. Markdown
+	// and punctuation around it do not hide it.
+	done := []string{"Yes", "yes", "  yes.  ", "Yes!", "**Yes**", "yes\n"}
+	// Everything else keeps the session going, including the affirmatives that
+	// used to count: each is a way to end a sentence about a subtask, and a
+	// session that follows the instruction never needs them.
 	notDone := []string{
 		"", "Working on it", "Not yet", "no", "the answer is yes",
 		"I said yes to the first option but there is more to do",
 		"Here is the result: yes and no", "Let me continue",
+		"Done", "done.", "All done", "finished", "Completed.", "Yes, done.",
 	}
 	for _, s := range done {
 		if !isDone(s) {

@@ -32,13 +32,11 @@ const DonerTag = "doner"
 // DonerReason is the nudge, shared so the Stop hook and this backstop say the
 // same thing: a session cannot tell which one reached it, and should not have
 // to.
-const DonerReason = "done with everything you were granted to do? if not, continue. " +
+const DonerReason = "done with everything you were granted to do, hard blocked by something, " +
+	"or it needs the user (being done with a big chunk, arriving at a 'good place to end', " +
+	"or being at the end of your context do NOT count!), reply exactly: Yes. " +
 	"Waiting on something? wait for it actively: a background command that ends when it does, " +
-	"which wakes you. Stopping is not waiting. " +
-	"If you must stop: finished, blocked, or it needs the user " +
-	"(being done with a big chunk, arriving at a 'good place to end', " +
-	"or being at the end of your context do NOT count!), " +
-	"say why in one line, then reply exactly: Yes"
+	"which wakes you. ANYTHING else? continue."
 
 // donerNudgedAt is the last time each session was nudged, so a session that
 // stays quiet is not nudged every tick. In memory only: a daemon restart
@@ -112,16 +110,13 @@ func donerTick(cfg Config, reg projects.Registry, p tmux.Pane, dir, content, ses
 		"quiet_for", now.Sub(transcriptMTime(sessFile)).Round(time.Second))
 }
 
-// doneReplies are the affirmatives a session sends when it reports finished.
-// The nudge asks for "Yes"; the rest cover the phrasings a cooperating session
-// still tends to use.
-var doneReplies = map[string]bool{
-	"yes": true, "yep": true, "yeah": true, "yup": true, "y": true,
-	"done": true, "complete": true, "completed": true, "finished": true,
-	"all done": true, "yes done": true, "task complete": true,
-	"task completed": true, "yes complete": true, "yes finished": true,
-	"already done": true, "its done": true,
-}
+// doneReplies is the one word the nudge asks for. It was a wider set of
+// affirmatives, meant to be forgiving, and every extra entry was a way to end a
+// sentence about a subtask: "done", "finished", "complete". Since the nudge
+// asks for this word exactly, a session that follows it always says this one,
+// and the extra entries could only ever fire on a session that did not - so
+// they existed purely to misread.
+var doneReplies = map[string]bool{"yes": true}
 
 // IsDone reports whether a reply reads as "finished". The nudge asks for a
 // reason line and then the word, so the LAST line answers it; a whole-message
