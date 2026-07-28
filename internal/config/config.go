@@ -125,24 +125,10 @@ type ListConfig struct {
 // a global kill switch for that behaviour; per-session opt-in is the tag.
 type DonerConfig struct {
 	Enabled bool `toml:"enabled"` // run the doner backstop (default true; opt in per session with the doner tag)
-	// Cooldown is the least time between two nudges to one session, so a session
-	// whose turns are short is not nudged every few seconds. A Stop hook cannot
-	// wake a session it let stop, so a session that stops inside the cooldown
-	// stays stopped until something else reaches it.
-	Cooldown string `toml:"cooldown"`
 }
-
-// DonerCooldownDefault is the gap between nudges when none is configured.
-const DonerCooldownDefault = 5 * time.Minute
 
 // Active reports whether the doner backstop runs.
 func (d DonerConfig) Active() bool { return d.Enabled }
-
-// CooldownDuration is Cooldown parsed, falling back to the default when unset
-// or unreadable.
-func (d DonerConfig) CooldownDuration() time.Duration {
-	return Duration(d.Cooldown, DonerCooldownDefault)
-}
 
 func Default() Config {
 	home, _ := os.UserHomeDir()
@@ -157,7 +143,7 @@ func Default() Config {
 			MaxWait:      "5h",
 			ResumeText:   "continue",
 			CaptureLines: 300,
-			Doner:        DonerConfig{Enabled: true, Cooldown: "5m"},
+			Doner:        DonerConfig{Enabled: true},
 		},
 		List: ListConfig{
 			MaxAgeDays: 14,
