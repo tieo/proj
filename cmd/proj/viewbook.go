@@ -109,6 +109,46 @@ func readSession(p projects.Project) func() string {
 	}
 }
 
+// wakeSession starts the project's session if it is not already running, the
+// same way opening the project from a terminal does. Opening a book is asking
+// to work on that project; waiting for someone to go and start a session first
+// is a step nobody wanted.
+func wakeSession(cfg config.Config, p projects.Project) func() error {
+	return func() error {
+		session := projects.SessionName(p.Name, p.Tags)
+		switch existing := tmux.SessionForPath(p.Dir); existing {
+		case session:
+			return nil
+		case "":
+			spec, err := cfg.Tool(p.Tool)
+			if err != nil {
+				return err
+			}
+			line := daemon.LaunchCommand(spec, cfg.Claude.Home, p.Name, session, p.Dir)
+			if _, err := tmux.NewSession(session, p.Dir, line); err != nil {
+				return fmt.Errorf("start %s: %w", p.Name, err)
+			}
+			return nil
+		default:
+			// A session for this directory under an older name is still that
+			// project's session; renaming is what open does too.
+			return tmux.RenameSession(existing, session)
+		}
+	}
+}
+
+// restSession stops the project's session, which is the same decision as
+// starting it, made the other way.
+func restSession(p projects.Project) func() error {
+	return func() error {
+		existing := tmux.SessionForPath(p.Dir)
+		if existing == "" {
+			return nil
+		}
+		return tmux.KillSession(existing)
+	}
+}
+
 // composerTop matches the rule the input box is drawn above, which is where the
 // conversation ends and the TUI's own chrome begins.
 var composerTop = regexp.MustCompile(`^[\s]*[─━]{10,}`)
@@ -162,7 +202,13 @@ func runViewbook(cmd *cobra.Command, args []string) error {
 			}
 			continue // a project without a model simply has no book
 		}
-		server := &viewbook.Server{Root: root, Say: sayInto(p), Session: readSession(p)}
+		server := &viewbook.Server{
+			Root:    root,
+			Say:     sayInto(p),
+			Session: readSession(p),
+			Wake:    wakeSession(cfg, p),
+			Rest:    restSession(p),
+		}
 		go server.Watch(stop)
 		books = append(books, viewbook.Book{
 			Name:   strings.ToLower(p.Name),
