@@ -115,3 +115,27 @@ func TestTypeVerifiedRejectsAPastePlaceholder(t *testing.T) {
 		t.Error("a paste placeholder was reported as delivered")
 	}
 }
+
+
+func TestBackgroundHint(t *testing.T) {
+	offers := []string{
+		"  (ctrl+b ctrl+b (twice) to run in background)",
+		"(ctrl+b to run in background)",
+		"     ⎿  running… (ctrl+b ctrl+b (twice) to run in background)",
+	}
+	for _, pane := range offers {
+		if !backgroundHint.MatchString(pane) {
+			t.Errorf("offer not recognised: %q", pane)
+		}
+	}
+	quiet := []string{
+		"esc to interrupt",
+		"  [CAVEMAN]",
+		"background jobs: 2",
+	}
+	for _, pane := range quiet {
+		if backgroundHint.MatchString(pane) {
+			t.Errorf("read an offer that is not there: %q", pane)
+		}
+	}
+}

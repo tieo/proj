@@ -143,6 +143,27 @@ func typeVerifiedVia(io paneIO, target, text string) (bool, error) {
 // that will not type correctly, is written to a file and announced with a short
 // prompt that names it: a path is short enough to deliver reliably, and the
 // target reads the message from disk rather than through the keyboard.
+// backgroundHint is the TUI's own offer, shown while a foreground command holds
+// the input box: press it and the command keeps running out of the way.
+var backgroundHint = regexp.MustCompile(`ctrl\+b[^\n]*?to run in background`)
+
+// toBackground takes the offer. Interrupting would throw away work the session
+// is in the middle of; waiting would drop the message. Backgrounding is the one
+// move that costs nothing, and the TUI only offers it when it applies.
+func toBackground(target string) bool {
+	if !backgroundHint.MatchString(tmux.CapturePane(target, 0)) {
+		return false
+	}
+	for i := 0; i < 2; i++ {
+		if err := tmux.SendKey(target, "C-b"); err != nil {
+			return false
+		}
+		time.Sleep(120 * time.Millisecond)
+	}
+	time.Sleep(composerSettle)
+	return true
+}
+
 func SendPrompt(cfg Config, target, text string) error {
 	if strings.TrimSpace(text) == "" {
 		// An empty send used to clear the target's box, submit nothing, and -
@@ -150,6 +171,12 @@ func SendPrompt(cfg Config, target, text string) error {
 		// newline. Whatever produced the empty text is the caller's bug, and it
 		// must not reach the target as a task.
 		return fmt.Errorf("refusing to send an empty prompt to %s", target)
+	}
+	if _, _, present := ComposerBox(tmux.CapturePane(target, 0)); !present {
+		// A command running in the foreground hides the box behind it. The TUI
+		// offers to put it in the background; taking that offer is how the
+		// message gets in without stopping what is already running.
+		toBackground(target)
 	}
 	if _, _, present := ComposerBox(tmux.CapturePane(target, 0)); !present {
 		// No input box: the session is starting up, or waiting on the

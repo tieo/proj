@@ -2558,6 +2558,15 @@ func Tick(cfg Config, state State, errorState ErrorState, managed ManagedState, 
 		//    banner state; a stuck prompt is itself something to resolve.
 		//    Esc is idempotent; if already gone next tick, nothing happens.
 		if HasSelector(content) {
+			// A command holding the input box is not a picker to escape from:
+			// the TUI offers to put it in the background, and taking that offer
+			// frees the box without throwing away what is running.
+			if toBackground(p.ID) {
+				slog.Info("backgrounded a foreground command", "session", p.Session, "pane", p.ID)
+				content = tmux.CapturePane(p.ID, cfg.Capture)
+			}
+		}
+		if HasSelector(content) {
 			slog.Info("dismiss selector", "session", p.Session, "pane", p.ID)
 			if err := tmux.SendKey(p.ID, "Escape"); err != nil {
 				slog.Error("send Escape failed", "session", p.Session, "err", err)
