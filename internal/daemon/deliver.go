@@ -290,6 +290,11 @@ func deliver(target, text string) error {
 	if err != nil {
 		return fmt.Errorf("hand the prompt over as a file: %w", err)
 	}
+	// The failed attempt is still standing in the box, and the TUI has often
+	// folded it into a paste block. Typing the handover line behind that
+	// appends to it, so its own check fails too and the message ends up
+	// neither delivered nor recoverable, sitting in a box nobody submitted.
+	clearBox(target)
 	pointer := fmt.Sprintf("Read %s and act on it: it is a message from the proj daemon, too long to type into your input box.", path)
 	ok, err := typeVerified(target, pointer)
 	if err != nil {
