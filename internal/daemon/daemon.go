@@ -115,9 +115,9 @@ var transientPattern = regexp.MustCompile(`⎿` + sp + `+API Error:` + sp + `+Se
 
 // bulletErrorRE matches recoverable API errors that Claude Code renders as an
 // assistant bullet ("● API Error: ...") rather than ⎿ tool output: dropped or
-// interrupted connections, the transient gateway rate limit, and server
-// overload ("529 Overloaded", which carries no JSON so apiErrorRE misses it
-// too). The ⎿-anchored
+// interrupted connections, the transient gateway rate limit, and the bare 5xx
+// pair "529 Overloaded" / "500 Internal server error", which carry prose instead
+// of JSON so apiErrorRE misses them too. The ⎿-anchored
 // apiErrorRE (HTTP status + JSON) and transientPattern miss the bullet form, so
 // without this the session sits stalled (the observed case: a 1-hour stall on
 // "● API Error: Server is temporarily limiting requests"). The leading ● is
@@ -125,7 +125,7 @@ var transientPattern = regexp.MustCompile(`⎿` + sp + `+API Error:` + sp + `+Se
 // tool output, a code block, prose, or this source. A "continue" recovers all
 // of them; bulletErrorResumable adds the idle guards (the ● line persists in
 // scrollback, so a bare match would otherwise re-fire every poll).
-var bulletErrorRE = regexp.MustCompile(`(?m)^` + sp + `*●` + sp + `+API Error:` + sp + `+(?:Connection closed mid-response|Connection error|stream (?:closed|disconnected|error)|fetch failed|socket hang ?up|terminated|premature close|network (?:error|connection lost)|ECONNRESET|Server is temporarily limiting requests|\d{3}` + sp + `+Overloaded)`)
+var bulletErrorRE = regexp.MustCompile(`(?m)^` + sp + `*●` + sp + `+API Error:` + sp + `+(?:Connection closed mid-response|Connection error|stream (?:closed|disconnected|error)|fetch failed|socket hang ?up|terminated|premature close|network (?:error|connection lost)|ECONNRESET|Server is temporarily limiting requests|\d{3}` + sp + `+(?:Overloaded|Internal server error))`)
 
 // connDropNewerRE matches a newer assistant (●) or tool (⎿) line. If one sits
 // between the error and the live prompt, Claude already produced fresh output
@@ -1012,7 +1012,7 @@ var usageLimitTextRE = regexp.MustCompile(`(?i)(?:out of extra usage|session lim
 // transientTextRE matches the recoverable API errors whose fix is a short-delay
 // retry ("continue"), not deferral to a usage reset: gateway rate limits,
 // overloads, and dropped/failed connections.
-var transientTextRE = regexp.MustCompile(`(?i)Server is temporarily limiting requests|\bOverloaded\b|Connection (?:error|closed|refused)|Unable to connect to API|stream (?:closed|disconnected|error)|fetch failed|socket hang ?up|ECONNRESET|terminated|premature close`)
+var transientTextRE = regexp.MustCompile(`(?i)Server is temporarily limiting requests|\bOverloaded\b|Internal server error|Connection (?:error|closed|refused)|Unable to connect to API|stream (?:closed|disconnected|error)|fetch failed|socket hang ?up|ECONNRESET|terminated|premature close`)
 
 // transcriptRecord is the subset of a transcript jsonl line the detector needs.
 type transcriptRecord struct {

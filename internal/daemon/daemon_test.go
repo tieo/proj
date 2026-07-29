@@ -646,6 +646,37 @@ func TestDetect_BulletOverloadedStalledResumes(t *testing.T) {
 	}
 }
 
+// fiveHundredText is the 500 exactly as Claude Code renders and records it,
+// captured from the stall this test exists for. Its prose carries no JSON and no
+// word any other transient pattern matches, so both the pane and the transcript
+// path relied on "Internal server error" being listed.
+const fiveHundredText = "API Error: 500 Internal server error. This is a server-side issue, " +
+	"usually temporary — try again in a moment. If it persists, check https://status.claude.com."
+
+func TestDetect_BulletInternalServerErrorStalledResumes(t *testing.T) {
+	content := "● " + fiveHundredText + "\n\n" + prompt
+	b := Detect(content, time.Now())
+	if b == nil {
+		t.Fatal("● -rendered 500 Internal server error should be detected")
+	}
+	if b.Backoff <= 0 {
+		t.Errorf("must carry a Backoff, got %v", b.Backoff)
+	}
+}
+
+func TestBannerFromErrorText_InternalServerErrorIsTransient(t *testing.T) {
+	// The transcript path is the authoritative one: a synthetic 500 record must
+	// classify as a short-backoff retry, not as a permanent error the daemon
+	// leaves for the user.
+	b := bannerFromErrorText(fiveHundredText, time.Now())
+	if b == nil {
+		t.Fatal("synthetic 500 must produce a banner")
+	}
+	if b.Backoff <= 0 {
+		t.Errorf("must carry a Backoff, got %v", b.Backoff)
+	}
+}
+
 func TestDetect_ConnDropAlreadyResumedIgnored(t *testing.T) {
 	// Newer ● output below the error → Claude resumed; must not re-fire.
 	content := "● API Error: Connection closed mid-response.\n\n" +
