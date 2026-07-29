@@ -26,7 +26,11 @@ var sessionsCmd = &cobra.Command{
 move with the arrows, then enter to resume, a to adopt into a project, f to fork
 (branch the history at a chosen message into a new project), s to stop (close,
 keeping files), r to rm (delete the project and its files), esc to quit. Piped or
-redirected, it prints the static table instead.`,
+redirected, it prints the static table instead.
+
+The list, the prompt index and the fork are also plain commands - "sessions
+list", "sessions prompts" and "sessions fork" - for a caller that cannot press
+keys.`,
 	Args: cobra.NoArgs,
 	RunE: runSessions,
 }

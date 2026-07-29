@@ -10,6 +10,13 @@
   answers again.
 
 ### Added
+- `proj sessions list`, `proj sessions prompts <id>` and `proj sessions fork
+  <id> --into <project>` do headless what the picker did a keystroke at a
+  time. `list --json` and `prompts --json` are machine-readable; `prompts`
+  numbers the turns the way `--from/--to` count them and prints the size of
+  each turn, so a range can be picked to fit a context window. `fork` creates
+  the target project when the name is new and takes `--no-open` to write the
+  transcript without starting its session.
 - `proj say --now` interrupts whatever a session is doing and delivers the
   message as the next turn. Without it, a session busy with a foreground
   command is offered the TUI's own way out first (ctrl+b ctrl+b), so the

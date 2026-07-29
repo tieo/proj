@@ -83,6 +83,10 @@ recreated session continues where it left off.
 | `proj rm <name-or-prefix>` | delete the project directory (asks first) |
 | `proj rename <old> <new>` | rename dir + session (also moves Claude's history folder when resolvable) |
 | `proj clean [--days N]` | kill tmux sessions idle longer than N days (default 7) |
+| `proj sessions` | interactive list of Claude sessions: enter resume, `a` adopt, `f` fork, `s` stop, `r` rm |
+| `proj sessions list [--json]` | the same list without the picker, as a table or as JSON |
+| `proj sessions prompts <id> [--json]` | a session's user prompts, numbered as fork ranges count them, with the size of each turn |
+| `proj sessions fork <id> --into <name> [--from N] [--to M]` | branch that range of the history into another project (created if new), no picker |
 
 ### `proj daemon`
 
