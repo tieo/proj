@@ -195,3 +195,14 @@ func TestChunkRunes(t *testing.T) {
 		t.Errorf("pieces total %d runes, want 2000", n)
 	}
 }
+
+func TestUnderSystemdService(t *testing.T) {
+	t.Setenv("INVOCATION_ID", "")
+	if underSystemdService() {
+		t.Error("a shell-started proj must not read as a systemd service")
+	}
+	t.Setenv("INVOCATION_ID", "0f2f0a5c7f1e4a0e9d1a2b3c4d5e6f70")
+	if !underSystemdService() {
+		t.Error("a unit's own process must read as a systemd service")
+	}
+}

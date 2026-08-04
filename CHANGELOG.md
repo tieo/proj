@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+### Fixed
+- The daemon starts its tmux server outside its own systemd unit. A unit is
+  stopped by killing its whole control group, so a server started there died
+  with the daemon and took every session, and every session's coding tool,
+  with it - on every deploy.
+
 ### Changed
 - The model column reports the model a Claude project is configured to run
   (`--model` on the launch command, then project and user settings files),

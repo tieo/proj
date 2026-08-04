@@ -435,14 +435,30 @@ func serverRunning() bool {
 }
 
 // useSystemdServer reports whether new tmux servers should be started through
-// the systemd user manager. This matters only under WSL (see NewSession) and
-// only when systemd-run is available to do it.
+// the systemd user manager, which is what keeps a server out of the cgroup of
+// whatever started it. Two situations need that, and both need systemd-run to
+// be there to do it:
+//
+//   - WSL, where a console relay reaps the server's whole subtree (see
+//     ensureServer).
+//   - proj running as a systemd service, which is how the daemon runs. A unit
+//     is stopped by killing its entire control group, so a server started
+//     there dies with the daemon, taking every session and every session's
+//     tool with it - and the daemon is restarted by every deploy.
 func useSystemdServer() bool {
-	if !IsWSL() {
+	if !IsWSL() && !underSystemdService() {
 		return false
 	}
 	_, err := exec.LookPath("systemd-run")
 	return err == nil
+}
+
+// underSystemdService reports whether this process was started by systemd as a
+// service. systemd sets INVOCATION_ID for the unit's own processes and does not
+// pass it on to anything started from a shell, which is exactly the line that
+// matters here: the daemon has it, a person's `proj` never does.
+func underSystemdService() bool {
+	return os.Getenv("INVOCATION_ID") != ""
 }
 
 // IsWSL reports whether proj is running under the Windows Subsystem for Linux.
