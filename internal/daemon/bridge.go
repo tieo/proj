@@ -58,6 +58,45 @@ func BridgeSessionID(claudeHome, dir string) string {
 	return best.BridgeSessionID
 }
 
+// CurrentSessionID returns the id of the Claude session running in dir now, or
+// "" when nothing there is known.
+//
+// A directory can have more than one transcript kept warm at once: Claude Code
+// runs the conversation in a background host and the terminal process keeps its
+// own earlier session, so both files are written to and the newest one at any
+// given moment is whichever wrote last. Picking by file time therefore lands on
+// the wrong conversation half the time - which is how a doner-tagged session
+// that had answered was nudged again every hour, the check reading a transcript
+// its session had left the day before.
+//
+// The session records answer it properly: each carries the id and is stamped
+// while its session lives, so the newest stamp is the session in use.
+func CurrentSessionID(claudeHome, dir string) string {
+	entries, err := filepath.Glob(filepath.Join(claudeRoot(claudeHome), "sessions", "*.json"))
+	if err != nil {
+		return ""
+	}
+	want := []string{dir, sessions.WSLToUNC(dir)}
+	var best sessionFile
+	for _, path := range entries {
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			continue
+		}
+		var s sessionFile
+		if json.Unmarshal(raw, &s) != nil || s.SessionID == "" {
+			continue
+		}
+		if !matchesDir(s.Cwd, want) {
+			continue
+		}
+		if s.UpdatedAt >= best.UpdatedAt {
+			best = s
+		}
+	}
+	return best.SessionID
+}
+
 // RCBridgeForDir reports whether the Claude session running in dir currently
 // holds a Remote Control bridge, and whether anything is known about it at all.
 //

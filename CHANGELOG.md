@@ -3,6 +3,13 @@
 ## [Unreleased]
 
 ### Fixed
+- The daemon reads the transcript of the session a pane is running, not the
+  newest file in its directory. Claude Code runs the conversation in a
+  background host while the terminal process keeps the session it started
+  with, so two transcripts are written to at once and "newest" alternates
+  between them. A doner-tagged session that had answered was nudged again
+  every hour, the done-check reading a transcript its session had left the
+  day before.
 - The daemon starts its tmux server outside its own systemd unit. A unit is
   stopped by killing its whole control group, so a server started there died
   with the daemon and took every session, and every session's coding tool,

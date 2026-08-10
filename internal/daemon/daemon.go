@@ -1728,6 +1728,11 @@ func isDir(p string) bool {
 	return err == nil && fi.IsDir()
 }
 
+func fileExists(p string) bool {
+	fi, err := os.Stat(p)
+	return err == nil && !fi.IsDir()
+}
+
 // claudeProjectDir derives the Claude Code project directory for a given
 // working directory on the local home. NOTE: this assumes $HOME/.claude and the
 // plain workDir encoding, so it is correct on bare Linux but not under WSL
@@ -1800,6 +1805,15 @@ func recentSessionFile(homeOverride, workDir string) string {
 	dir := locateProjectDir(claudeRoot(homeOverride), workDir, tmux.IsWSL())
 	if dir == "" {
 		return ""
+	}
+	// The session running there names its own transcript, which is the answer
+	// whenever a directory has more than one file being written to (see
+	// CurrentSessionID). File times are the fallback, for a directory whose
+	// sessions have all exited and left only their transcripts behind.
+	if id := CurrentSessionID(homeOverride, workDir); id != "" {
+		if path := filepath.Join(dir, id+".jsonl"); fileExists(path) {
+			return path
+		}
 	}
 	entries, err := os.ReadDir(dir)
 	if err != nil {
