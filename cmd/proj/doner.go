@@ -50,10 +50,12 @@ const DonerTag = "doner"
 // had just answered "no" to. Naming the real reasons, and asking for the one
 // that applies, makes the honest answer the available one.
 //
-// Waiting is named as its own instruction because a session that stops to wait
-// is not waiting: nothing wakes it, so it is parked until a human returns. A
-// background command that ends when the thing it waits for does wakes the
-// session itself, which is the difference between waiting and stopping.
+// Waiting is named as its own instruction, and given the exact words to answer
+// with, because a session waiting on a job it cannot hurry had no way through
+// the hook: it was not done, so it was blocked into another turn against work
+// it could only sit out. It now says "Waiting on <id>", the hook lets it stop,
+// and the backstop asks again half an hour later in case what it named never
+// came back.
 //
 // It rules out the plausible non-reasons by name, because those are what a
 // session reaches for: finishing a large piece of work, judging that it has
@@ -263,6 +265,14 @@ func runDonerHook(cmd *cobra.Command, args []string) error {
 	}
 	if isDone(in.LastAssistantMessage) {
 		return nil // the session reported finished
+	}
+	// "Waiting on <id>" is the other answer the nudge asks for, and blocking it
+	// would defeat the point: a session waiting on a job it started has nothing
+	// to continue, and holding it here would spin it through turn after turn
+	// against a job it cannot hurry. It stops, and the daemon's backstop asks
+	// again once the wait window has passed.
+	if daemon.IsWaiting(in.LastAssistantMessage) {
+		return nil
 	}
 	out, _ := json.Marshal(map[string]string{"decision": "block", "reason": donerReason})
 	fmt.Println(string(out))

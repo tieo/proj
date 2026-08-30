@@ -70,3 +70,53 @@ func TestPruneDonerNudges(t *testing.T) {
 	}
 	donerNudgedAt = map[string]time.Time{}
 }
+
+func TestIsWaiting(t *testing.T) {
+	waiting := []string{
+		"Waiting on agent-7",
+		"waiting on the deploy job",
+		"Handed the crawl to a subagent.\n\nWaiting on crawl-42",
+		"WAITING ON build-3",
+	}
+	for _, s := range waiting {
+		if !IsWaiting(s) {
+			t.Errorf("not read as waiting: %q", s)
+		}
+	}
+	notWaiting := []string{
+		"Yes.",
+		"waiting on",                          // names nothing, so it buys nothing
+		"I am waiting on the build to finish", // a sentence, not the answer
+		"",
+	}
+	for _, s := range notWaiting {
+		if IsWaiting(s) {
+			t.Errorf("read as waiting: %q", s)
+		}
+	}
+	// The two answers are distinct: a wait is not a finish.
+	if IsDone("Waiting on agent-7") {
+		t.Error("a wait must not read as done")
+	}
+}
+
+// A nudge that is answered in seconds and followed by silence achieved
+// nothing. Counting those is what stops a loop whose cause proj has no phrase
+// for yet, which is how one session was nudged 260 times over a weekly limit.
+func TestBounced(t *testing.T) {
+	now := time.Now()
+	if !bounced(now.Add(-2*time.Minute), now.Add(-2*time.Minute+3*time.Second)) {
+		t.Error("an instant reply is a bounce")
+	}
+	if bounced(now.Add(-2*time.Hour), now.Add(-10*time.Minute)) {
+		t.Error("a session that went away and worked is not a bounce")
+	}
+	// Never nudged, or a transcript last written before the nudge landed: no
+	// evidence either way, so nothing is counted against the session.
+	if bounced(time.Time{}, now) {
+		t.Error("a session that was never nudged cannot bounce")
+	}
+	if bounced(now.Add(-time.Minute), now.Add(-5*time.Minute)) {
+		t.Error("a write older than the nudge is not an answer to it")
+	}
+}

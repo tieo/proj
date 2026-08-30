@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 
@@ -35,17 +36,51 @@ const DonerTag = "doner"
 const DonerReason = "done with everything you were granted to do, hard blocked by something, " +
 	"or it needs the user (being done with a big chunk, arriving at a 'good place to end', " +
 	"or being at the end of your context do NOT count!), reply exactly: Yes. " +
-	"Waiting on something? wait for it actively: a background command that ends when it does, " +
-	"which wakes you. ANYTHING else? continue."
+	"Waiting on a job you started and cannot hurry? reply exactly: Waiting on <id>, " +
+	"naming the agent, task or command you are waiting for; you will be asked again in " +
+	"half an hour and nothing will disturb you before then. ANYTHING else? continue."
 
 // donerNudgedAt is the last time each session was nudged, so a session that
 // stays quiet is not nudged every tick. In memory only: a daemon restart
 // costing one extra nudge is not worth a state file.
 var donerNudgedAt = map[string]time.Time{}
 
+// donerBounces counts, per session, the nudges in a row that produced nothing
+// but an instant reply. In memory only, like donerNudgedAt: a daemon restart
+// forgiving a stuck session one more try is cheaper than a state file.
+var donerBounces = map[string]int{}
+
+// A nudge is meant to restart work, so a session that answers it in seconds and
+// falls straight back to silence did not take it: it bounced. The usual cause
+// is a session that cannot answer at all - out of quota, a dead token, a model
+// error - and the nudge then repeats for as long as the cause lasts. One such
+// loop ran 260 times against a single session over a weekly limit.
+//
+// Detecting the causes one by one does not scale: each needs its own phrase,
+// and the phrase is only learned after the loop has already run. Counting
+// bounces needs to know none of them. Three is the allowance: enough that a
+// single odd reply does not stand a session down, few enough that a loop dies
+// within three grace periods rather than hundreds. A session that answers
+// properly, or takes its time, clears the count.
+const (
+	bounceReplyWindow = 90 * time.Second
+	maxBounces        = 3
+)
+
+// bounced reports whether the last nudge produced an instant reply and nothing
+// else. lastWrite is the transcript's final write, which is the session's own
+// answer to the nudge; a session that went off and worked writes for far longer
+// than the window.
+func bounced(nudgedAt, lastWrite time.Time) bool {
+	if nudgedAt.IsZero() || lastWrite.Before(nudgedAt) {
+		return false
+	}
+	return lastWrite.Sub(nudgedAt) < bounceReplyWindow
+}
+
 // donerTick nudges one idle doner-tagged session that has gone quiet past the
 // grace. content is the pane capture, sessFile its transcript.
-func donerTick(cfg Config, reg projects.Registry, p tmux.Pane, dir, content, sessFile string, now time.Time) {
+func donerTick(cfg Config, reg projects.Registry, p tmux.Pane, dir, content, sessFile string, banner *Banner, now time.Time) {
 	if !cfg.Doner.Active() || sessFile == "" {
 		return
 	}
@@ -86,10 +121,26 @@ func donerTick(cfg Config, reg projects.Registry, p tmux.Pane, dir, content, ses
 	if composerHasDraft(tmux.CapturePaneEsc(p.ID)) {
 		return
 	}
+	// A session that has run out of quota cannot answer at all: the nudge lands,
+	// the model refuses with the limit banner, and the whole exchange repeats
+	// every grace period until the reset. Nudging it is not a backstop, it is a
+	// loop, so the limit is left to the resume path that watches for the reset.
+	if banner != nil {
+		return
+	}
+	last := lastAssistantText(sessFile)
 	// Already reported done. The Stop hook lets such a session go, and the
 	// backstop has to agree: without this it re-nudged a session that had
 	// answered, every grace period, for as long as it sat there.
-	if IsDone(lastAssistantText(sessFile)) {
+	if IsDone(last) {
+		return
+	}
+	// Waiting on a job it started. The nudge asks for that answer by name, and
+	// asking again straight away is what the answer exists to prevent: the
+	// session cannot make the job finish sooner, so it is left alone for the
+	// wait window and asked again only once that has passed, in case whatever
+	// it named never came back.
+	if IsWaiting(last) && now.Sub(transcriptMTime(sessFile)) < WaitWindow {
 		return
 	}
 	grace := cfg.Doner.GraceDuration()
@@ -101,6 +152,23 @@ func donerTick(cfg Config, reg projects.Registry, p tmux.Pane, dir, content, ses
 	if last, ok := donerNudgedAt[p.Session]; ok && now.Sub(last) < grace {
 		return
 	}
+	// Whatever the last nudge achieved is visible now: either the session went
+	// away and worked, or it answered in seconds and stopped again. Only the
+	// second kind counts against it, and any other outcome clears the tally.
+	if bounced(donerNudgedAt[p.Session], transcriptMTime(sessFile)) {
+		donerBounces[p.Session]++
+	} else {
+		delete(donerBounces, p.Session)
+	}
+	if donerBounces[p.Session] >= maxBounces {
+		if donerBounces[p.Session] == maxBounces {
+			slog.Warn("doner: standing down, the nudge is bouncing",
+				"session", p.Session, "bounces", donerBounces[p.Session],
+				"last_reply", strings.TrimSpace(firstLine(last)))
+			donerBounces[p.Session]++ // log once, then stay quiet
+		}
+		return
+	}
 	if err := SendPrompt(cfg, p.ID, DonerReason); err != nil {
 		slog.Error("doner nudge failed", "session", p.Session, "err", err)
 		return
@@ -108,6 +176,31 @@ func donerTick(cfg Config, reg projects.Registry, p tmux.Pane, dir, content, ses
 	donerNudgedAt[p.Session] = now
 	slog.Info("doner nudged an idle session", "session", p.Session,
 		"quiet_for", now.Sub(transcriptMTime(sessFile)).Round(time.Second))
+}
+
+// WaitWindow is how long a session that reported itself waiting is left alone.
+// It is the one number the answer buys: long enough that a job worth waiting
+// for has a chance to finish, short enough that a job which never returns does
+// not park the session for the rest of the day.
+const WaitWindow = 30 * time.Minute
+
+// waitingRE matches the answer the nudge asks for when a session is waiting on
+// something it started ("Waiting on agent-7", "waiting on the deploy job").
+// What is named is not checked: the daemon cannot verify someone else's id, and
+// the claim is only ever worth half an hour of quiet.
+var waitingRE = regexp.MustCompile(`(?i)^waiting on\s+\S+`)
+
+// IsWaiting reports whether a reply says the session is waiting on a job it
+// started. Like IsDone it reads the last line, so a reason line above the
+// answer does not hide it.
+func IsWaiting(text string) bool {
+	lines := strings.Split(strings.TrimSpace(text), "\n")
+	for i := len(lines) - 1; i >= 0; i-- {
+		if line := strings.TrimSpace(lines[i]); line != "" {
+			return waitingRE.MatchString(line)
+		}
+	}
+	return false
 }
 
 // doneReplies is the one word the nudge asks for. It was a wider set of
@@ -247,4 +340,15 @@ func pruneDonerNudges(live map[string]bool) {
 			delete(donerNudgedAt, name)
 		}
 	}
+}
+
+// firstLine is the head of a reply, for a log line that has to stay one line.
+func firstLine(s string) string {
+	if i := strings.IndexByte(s, '\n'); i >= 0 {
+		s = s[:i]
+	}
+	if len(s) > 120 {
+		s = s[:120]
+	}
+	return s
 }

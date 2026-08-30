@@ -143,10 +143,12 @@ var bannerPatterns = []*regexp.Regexp{
 	//   ⎿  You're out of extra usage · resets 3am (Europe/Berlin)
 	//   ⎿  You're out of extra usage · resets May 24, 2am (Europe/Berlin)
 	//   ⎿  You've hit your session limit · resets 7:10pm (Europe/Berlin)
+	//   ⎿  You've hit your weekly limit · resets Aug 30, 2am (Europe/Berlin)
+	//   ⎿  You've hit your weekly limit · resets 2am (Europe/Berlin)
 	// The "· resets <time> (tz)" tail is shared; only the lead phrase differs.
 	// Timezone may wrap to the next line; the date prefix appears only when the
 	// reset is more than ~24h out. New phrases are added only after a real capture.
-	regexp.MustCompile(`(?i)(?:out of extra usage|session limit)(?:\s*[·.\-])?\s+resets\s+(?:([A-Za-z]+\s+\d{1,2}),\s+)?(\d{1,2}(?::\d{2})?\s*(?:am|pm))(?:\s*\(([A-Za-z_/+\-0-9]+)\))?`),
+	regexp.MustCompile(`(?i)(?:out of extra usage|session limit|weekly limit)(?:\s*[·.\-])?\s+resets\s+(?:([A-Za-z]+\s+\d{1,2}),\s+)?(\d{1,2}(?::\d{2})?\s*(?:am|pm))(?:\s*\(([A-Za-z_/+\-0-9]+)\))?`),
 }
 
 var timeRE = regexp.MustCompile(`^(\d{1,2})(?::(\d{2}))?(am|pm)$`)
@@ -2887,7 +2889,7 @@ func Tick(cfg Config, state State, errorState ErrorState, managed ManagedState, 
 			// No stall: the session is either working or has gone idle. The Stop
 			// hook keeps a doner session going while it answers; this catches the
 			// one that stopped anyway and has since gone quiet.
-			donerTick(cfg, reg, p, paneDir, content, sessFile, now)
+			donerTick(cfg, reg, p, paneDir, content, sessFile, b, now)
 			continue
 		}
 		prev := state[p.ID]

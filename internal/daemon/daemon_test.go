@@ -1479,3 +1479,19 @@ func TestComposerHasDraft(t *testing.T) {
 		t.Error("missing input line should report busy")
 	}
 }
+
+// TestDetect_WeeklyLimit covers the phrase that was missing: a session out of
+// weekly quota showed no banner at all, so the list said nothing was wrong and
+// the doner backstop nudged it every grace period until the reset, 260 times
+// against one session.
+func TestDetect_WeeklyLimit(t *testing.T) {
+	for _, s := range []string{
+		`  ⎿  You've hit your weekly limit · resets Aug 30, 2am (Europe/Berlin)`,
+		`  ⎿  You've hit your weekly limit · resets 2am (Europe/Berlin)`,
+	} {
+		b := Detect(s, time.Now())
+		if b == nil {
+			t.Fatalf("weekly-limit banner not detected: %q", s)
+		}
+	}
+}

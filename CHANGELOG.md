@@ -3,6 +3,14 @@
 ## [Unreleased]
 
 ### Fixed
+- The doner nudge stops repeating itself. A session that answers in seconds and
+  falls straight back to silence has not taken the nudge, and three of those in
+  a row stand the backstop down for that session; one loop ran 260 times against
+  a session that was over its weekly limit and could not answer at all. That
+  phrase is now recognised as a usage-limit banner too, so the list shows it and
+  the resume path waits for the reset instead. A session waiting on a job it
+  started answers `Waiting on <id>`, which the Stop hook lets through and the
+  backstop leaves alone for half an hour.
 - The daemon reads the transcript of the session a pane is running, not the
   newest file in its directory. Claude Code runs the conversation in a
   background host while the terminal process keeps the session it started
