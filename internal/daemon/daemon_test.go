@@ -1397,7 +1397,7 @@ func TestDetectFromTranscript_LimitLast(t *testing.T) {
 }
 
 func TestHasTrustPrompt(t *testing.T) {
-	content := `
+	numbered := `
  Accessing workspace:
 
  /tmp/claude-1000/-home-user-projects-code-proj/session/scratchpad/agytest
@@ -1407,9 +1407,50 @@ func TestHasTrustPrompt(t *testing.T) {
  ❯ 1. Yes, I trust this folder
    2. No, exit
 `
-	if !HasTrustPrompt(content) {
-		t.Fatal("workspace trust prompt was not detected")
+	if !HasTrustPrompt(numbered) {
+		t.Fatal("numbered workspace trust prompt was not detected")
 	}
+	if !trustPromptCursorOnYes(numbered) {
+		t.Fatal("cursor sits on the numbered Yes option by default")
+	}
+
+	// A newer Claude Code build dropped numbering and defaults the cursor
+	// to "No, exit" instead of "Yes" - both must still be detected, and the
+	// cursor position must be read correctly so Enter alone isn't sent
+	// straight into declining the folder.
+	unnumberedNoDefault := `
+ Accessing workspace:
+ /home/marius/projects/code/Arbay
+ Quick safety check: Is this a project you created or one you trust? (Like your
+ own code, a well-known open source project, or work from your team). If not,
+ take a moment to review what's in this folder first.
+ Claude Code'll be able to read, edit, and execute files here.
+ Security guide
+ ❯ No, exit
+   Yes, I trust this folder
+ Enter to confirm · Esc to cancel
+`
+	if !HasTrustPrompt(unnumberedNoDefault) {
+		t.Fatal("unnumbered workspace trust prompt was not detected")
+	}
+	if trustPromptCursorOnYes(unnumberedNoDefault) {
+		t.Fatal("cursor sits on \"No, exit\", not Yes")
+	}
+
+	unnumberedYesSelected := `
+ Accessing workspace:
+ /home/marius/projects/code/Arbay
+ Quick safety check: Is this a project you created or one you trust?
+   No, exit
+ ❯ Yes, I trust this folder
+`
+	if !HasTrustPrompt(unnumberedYesSelected) {
+		t.Fatal("unnumbered workspace trust prompt (Yes selected) was not detected")
+	}
+	if !trustPromptCursorOnYes(unnumberedYesSelected) {
+		t.Fatal("cursor sits on \"Yes, I trust this folder\"")
+	}
+
 	if HasTrustPrompt("❯ 1. Yes, I trust this folder\nplain prose") {
 		t.Fatal("option text alone must not count")
 	}

@@ -185,10 +185,26 @@ var pickerOptionRE = regexp.MustCompile(`(?m)^\s*❯\s+\d+\.\s`)
 // must not be dismissed.
 var inputBoxRE = regexp.MustCompile(`(?i)shift\+tab|\? for shortcuts|bypass permissions|accept edits|plan mode on`)
 
-var trustPromptRE = regexp.MustCompile(`(?is)Accessing workspace:\s+(.+?)\s+Quick safety check:\s+Is this a project you created or one you trust\?.*❯\s+1\.\s+Yes, I trust this folder`)
+// trustPromptRE matches the dialog itself, independent of the option order
+// and numbering, both of which have changed between Claude Code releases: an
+// older build always listed "Yes" first as option 1 (the default cursor
+// position), a newer one lists "No, exit" first with no numbering and starts
+// the cursor there instead. Anchoring on option order or a specific default
+// caused the older regex to stop matching entirely once the order flipped,
+// leaving the dialog undetected and the pane stuck forever.
+var trustPromptRE = regexp.MustCompile(`(?is)Accessing workspace:\s+(.+?)\s+Quick safety check:\s+Is this a project you created or one you trust\?.*Yes, I trust this folder`)
+
+// trustPromptCursorOnYesRE matches only when the cursor (❯) already sits on
+// the "Yes" option, with or without a leading number, so the caller knows
+// whether Enter alone accepts it or the cursor needs moving there first.
+var trustPromptCursorOnYesRE = regexp.MustCompile(`(?im)^\s*❯\s*(?:\d+\.\s*)?Yes, I trust this folder\s*$`)
 
 func HasTrustPrompt(content string) bool {
 	return trustPromptRE.MatchString(content)
+}
+
+func trustPromptCursorOnYes(content string) bool {
+	return trustPromptCursorOnYesRE.MatchString(content)
 }
 
 func autoTrustPath(baseDir, path string) bool {
@@ -2561,6 +2577,12 @@ func Tick(cfg Config, state State, errorState ErrorState, managed ManagedState, 
 		if HasTrustPrompt(content) {
 			if autoTrustPath(cfg.BaseDir, paneDir) {
 				slog.Info("accept trust prompt", "session", p.Session, "pane", p.ID, "dir", paneDir)
+				if !trustPromptCursorOnYes(content) {
+					if err := tmux.SendKey(p.ID, "Down"); err != nil {
+						slog.Error("send Down failed", "session", p.Session, "err", err)
+						continue
+					}
+				}
 				if err := tmux.SendKey(p.ID, "Enter"); err != nil {
 					slog.Error("send Enter failed", "session", p.Session, "err", err)
 				}
