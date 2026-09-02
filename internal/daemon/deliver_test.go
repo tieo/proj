@@ -106,6 +106,33 @@ func TestTypeVerifiedRejectsATruncatedFill(t *testing.T) {
 	}
 }
 
+// The TUI does not always repaint what was just typed within the first
+// settle pause - a session idling for two days still read back a fully
+// typed prompt as truncated after one pause, and only a later, unrelated
+// keypress forced the repaint that showed it had landed correctly. Retrying
+// the read-back survives that lag instead of reporting a live delivery as
+// failed.
+func TestTypeVerifiedRetriesUntilTheRepaintCatchesUp(t *testing.T) {
+	reads := 0
+	io := paneIO{
+		send: func(string, string) error { return nil },
+		read: func(string) (string, bool, bool) {
+			reads++
+			if reads < 3 {
+				return "the whole pro", false, true // stale repaint
+			}
+			return "the whole prompt", false, true // caught up
+		},
+	}
+	ok, err := typeVerifiedVia(io, "s", "the whole prompt")
+	if err != nil || !ok {
+		t.Fatalf("typeVerified = (%v, %v), want (true, nil)", ok, err)
+	}
+	if reads != 3 {
+		t.Errorf("read %d times, want exactly 3 (stop as soon as it matches)", reads)
+	}
+}
+
 func TestTypeVerifiedRejectsAPastePlaceholder(t *testing.T) {
 	io := paneIO{
 		send: func(string, string) error { return nil },

@@ -110,6 +110,18 @@ var livePane = paneIO{
 	},
 }
 
+// typeVerifyAttempts bounds how many times the composer is read back before
+// giving up on a fill. Claude Code's TUI does not repaint every keystroke the
+// moment it lands: plain characters can sit typed-but-unrendered for longer
+// than one composerSettle pause, while Escape and Enter repaint immediately -
+// observed against a session that had idled for two days, where a fully typed
+// prompt still read back truncated after the old single pause, was reported as
+// undelivered, and sat unsent until an unrelated Enter finally forced the
+// repaint and revealed it had landed correctly all along. Reading again gives
+// the render loop more chances to catch up instead of gambling everything on
+// one sleep.
+const typeVerifyAttempts = 6
+
 // typeVerified types text into target and reports whether the input box ends
 // with it. Whatever stood in the box before is left alone and goes out with the
 // prompt: the target sorts that out, and touching it has cost more than it ever
@@ -123,14 +135,19 @@ func typeVerifiedVia(io paneIO, target, text string) (bool, error) {
 	if err := io.send(target, text); err != nil {
 		return false, err
 	}
-	box, _, present := io.read(target)
-	// Whether the box holds a paste marker somewhere is not the question: the
-	// question is whether it ends with what was just typed. A marker left in the
-	// box by an earlier message used to veto every send into that session for
-	// good, and the text piled up unsent behind it. When the marker swallowed
-	// this text, the suffix check fails on its own and the file handover
-	// follows, which is what it is for.
-	return present && composerEndsWith(box, text), nil
+	for attempt := 0; attempt < typeVerifyAttempts; attempt++ {
+		box, _, present := io.read(target)
+		// Whether the box holds a paste marker somewhere is not the question:
+		// the question is whether it ends with what was just typed. A marker
+		// left in the box by an earlier message used to veto every send into
+		// that session for good, and the text piled up unsent behind it. When
+		// the marker swallowed this text, the suffix check fails on its own
+		// and the file handover follows, which is what it is for.
+		if present && composerEndsWith(box, text) {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 // SendPrompt delivers text into a session's input box and submits it as a turn
