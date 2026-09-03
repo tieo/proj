@@ -19,6 +19,12 @@ import (
 type recordingOps struct {
 	live string // session name reported for the project's directory
 
+	// selfPane and pane simulate SelfPane/PaneForPath: setting both to the
+	// same non-empty value makes renameProject treat this as a session
+	// renaming itself.
+	selfPane string
+	pane     string
+
 	calls []string
 
 	oldDirAtPark   bool   // the project directory still existed when the pane was parked
@@ -26,6 +32,7 @@ type recordingOps struct {
 	startedIn      string // directory the tool was relaunched in
 	startedCmd     string // command the tool was relaunched with
 	renamedTo      string
+	deferred       bool // the relaunch went through DeferredRespawnSession, not RespawnSession
 
 	oldFolder string // history folder of the pre-rename path
 	newFolder string // history folder of the post-rename path
@@ -35,6 +42,13 @@ func (o *recordingOps) SessionForPath(string) string {
 	o.calls = append(o.calls, "SessionForPath")
 	return o.live
 }
+
+// PaneForPath and SelfPane are read-only probes renameProject uses to decide
+// whether it is being asked to rename its own session; they are not part of
+// the recorded call order, which documents the write side (park before move,
+// migrate before relaunch).
+func (o *recordingOps) PaneForPath(string) string { return o.pane }
+func (o *recordingOps) SelfPane() string          { return o.selfPane }
 
 func (o *recordingOps) RenameSession(_, newName string) error {
 	o.calls = append(o.calls, "RenameSession")
@@ -51,6 +65,18 @@ func (o *recordingOps) RespawnShell(_, dir string) error {
 
 func (o *recordingOps) RespawnSession(_, dir, command string) error {
 	o.calls = append(o.calls, "RespawnSession")
+	o.recordRelaunch(dir, command)
+	return nil
+}
+
+func (o *recordingOps) DeferredRespawnSession(_, dir, command string) error {
+	o.calls = append(o.calls, "DeferredRespawnSession")
+	o.deferred = true
+	o.recordRelaunch(dir, command)
+	return nil
+}
+
+func (o *recordingOps) recordRelaunch(dir, command string) {
 	o.startedIn = dir
 	o.startedCmd = command
 	switch {
@@ -61,7 +87,6 @@ func (o *recordingOps) RespawnSession(_, dir, command string) error {
 	default:
 		o.historyAtStart = "none"
 	}
-	return nil
 }
 
 func hasTranscript(folder string) bool {
@@ -179,6 +204,43 @@ func TestRenameProjectWithoutLiveSession(t *testing.T) {
 	want := []string{"SessionForPath", "RenameSession"}
 	if strings.Join(ops.calls, ",") != strings.Join(want, ",") {
 		t.Errorf("call order = %v, want %v", ops.calls, want)
+	}
+	if !hasTranscript(newFolder) || hasTranscript(oldFolder) {
+		t.Error("the conversation did not move to the new path")
+	}
+}
+
+// A session renaming itself - live's pane is this process's own pane - must
+// not park (RespawnShell) or synchronously respawn (RespawnSession): both
+// would kill the very command running the rename. Reproduces the bug where
+// a self-rename got killed by its own park step, moved the directory, and
+// then never came back: the daemon later revived the old name pointing at a
+// directory that no longer existed. The history still has to migrate and the
+// relaunch still has to happen, just through DeferredRespawnSession.
+func TestRenameProjectRenamingItself(t *testing.T) {
+	cfg, p, oldFolder, newFolder := renameFixture(t)
+	newDir := filepath.Join(cfg.BaseDir, "new")
+
+	ops := &recordingOps{live: "old", selfPane: "%1", pane: "%1", oldFolder: oldFolder, newFolder: newFolder}
+	if err := renameProject(cfg, p, "new", ops); err != nil {
+		t.Fatalf("renameProject: %v", err)
+	}
+
+	want := []string{"SessionForPath", "RenameSession", "DeferredRespawnSession"}
+	if strings.Join(ops.calls, ",") != strings.Join(want, ",") {
+		t.Errorf("call order = %v, want %v (no RespawnShell, no synchronous RespawnSession)", ops.calls, want)
+	}
+	if !ops.deferred {
+		t.Error("relaunch did not go through DeferredRespawnSession")
+	}
+	if ops.historyAtStart != "new" {
+		t.Errorf("history was %q when the relaunch was scheduled, want it already migrated (%q)", ops.historyAtStart, "new")
+	}
+	if ops.startedIn != newDir {
+		t.Errorf("relaunch scheduled for %q, want %q", ops.startedIn, newDir)
+	}
+	if ops.renamedTo != "new" {
+		t.Errorf("session renamed to %q, want %q", ops.renamedTo, "new")
 	}
 	if !hasTranscript(newFolder) || hasTranscript(oldFolder) {
 		t.Error("the conversation did not move to the new path")

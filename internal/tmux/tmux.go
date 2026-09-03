@@ -51,6 +51,26 @@ func SessionForPath(dir string) string {
 	return ""
 }
 
+// PaneForPath returns the id of the pane whose working directory is dir, or
+// "" if none. Same two-pass lookup as SessionForPath (the session's recorded
+// path, then every pane's actual current path, since a respawned pane's
+// directory drifts from the session's original one) but returns the pane
+// rather than the session, so a caller can tell whether that pane is its own.
+func PaneForPath(dir string) string {
+	for _, s := range ListSessions() {
+		if s.Path == dir {
+			return firstLine(shellout.Run("tmux", "list-panes", "-t", "="+s.Name, "-F", "#{pane_id}"))
+		}
+	}
+	for _, line := range strings.Split(shellout.Run("tmux", "list-panes", "-a", "-F", "#{pane_id}\t#{pane_current_path}"), "\n") {
+		parts := strings.SplitN(line, "\t", 2)
+		if len(parts) == 2 && parts[1] == dir {
+			return parts[0]
+		}
+	}
+	return ""
+}
+
 func ListPanes() []Pane {
 	out := shellout.Run("tmux", "list-panes", "-a", "-F", "#{session_name}\t#{pane_id}")
 	var panes []Pane
@@ -588,6 +608,34 @@ func RespawnSession(name, dir, command string) error {
 	}
 	_, err := shellout.RunErr("tmux", "respawn-pane", "-k", "-t", pane, "-c", dir, command)
 	return err
+}
+
+// deferredRespawnDelaySeconds gives a rename command time to return its
+// result and exit cleanly before DeferredRespawnSession replaces the pane
+// underneath it.
+const deferredRespawnDelaySeconds = "2"
+
+// DeferredRespawnSession is RespawnSession, run a couple of seconds from now
+// in a background process detached from the caller. A session renaming
+// itself needs this instead of RespawnSession: that pane's foreground program
+// is the very process running the rename, mid-command, so replacing it
+// synchronously kills the rename before it can finish - the directory moves,
+// but the session never comes back on its own, and everything after the kill
+// (the tmux session rename, the bookkeeping carried by renameManagedSession)
+// is left undone too. Returning first and swapping the pane a couple of
+// seconds later lets the command finish, report success, and exit on its own
+// before the ground moves under it.
+func DeferredRespawnSession(name, dir, command string) error {
+	pane := firstLine(shellout.Run("tmux", "list-panes", "-t", "="+name, "-F", "#{pane_id}"))
+	if pane == "" {
+		return fmt.Errorf("session %q has no pane", name)
+	}
+	if err := CheckPaneCommand(command); err != nil {
+		return err
+	}
+	script := "sleep " + deferredRespawnDelaySeconds + " && tmux respawn-pane -k -t " +
+		shellout.Quote(pane) + " -c " + shellout.Quote(dir) + " " + shellout.Quote(command)
+	return shellout.Detach("sh", "-c", script)
 }
 
 // RespawnShell replaces a session's pane program with a plain shell in dir,

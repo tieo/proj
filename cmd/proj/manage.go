@@ -145,20 +145,34 @@ var renameCmd = &cobra.Command{
 // can then assert the order without a tmux server.
 type sessionOps interface {
 	SessionForPath(dir string) string
+	PaneForPath(dir string) string
+	SelfPane() string
 	RenameSession(oldName, newName string) error
 	RespawnShell(name, dir string) error
 	RespawnSession(name, dir, command string) error
+	DeferredRespawnSession(name, dir, command string) error
 }
 
 type tmuxSessionOps struct{}
 
 func (tmuxSessionOps) SessionForPath(dir string) string { return tmux.SessionForPath(dir) }
+func (tmuxSessionOps) PaneForPath(dir string) string     { return tmux.PaneForPath(dir) }
+
+// SelfPane names this process's own pane, the way tmux tells any program
+// running inside one - so a rename that finds its target's live session
+// sitting in that very pane knows it is being asked to rename out from under
+// itself.
+func (tmuxSessionOps) SelfPane() string { return os.Getenv("TMUX_PANE") }
+
 func (tmuxSessionOps) RenameSession(oldName, newName string) error {
 	return tmux.RenameSession(oldName, newName)
 }
 func (tmuxSessionOps) RespawnShell(name, dir string) error { return tmux.RespawnShell(name, dir) }
 func (tmuxSessionOps) RespawnSession(name, dir, command string) error {
 	return tmux.RespawnSession(name, dir, command)
+}
+func (tmuxSessionOps) DeferredRespawnSession(name, dir, command string) error {
+	return tmux.DeferredRespawnSession(name, dir, command)
 }
 
 // renameProject moves a project to newName and carries its running
@@ -170,6 +184,11 @@ func (tmuxSessionOps) RespawnSession(name, dir, command string) error {
 // history have moved, the same session (same name-independent id, so attached
 // clients stay attached) relaunches the tool in the new directory, where its
 // resume command finds the migrated conversation.
+//
+// A session renaming itself is the one exception: it skips the park (nothing
+// else is going to append to the transcript while this command is what the
+// session is doing) and swaps its own pane a couple of seconds late instead of
+// now, since now would be synchronous suicide - see selfRename below.
 func renameProject(cfg config.Config, p projects.Project, newName string, ops sessionOps) error {
 	if err := projects.ValidateName(newName); err != nil {
 		return err
@@ -195,7 +214,17 @@ func renameProject(cfg config.Config, p projects.Project, newName string, ops se
 	bridge := daemon.BridgeSessionID(cfg.Claude.Home, p.Dir)
 
 	live := ops.SessionForPath(p.Dir)
-	if live != "" {
+	// A rename invoked from within the very session it targets - the normal
+	// way an agent renames its own project - has that session's pane as its
+	// own controlling pane. Parking or respawning that pane kills whatever is
+	// running in it, which here is this rename command itself, mid-execution:
+	// everything after the kill (the directory move might make it, but the
+	// session rename, the bookkeeping, the relaunch never run) is lost, and
+	// the daemon later revives the old name pointing at a directory that no
+	// longer exists, landing tmux's own fallback of $HOME instead. selfRename
+	// takes the deferred path below instead of the synchronous one.
+	selfRename := live != "" && ops.SelfPane() != "" && ops.PaneForPath(p.Dir) == ops.SelfPane()
+	if live != "" && !selfRename {
 		if err := ops.RespawnShell(live, p.Dir); err != nil {
 			return fmt.Errorf("park session %q: %w", live, err)
 		}
@@ -222,12 +251,26 @@ func renameProject(cfg config.Config, p projects.Project, newName string, ops se
 	sessions.MigrateProjectEntry(sessions.Home(cfg.Claude.Home), p.Dir, newDir)
 	renameManagedSession(oldSession, newSession, newDir)
 
-	if live == "" {
+	switch {
+	case live == "":
 		// Nothing is running under the project's directory, but a session may
 		// still carry its old name (e.g. it was created and the project renamed
 		// while the tool was down).
 		_ = ops.RenameSession(oldSession, newSession)
-	} else {
+	case selfRename:
+		if live != newSession {
+			if err := ops.RenameSession(live, newSession); err != nil {
+				return fmt.Errorf("rename session %q: %w", live, err)
+			}
+		}
+		cmdLine := daemon.LaunchCommand(spec, cfg.Claude.Home, newName, newSession, newDir)
+		if err := ops.DeferredRespawnSession(newSession, newDir, cmdLine); err != nil {
+			return fmt.Errorf("schedule relaunch for session %q: %w", newSession, err)
+		}
+		retitleRemote(cfg.Claude.Home, bridge, newDir, newSession)
+		fmt.Printf("renamed %s -> %s; this session's own pane will swap in a couple of seconds\n", p.Dir, newDir)
+		return nil
+	default:
 		if live != newSession {
 			if err := ops.RenameSession(live, newSession); err != nil {
 				return fmt.Errorf("rename session %q: %w", live, err)

@@ -5,6 +5,7 @@ package shellout
 import (
 	"os/exec"
 	"strings"
+	"syscall"
 )
 
 // Run executes cmd with args and returns trimmed stdout, or "" on error.
@@ -23,6 +24,17 @@ func RunErr(name string, args ...string) (string, error) {
 		return "", err
 	}
 	return strings.TrimRight(string(out), "\n"), nil
+}
+
+// Detach starts name with args as a background process in its own session, so
+// it outlives the caller's exit instead of dying with it (the default for a
+// child left in its parent's process group). For an action that has to
+// happen after the calling process is already gone, not as part of what it
+// does.
+func Detach(name string, args ...string) error {
+	cmd := exec.Command(name, args...)
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	return cmd.Start()
 }
 
 // Quote wraps s in single quotes so it survives as a single word when a
