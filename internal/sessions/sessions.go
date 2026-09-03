@@ -793,10 +793,16 @@ func NewSessionID() string {
 	return fmt.Sprintf("%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:16])
 }
 
-// MigrateHistory moves the Claude transcript folder for a project being renamed
-// from oldDir to newDir, rewriting each transcript's cwd to the new path. It is
-// best-effort and a no-op when there is nothing under the old location (so it
-// safely does nothing on setups where the project's history lives elsewhere).
+// MigrateHistory moves the Claude project folder for a project being renamed
+// from oldDir to newDir: the .jsonl transcripts at its top level, each
+// rewritten to name the new cwd, and everything else parked alongside them -
+// the memory/ directory the auto-memory system keeps, a bridge-pointer.json,
+// a transcript's own subagents/ subfolder. An earlier version moved only the
+// top-level .jsonl files, which left memory/ (and anything else non-.jsonl)
+// behind under the old slug forever: the renamed project opened with its
+// history but no memory, and merging it back in meant finding the old
+// transcript folder by hand. It is best-effort and a no-op when there is
+// nothing under the old location.
 func MigrateHistory(home, oldDir, newDir string) {
 	all, _ := List(home)
 	oldCwd := CwdForDir(oldDir, all)
@@ -814,31 +820,84 @@ func MigrateHistory(home, oldDir, newDir string) {
 		return
 	}
 	for _, e := range entries {
-		if e.IsDir() || !strings.HasSuffix(e.Name(), ".jsonl") {
+		oldPath := filepath.Join(oldFolder, e.Name())
+		newPath := filepath.Join(newFolder, e.Name())
+		if e.IsDir() {
+			mergeDir(oldPath, newPath)
 			continue
 		}
-		data, err := os.ReadFile(filepath.Join(oldFolder, e.Name()))
+		if !strings.HasSuffix(e.Name(), ".jsonl") {
+			moveFile(oldPath, newPath, nil)
+			continue
+		}
+		data, err := os.ReadFile(oldPath)
 		if err != nil {
 			continue
 		}
 		data = bytes.ReplaceAll(data, []byte(jsonInner(oldCwd)), []byte(jsonInner(newCwd)))
-		newPath := filepath.Join(newFolder, e.Name())
-		if os.WriteFile(newPath, data, 0o644) != nil {
-			continue
-		}
-		// Verify the rewritten copy landed intact before deleting the original:
-		// the transcripts live on a flaky 9p mount, so a silent short write must
-		// not cost the only copy.
-		if got, err := os.ReadFile(newPath); err != nil || !bytes.Equal(got, data) {
-			continue
-		}
-		_ = os.Remove(filepath.Join(oldFolder, e.Name()))
+		moveFile(oldPath, newPath, data)
 	}
-	// Drop the source folder once its transcripts have moved, so a project
+	// Drop the source folder once everything under it has moved, so a project
 	// renamed a few times does not leave a trail of empty history folders. It
-	// stays if anything is left in it, transcript or not.
+	// stays if anything is left in it.
 	if rest, err := os.ReadDir(oldFolder); err == nil && len(rest) == 0 {
 		_ = os.Remove(oldFolder)
+	}
+}
+
+// moveFile writes data (or, when data is nil, oldPath's own contents) to
+// newPath and only removes oldPath once the copy at newPath reads back
+// identical - the transcripts live on a flaky 9p mount, so a silent short
+// write must not cost the only copy. A newPath that already exists is left
+// alone along with its source: a rename that lands on a name already in use
+// (a session already started under the new name, as when the daemon
+// relaunches the tool there before this runs) is not this function's place
+// to decide which of two same-named files wins, so nothing is overwritten
+// and nothing is lost either.
+func moveFile(oldPath, newPath string, data []byte) {
+	if _, err := os.Stat(newPath); err == nil {
+		return
+	}
+	if data == nil {
+		var err error
+		data, err = os.ReadFile(oldPath)
+		if err != nil {
+			return
+		}
+	}
+	if os.WriteFile(newPath, data, 0o644) != nil {
+		return
+	}
+	got, err := os.ReadFile(newPath)
+	if err != nil || !bytes.Equal(got, data) {
+		return
+	}
+	_ = os.Remove(oldPath)
+}
+
+// mergeDir moves everything under oldDir into newDir, recursively merging with
+// whatever already stands there - a memory/ folder a session already started
+// under the new name may have created - rather than refusing or clobbering
+// it. Entries newDir already has are left where they are, in oldDir too.
+func mergeDir(oldDir, newDir string) {
+	entries, err := os.ReadDir(oldDir)
+	if err != nil {
+		return
+	}
+	if err := os.MkdirAll(newDir, 0o755); err != nil {
+		return
+	}
+	for _, e := range entries {
+		oldPath := filepath.Join(oldDir, e.Name())
+		newPath := filepath.Join(newDir, e.Name())
+		if e.IsDir() {
+			mergeDir(oldPath, newPath)
+			continue
+		}
+		moveFile(oldPath, newPath, nil)
+	}
+	if rest, err := os.ReadDir(oldDir); err == nil && len(rest) == 0 {
+		_ = os.Remove(oldDir)
 	}
 }
 
