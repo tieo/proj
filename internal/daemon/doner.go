@@ -67,15 +67,67 @@ const (
 	maxBounces        = 3
 )
 
-// bounced reports whether the last nudge produced an instant reply and nothing
-// else. lastWrite is the transcript's final write, which is the session's own
-// answer to the nudge; a session that went off and worked writes for far longer
-// than the window.
-func bounced(nudgedAt, lastWrite time.Time) bool {
+// bounced reports whether the last nudge produced no work. lastWrite is the
+// transcript's final write, which is the session's own answer to the nudge, and
+// worked says whether any of what was written since the nudge was a real model
+// turn.
+//
+// Two shapes count. A reply inside the window is one: a session that went off
+// and worked writes for far longer than that. Written output holding no real
+// turn is the other, and it is the one the window alone misses. Claude Code
+// retries a failing request before it records the failure, so an API error
+// (network down, a dead token) lands minutes after the nudge, outside any
+// window short enough to be safe, and the transcript then holds nothing but the
+// error. Both shapes mean the nudge was not taken.
+func bounced(nudgedAt, lastWrite time.Time, worked bool) bool {
 	if nudgedAt.IsZero() || lastWrite.Before(nudgedAt) {
 		return false
 	}
+	if !worked {
+		return true
+	}
 	return lastWrite.Sub(nudgedAt) < bounceReplyWindow
+}
+
+// producedRealTurn reports whether the session recorded a real model turn after
+// the given time. That is the evidence a nudge reached the model at all:
+// locally injected error records (model "<synthetic>", isApiErrorMessage set)
+// are written by Claude Code itself and prove the opposite. Only the transcript
+// tail is read, as in lastAssistantText, because these files run to tens of
+// megabytes.
+func producedRealTurn(sessFile string, since time.Time) bool {
+	f, err := os.Open(sessFile)
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+	size, _ := f.Seek(0, io.SeekEnd)
+	start := size - transcriptTailBytes
+	if start < 0 {
+		start = 0
+	}
+	if _, err := f.Seek(start, io.SeekStart); err != nil {
+		return false
+	}
+	buf := make([]byte, transcriptTailBytes)
+	n, _ := f.Read(buf)
+	for _, line := range strings.Split(string(buf[:n]), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		var r struct {
+			transcriptRecord
+			Timestamp time.Time `json:"timestamp"`
+		}
+		if json.Unmarshal([]byte(line), &r) != nil {
+			continue
+		}
+		if r.Timestamp.After(since) && r.transcriptRecord.isRealTurn() {
+			return true
+		}
+	}
+	return false
 }
 
 // donerTick nudges one idle doner-tagged session that has gone quiet past the
@@ -155,7 +207,8 @@ func donerTick(cfg Config, reg projects.Registry, p tmux.Pane, dir, content, ses
 	// Whatever the last nudge achieved is visible now: either the session went
 	// away and worked, or it answered in seconds and stopped again. Only the
 	// second kind counts against it, and any other outcome clears the tally.
-	if bounced(donerNudgedAt[p.Session], transcriptMTime(sessFile)) {
+	if bounced(donerNudgedAt[p.Session], transcriptMTime(sessFile),
+		producedRealTurn(sessFile, donerNudgedAt[p.Session])) {
 		donerBounces[p.Session]++
 	} else {
 		delete(donerBounces, p.Session)

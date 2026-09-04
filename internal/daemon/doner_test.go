@@ -3,6 +3,7 @@ package daemon
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -105,18 +106,57 @@ func TestIsWaiting(t *testing.T) {
 // for yet, which is how one session was nudged 260 times over a weekly limit.
 func TestBounced(t *testing.T) {
 	now := time.Now()
-	if !bounced(now.Add(-2*time.Minute), now.Add(-2*time.Minute+3*time.Second)) {
+	if !bounced(now.Add(-2*time.Minute), now.Add(-2*time.Minute+3*time.Second), true) {
 		t.Error("an instant reply is a bounce")
 	}
-	if bounced(now.Add(-2*time.Hour), now.Add(-10*time.Minute)) {
+	if bounced(now.Add(-2*time.Hour), now.Add(-10*time.Minute), true) {
 		t.Error("a session that went away and worked is not a bounce")
 	}
 	// Never nudged, or a transcript last written before the nudge landed: no
 	// evidence either way, so nothing is counted against the session.
-	if bounced(time.Time{}, now) {
+	if bounced(time.Time{}, now, false) {
 		t.Error("a session that was never nudged cannot bounce")
 	}
-	if bounced(now.Add(-time.Minute), now.Add(-5*time.Minute)) {
+	if bounced(now.Add(-time.Minute), now.Add(-5*time.Minute), false) {
 		t.Error("a write older than the nudge is not an answer to it")
+	}
+	// The shape the window alone misses: the request is retried before the
+	// failure is recorded, so the only write lands minutes after the nudge and
+	// carries no model turn.
+	if !bounced(now.Add(-5*time.Minute), now.Add(-2*time.Minute), false) {
+		t.Error("a nudge answered only by an API error is a bounce")
+	}
+}
+
+// The evidence behind that last case: a nudged session whose transcript grew
+// only by Claude Code's own error record produced no turn, while one that
+// answered did.
+func TestProducedRealTurn(t *testing.T) {
+	nudge := time.Date(2026, 9, 3, 19, 12, 47, 0, time.UTC)
+	errRecord := `{"type":"user","isApiErrorMessage":true,"timestamp":"2026-09-03T19:15:51.650Z",` +
+		`"message":{"model":"<synthetic>","content":"API Error: Can't reach the API server (ENOTFOUND)"}}`
+	turn := `{"type":"assistant","timestamp":"2026-09-03T19:15:51.650Z",` +
+		`"message":{"model":"claude-opus-5","content":[{"type":"text","text":"on it"}]}}`
+	stale := `{"type":"assistant","timestamp":"2026-09-03T18:00:00.000Z",` +
+		`"message":{"model":"claude-opus-5","content":[{"type":"text","text":"earlier"}]}}`
+
+	write := func(lines ...string) string {
+		path := filepath.Join(t.TempDir(), "session.jsonl")
+		if err := os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		return path
+	}
+	if producedRealTurn(write(stale, errRecord), nudge) {
+		t.Error("an injected error record is not a turn")
+	}
+	if !producedRealTurn(write(stale, errRecord, turn), nudge) {
+		t.Error("a model reply after the nudge is a turn")
+	}
+	if producedRealTurn(write(stale), nudge) {
+		t.Error("a turn older than the nudge does not answer it")
+	}
+	if producedRealTurn(filepath.Join(t.TempDir(), "gone.jsonl"), nudge) {
+		t.Error("a transcript that cannot be read proves no work")
 	}
 }
