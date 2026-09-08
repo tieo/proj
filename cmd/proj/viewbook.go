@@ -9,6 +9,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 	"syscall"
 	"time"
@@ -46,7 +47,10 @@ the moment one of those files changes. A change made in the browser is sent into
 that project's session as a message, because the session is where the
 conversation lives and a second inbox would only split it.
 
-The model lives in docs/model by default; --dir points elsewhere.`,
+Every directory under docs with a model.json in it is a book, so a project that
+keeps its model beside the screen it describes is served without saying so, and
+a project with two books gets a path for each. --dir names one directory and
+serves only that.`,
 	Args: cobra.MaximumNArgs(1),
 	RunE: runViewbook,
 }
@@ -175,6 +179,37 @@ func conversation(pane string) string {
 	return strings.Join(lines, "\n")
 }
 
+// modelsIn is every model directory a project holds.
+//
+// A book lives in docs/model by convention and not by rule: a project whose
+// deliverable is one screen keeps it beside that screen under its own name, and
+// a project may keep several. Anything under docs with a model.json in it is a
+// book, so writing one is enough to have it served. Naming --dir means that
+// directory and nothing else.
+func modelsIn(p projects.Project, told bool) []string {
+	is := func(root string) bool {
+		_, err := os.Stat(filepath.Join(root, "model.json"))
+		return err == nil
+	}
+	if told {
+		root := filepath.Join(p.Dir, viewbookDir)
+		if is(root) {
+			return []string{root}
+		}
+		return nil
+	}
+	held, err := filepath.Glob(filepath.Join(p.Dir, "docs", "*", "model.json"))
+	if err != nil {
+		return nil
+	}
+	sort.Strings(held)
+	var roots []string
+	for _, model := range held {
+		roots = append(roots, filepath.Dir(model))
+	}
+	return roots
+}
+
 func runViewbook(cmd *cobra.Command, args []string) error {
 	cfg, err := config.Load()
 	if err != nil {
@@ -195,26 +230,39 @@ func runViewbook(cmd *cobra.Command, args []string) error {
 	stop := make(chan struct{})
 	var books []viewbook.Book
 	for _, p := range chosen {
-		root := filepath.Join(p.Dir, viewbookDir)
-		if _, err := os.Stat(filepath.Join(root, "model.json")); err != nil {
+		roots := modelsIn(p, cmd.Flags().Changed("dir"))
+		if len(roots) == 0 {
 			if len(args) == 1 {
-				return fmt.Errorf("no model.json in %s; point --dir at the model directory", root)
+				return fmt.Errorf("no model.json under %s; point --dir at the model directory",
+					filepath.Join(p.Dir, "docs"))
 			}
 			continue // a project without a model simply has no book
 		}
-		server := &viewbook.Server{
-			Root:    root,
-			Say:     sayInto(p),
-			Session: readSession(p),
-			Wake:    wakeSession(cfg, p),
-			Rest:    restSession(p),
+		for _, root := range roots {
+			server := &viewbook.Server{
+				Root:    root,
+				Say:     sayInto(p),
+				Session: readSession(p),
+				Wake:    wakeSession(cfg, p),
+				Rest:    restSession(p),
+			}
+			go server.Watch(stop)
+			name := strings.ToLower(p.Name)
+			title := p.Name
+			// A project may keep more than one book, and the second one needs a
+			// path of its own. The directory is what tells them apart, and it is
+			// what whoever wrote them already calls them.
+			if len(roots) > 1 {
+				held := filepath.Base(root)
+				name += "-" + strings.ToLower(held)
+				title += " " + held
+			}
+			books = append(books, viewbook.Book{
+				Name:   name,
+				Title:  title,
+				Server: server,
+			})
 		}
-		go server.Watch(stop)
-		books = append(books, viewbook.Book{
-			Name:   strings.ToLower(p.Name),
-			Title:  p.Name,
-			Server: server,
-		})
 	}
 	if len(books) == 0 {
 		return fmt.Errorf("no project under %s has a %s/model.json", cfg.BaseDir, viewbookDir)
