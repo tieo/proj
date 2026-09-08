@@ -74,5 +74,7 @@ github.com/tieo/viewbook v0.0.0-20260813173258-c6e21fc9946c h1:ycwm0gzjIst2lXAB9
 github.com/tieo/viewbook v0.0.0-20260813173258-c6e21fc9946c/go.mod h1:7P8InTmSifIRQow7oJEpjVTDtncLjvwqiLF7VsC01iY=
 github.com/tieo/viewbook v0.0.0-20260813174234-afc692509fcb h1:A+5EaXZkLzyyK2hoJOVp79JDR2d4X8AHXC7cOODtCXs=
 github.com/tieo/viewbook v0.0.0-20260813174234-afc692509fcb/go.mod h1:7P8InTmSifIRQow7oJEpjVTDtncLjvwqiLF7VsC01iY=
+github.com/tieo/viewbook v0.0.0-20260908163231-e7b904f72b33 h1:7CnrJZj+N/YWZ7elMHoIXkmDCjSi8KzBxUmxLH0S/mw=
+github.com/tieo/viewbook v0.0.0-20260908163231-e7b904f72b33/go.mod h1:7P8InTmSifIRQow7oJEpjVTDtncLjvwqiLF7VsC01iY=
 gopkg.in/check.v1 v0.0.0-20161208181325-20d25e280405/go.mod h1:Co6ibVJAznAaIkqp8huTwlJQCZ016jof/cbN4VW5Yz0=
 gopkg.in/yaml.v3 v3.0.1/go.mod h1:K4uyk7z7BCEPqu6E+C64Yfv1cQ7kz7rIZviUmN+EgEM=
