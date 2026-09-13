@@ -1396,6 +1396,27 @@ func TestDetectFromTranscript_LimitLast(t *testing.T) {
 	}
 }
 
+// TestDetectFromTranscript_WeeklyLimit guards the phrasing Claude Code
+// actually writes for a Max-tier weekly limit: "You've hit your weekly
+// limit". usageLimitTextRE once listed "hit your limit" instead of "weekly
+// limit" as one of its three lead phrases, and "hit your weekly limit"
+// contains neither substring literally (the word "weekly" sits between
+// "your" and "limit"), so the regex never matched it - DetectFromTranscript
+// returned nil for the one limit type this account actually hits, and the
+// daemon never tracked or resumed the stall. Reproduced against two live
+// sessions that sat on this exact error for hours with an empty daemon.json
+// the whole time.
+func TestDetectFromTranscript_WeeklyLimit(t *testing.T) {
+	weeklyLimitErrRecord := `{"type":"assistant","isApiErrorMessage":true,"message":{"model":"<synthetic>","content":"You've hit your weekly limit · resets 2am (Europe/Berlin)"}}`
+	b := DetectFromTranscript(writeTranscript(t, assistantRecord, weeklyLimitErrRecord), time.Now())
+	if b == nil {
+		t.Fatal("a trailing weekly-limit error must surface a banner")
+	}
+	if b.Reset.IsZero() {
+		t.Error("weekly-limit banner did not parse a reset time")
+	}
+}
+
 func TestHasTrustPrompt(t *testing.T) {
 	numbered := `
  Accessing workspace:

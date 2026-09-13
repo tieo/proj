@@ -1023,9 +1023,20 @@ const transcriptTailBytes = 256 * 1024
 // records them in the transcript. There is no ⎿ marker to lean on here - the
 // isApiErrorMessage flag on the record already vouches this is a real limit
 // event, not prose - so this matches the phrasing directly. The three lead
-// forms ("out of extra usage", "session limit", "hit your limit") share the
+// forms ("out of extra usage", "session limit", "weekly limit") share the
 // "· resets <time> (tz)" tail; date is optional, timezone optional.
-var usageLimitTextRE = regexp.MustCompile(`(?i)(?:out of extra usage|session limit|hit your limit).*?resets\s+(?:([A-Za-z]+\s+\d{1,2}),\s+)?(\d{1,2}(?::\d{2})?\s*(?:am|pm))(?:\s*\(([A-Za-z_/+\-0-9]+)\))?`)
+//
+// This drifted from bannerPatterns' phrasing at some point ("hit your limit"
+// here instead of "weekly limit"), and "hit your weekly limit" - the actual
+// text Claude Code writes - contains neither literally, so the regex never
+// matched a weekly-limit record: DetectFromTranscript always returned nil for
+// it, the daemon never tracked the stall, and the dedicated auto-resume path
+// never fired for the one limit type Max-tier accounts hit. Reproduced
+// against two sessions that sat on this error for hours with an empty
+// daemon.json the whole time - doner's own nudge saw the same banner in the
+// pane and correctly stood down, deferring to a resume path that was never
+// running.
+var usageLimitTextRE = regexp.MustCompile(`(?i)(?:out of extra usage|session limit|weekly limit).*?resets\s+(?:([A-Za-z]+\s+\d{1,2}),\s+)?(\d{1,2}(?::\d{2})?\s*(?:am|pm))(?:\s*\(([A-Za-z_/+\-0-9]+)\))?`)
 
 // transientTextRE matches the recoverable API errors whose fix is a short-delay
 // retry ("continue"), not deferral to a usage reset: gateway rate limits,
