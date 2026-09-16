@@ -20,8 +20,16 @@ import (
 // characters in one run). Bursts of 500 characters 50ms apart (see
 // tmux.SendLiteral) arrive whole in 39 of 40 runs at 2000 characters - good,
 // not certain. So delivery is not trusted: the composer is read back before the
-// prompt is submitted, and a mismatch is retried. Text too long to render on
-// screen cannot be read back at all, so it travels as a file instead.
+// prompt is submitted, and a mismatch is retried.
+//
+// Verification is a suffix check (composerEndsWith): the read-back box has to
+// end with the whole fill, not just show a recognisable tail. A fill that
+// scrolls its own start off the top of a small composer therefore cannot
+// verify there no matter how correctly it typed - the box holding it is
+// shorter than the fill itself. That is a pane-geometry problem, not a typing
+// one, so deliverWithResize is tried before giving up on typing altogether:
+// grow the window enough to give the composer room, verify, then put the size
+// back. Only once that still fails does the text travel as a file instead.
 
 // composerSettle is how long the TUI gets to render what was typed before the
 // composer is read back.
@@ -66,16 +74,46 @@ func ComposerBox(content string) (text string, placeholder, present bool) {
 	return text, strings.Contains(text, "Pasted text #"), true
 }
 
-// verifiableLen is how much text can be typed into target and still be read
-// back off the screen. Zero when the pane cannot be measured, which turns every
-// send into a file handover rather than an unverifiable fill.
-func verifiableLen(target string) int {
-	w, h := tmux.PaneSize(target)
+// verifiableCapacity is how much text a w-by-h pane can render and still be
+// read back off the screen, the pure arithmetic verifiableLen and
+// growTargetFor both build on. Zero when the size is unusable.
+func verifiableCapacity(w, h int) int {
 	rows := h/2 - composerChrome // the box grows to about half the pane
 	if w <= 0 || rows <= 0 {
 		return 0
 	}
 	return w * rows
+}
+
+// verifiableLen is how much text can be typed into target and still be read
+// back off the screen at its current size. Zero when the pane cannot be
+// measured, which turns every send into a file handover rather than an
+// unverifiable fill.
+func verifiableLen(target string) int {
+	w, h := tmux.PaneSize(target)
+	return verifiableCapacity(w, h)
+}
+
+// growWidth is the width deliverWithResize grows a pane to before retrying a
+// fill that did not fit at its current size: wide enough that almost nothing
+// realistic wraps across more lines than the height budget below accounts
+// for, without being so wide a real terminal could choke redrawing it.
+const growWidth = 200
+
+// growTargetFor returns a window size verifiableCapacity guarantees can hold
+// textLen characters, with room to spare: composerChrome's own margin
+// doubled, plus a flat 10-row cushion against the wrapping slop observed
+// between the formula's predicted box height and a real composer's rendered
+// one (a 25-row pane predicted 6 visible rows, a live capture showed 7).
+// Never smaller than a plain 80x24 terminal, so a fill that already fits
+// there is never shrunk into resizing for no reason.
+func growTargetFor(textLen int) (w, h int) {
+	rowsNeeded := (textLen + growWidth - 1) / growWidth // ceil
+	h = 2*(rowsNeeded+composerChrome) + 10
+	if h < 24 {
+		h = 24
+	}
+	return growWidth, h
 }
 
 // composerEndsWith reports whether the box ends with what was just typed. It is
@@ -293,9 +331,42 @@ func clearBox(target string) {
 	}
 }
 
+// deliverWithResize retries a fill that did not fit at the pane's current
+// size by growing the window, verifying, and putting the size back regardless
+// of outcome. Skipped outright if a local terminal is attached: resizing that
+// out from under someone actually looking at it would be disruptive for a
+// gain they cannot see (Remote Control renders the model's messages, not the
+// pane, so it is never affected either way). A client that attaches after a
+// resize gets its own size back immediately regardless (tmux's window-size
+// "latest" policy), but that is not the same as nobody watching right now.
+func deliverWithResize(target, text string) (bool, error) {
+	if tmux.HasAttachedClient(target) {
+		return false, nil
+	}
+	origW, origH := tmux.PaneSize(target)
+	if origW <= 0 || origH <= 0 {
+		return false, nil // unmeasurable; nothing to restore, nothing to grow
+	}
+	w, h := growTargetFor(len(text))
+	if err := tmux.ResizeWindow(target, w, h); err != nil {
+		return false, nil
+	}
+	defer tmux.ResizeWindow(target, origW, origH)
+	time.Sleep(composerSettle)
+	return typeVerified(target, text)
+}
+
 func deliver(target, text string) error {
 	if len(text) <= verifiableLen(target) {
 		ok, err := typeVerified(target, text)
+		if err != nil {
+			return err
+		}
+		if ok {
+			return nil
+		}
+	} else {
+		ok, err := deliverWithResize(target, text)
 		if err != nil {
 			return err
 		}

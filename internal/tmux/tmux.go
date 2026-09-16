@@ -581,6 +581,44 @@ func SendKey(target, key string) error {
 	return err
 }
 
+// ResizeWindow sets the window holding pane target to exactly w by h cells,
+// overriding whatever an attached client would otherwise dictate (tmux's
+// window-size "latest" policy normally sizes a window to whichever client
+// attached most recently). Used to temporarily grow a pane too small to
+// verify a long fill on screen; the caller restores the original size once it
+// is done. Safe with nobody attached - there is no client size to fight - and
+// a client that attaches later resizes the window back to its own dimensions
+// on its own.
+//
+// target is a pane id ("%20"), not a session name: resize-window operates on
+// the window, and tmux resolves that from the pane on its own, but only for
+// a bare id - the "=name" exact-match syntax used elsewhere in this file is
+// for session names and does not resolve a pane id at all ("can't find
+// window").
+func ResizeWindow(target string, w, h int) error {
+	_, err := shellout.RunErr("tmux", "resize-window", "-t", target,
+		"-x", strconv.Itoa(w), "-y", strconv.Itoa(h))
+	return err
+}
+
+// HasAttachedClient reports whether a local terminal is currently attached to
+// the session holding pane target. A caller about to resize the window checks
+// this first: resizing one nobody has open is invisible, resizing one a real
+// terminal has attached to would visibly disrupt it. Remote Control is not a
+// tmux client - it renders the model's messages, not the pane's pixels - so
+// it is never at risk from a resize and this check says nothing about it
+// either way.
+//
+// target is a pane id, so list-clients is asked about the pane directly
+// rather than through the "=name" exact-match syntax used for session names
+// elsewhere in this file: that syntax does not resolve a pane id, and
+// shellout.Run turns the resulting error into the same "" a real empty answer
+// would give, so the wrong syntax silently reported no client attached ever,
+// regardless of whether one actually was.
+func HasAttachedClient(target string) bool {
+	return shellout.Run("tmux", "list-clients", "-t", target) != ""
+}
+
 func KillSession(name string) error {
 	_, err := shellout.RunErr("tmux", "kill-session", "-t", "="+name)
 	return err

@@ -190,3 +190,32 @@ func TestBusyHint(t *testing.T) {
 		}
 	}
 }
+
+// The whole point of deliverWithResize is that whatever size it grows a
+// window to must actually be able to hold and verify the text that did not
+// fit at the original size - the exact scenario that sent proj say's doner
+// nudge (470 characters) to a file against a real 53x25 pane, whose capacity
+// was only 318. growTargetFor's output, run back through the same formula
+// verifiableLen uses, must clear the length it was sized for, at every
+// length from empty up to a few times the nudge text, or the resize
+// achieves nothing and the fill falls through to the file handover anyway.
+func TestGrowTargetForGuaranteesCapacity(t *testing.T) {
+	for _, n := range []int{0, 1, 318, 470, 1000, 2000, 5000} {
+		w, h := growTargetFor(n)
+		if got := verifiableCapacity(w, h); got < n {
+			t.Errorf("growTargetFor(%d) = %dx%d, capacity %d < %d: would still fail verification after resizing", n, w, h, got, n)
+		}
+	}
+}
+
+// A pane already big enough needs no resize at all - deliver's own length
+// check ahead of deliverWithResize handles that - but growTargetFor on its
+// own must never propose something smaller than a plain 80x24 terminal, so a
+// caller that did reach it never shrinks a pane that was already reasonably
+// sized.
+func TestGrowTargetForNeverShrinksBelowAPlainTerminal(t *testing.T) {
+	w, h := growTargetFor(0)
+	if w < 80 || h < 24 {
+		t.Errorf("growTargetFor(0) = %dx%d, want at least 80x24", w, h)
+	}
+}
