@@ -2701,7 +2701,17 @@ func Tick(cfg Config, state State, errorState ErrorState, managed ManagedState, 
 		//     which needs the ❯ input line present and empty (or a dim ghost). When
 		//     the status line IS visible and shows RC active, rcActiveRE skips it;
 		//     when it is absent, zone is "" and that check passes harmlessly.
-		if rcEnabled(cfg) &&
+		// An organization that forbids Remote Control makes every session read as
+		// dropped for good, so the refusal Claude prints ends the watchdog's work
+		// for that organization rather than starting another rebind (see
+		// rcpolicy.go).
+		if NoteRCPolicy(cfg.ClaudeHome, content) {
+			if !rcPolicyLogged {
+				slog.Info("remote control is disabled by the organization's policy; not rebinding")
+				rcPolicyLogged = true
+			}
+		}
+		if rcEnabled(cfg) && !RCPolicyOff(cfg.ClaudeHome) &&
 			!rcActiveRE.MatchString(zone) && !HasSelector(content) &&
 			!rcPickerRE.MatchString(rcChromeTail(content)) {
 			statusLine, _ := rcStatusLine(content)

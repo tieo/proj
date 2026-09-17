@@ -65,6 +65,10 @@ func runList(cmd *cobra.Command, args []string) error {
 	// Scan panes for label (banner/error/selector state) and, as a fallback, RC
 	// status per session. Model is read from JSONL session files instead; more
 	// reliable.
+	// An organization can forbid Remote Control, and then every session is
+	// unbound for a reason no session can do anything about, so the column says
+	// nothing at all rather than marking the whole fleet offline.
+	rcOff := daemon.RCPolicyOff(cfg.Claude.Home)
 	scan := daemon.ScanPanes(cfg.Claude.Home, unrCfg.Capture)
 	labelBySession := make(map[string]string, len(scan))
 	rcBySession := make(map[string]string, len(scan))
@@ -132,8 +136,10 @@ func runList(cmd *cobra.Command, args []string) error {
 		label := labelBySession[sessName]
 		alive := p.SessionTS > 0
 		rc := rcBySession[sessName]
-		// Remote Control is a Claude Code feature; other tools get no RC note.
-		if daemon.ToolName(p.Tool) != config.DefaultTool {
+		// Remote Control is a Claude Code feature; other tools get no RC note,
+		// and neither does an organization whose policy forbids it, where every
+		// session is unbound by design rather than by fault.
+		if daemon.ToolName(p.Tool) != config.DefaultTool || rcOff {
 			rc = ""
 		} else if alive {
 			// Keyed by directory: a renamed or re-tagged project keeps the RC
@@ -170,7 +176,9 @@ func runList(cmd *cobra.Command, args []string) error {
 			ms, tracked := managed[s.Name]
 			label := labelBySession[s.Name]
 			rc := rcBySession[s.Name] // orphans are always alive
-			if bound, known := daemon.RCBridgeForDir(cfg.Claude.Home, s.Path); known {
+			if rcOff {
+				rc = ""
+			} else if bound, known := daemon.RCBridgeForDir(cfg.Claude.Home, s.Path); known {
 				if bound {
 					rc = "active"
 				} else {
