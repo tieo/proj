@@ -12,6 +12,9 @@ import (
 // subfolder. Reproduces the bug where memory/ was left behind under the old
 // slug because the original loop skipped every directory entry.
 func TestMigrateHistoryCarriesMemoryAndOtherFiles(t *testing.T) {
+	// The folders here are named after the plain paths, so the cwd must not be
+	// rewritten into the \\wsl.localhost form a WSL host would use.
+	t.Setenv("WSL_DISTRO_NAME", "")
 	home := t.TempDir()
 	oldDir := filepath.Join(t.TempDir(), "wordtap")
 	newDir := filepath.Join(t.TempDir(), "taptitude")
@@ -44,6 +47,7 @@ func TestMigrateHistoryCarriesMemoryAndOtherFiles(t *testing.T) {
 // merge into it (filling in what the target is missing) rather than
 // refusing, and must not clobber a same-named file already standing there.
 func TestMigrateHistoryMergesIntoAnExistingTarget(t *testing.T) {
+	t.Setenv("WSL_DISTRO_NAME", "")
 	home := t.TempDir()
 	oldDir := filepath.Join(t.TempDir(), "wordtap")
 	newDir := filepath.Join(t.TempDir(), "taptitude")
