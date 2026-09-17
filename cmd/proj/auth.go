@@ -179,7 +179,10 @@ func (a auth) status() error {
 		if name == "" {
 			name = "not saved"
 		}
-		fmt.Printf("in use: %s (%s)\n", name, plain(details(live.Identity.EmailAddress, live.Identity.OrganizationName, live.Plan)))
+		fmt.Printf("in use: %s\n", name)
+		for _, line := range accountLines(live.Identity, live.Plan, a.cfg) {
+			fmt.Printf("  %s\n", line)
+		}
 	}
 	if len(accounts) == 0 {
 		fmt.Println("saved: none")
@@ -194,6 +197,39 @@ func (a auth) status() error {
 		fmt.Printf("  %s %-14s %s\n", mark, acc.Name, plain(details(acc.Email, acc.Org, acc.Plan)))
 	}
 	return nil
+}
+
+// accountLines describes one login in full: who it is, what it may use, and the
+// organization policies proj has learned, which are what actually differs
+// between two logins of the same person.
+func accountLines(id claudeauth.Identity, plan claudeauth.Plan, cfg config.Config) []string {
+	org := id.OrganizationName
+	if id.OrganizationType != "" {
+		org += " (" + id.OrganizationType + ")"
+	}
+	lines := []string{
+		"account:  " + id.EmailAddress,
+		"org:      " + org,
+	}
+	sub := plan.Subscription
+	if plan.Seat != "" {
+		sub += ", seat " + plan.Seat
+	}
+	lines = append(lines, "plan:     "+sub)
+	if plan.Tier != "" {
+		lines = append(lines, "limits:   "+plan.Tier+extraUsageNote(plan))
+	}
+	if daemon.RCPolicyOff(cfg.Claude.Home) {
+		lines = append(lines, "remote:   off (the organization's policy)")
+	}
+	return lines
+}
+
+func extraUsageNote(plan claudeauth.Plan) string {
+	if plan.ExtraUsage {
+		return ", extra usage past the limit allowed"
+	}
+	return ", no extra usage past the limit"
 }
 
 func (a auth) interactive() error {
@@ -546,14 +582,15 @@ func resumeSessions(cfg config.Config, stopped []authSession) {
 	}
 }
 
-func details(email, org, plan string) string {
+// details is the one-line form the lists use: who the login is and what it may
+// use, with the organization left out when it is the personal one every account
+// has (it is named after the account itself and says nothing).
+func details(email, org string, plan claudeauth.Plan) string {
 	parts := []string{email}
-	if org != "" {
+	if org != "" && !strings.HasPrefix(org, email) {
 		parts = append(parts, org)
 	}
-	if plan != "" {
-		parts = append(parts, plan)
-	}
+	parts = append(parts, plan.String())
 	return "\033[2m" + strings.Join(parts, " · ") + "\033[0m"
 }
 

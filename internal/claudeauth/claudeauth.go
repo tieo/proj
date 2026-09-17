@@ -17,6 +17,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strings"
 )
 
 const (
@@ -29,8 +30,52 @@ type Account struct {
 	Name  string
 	Email string
 	Org   string
-	Plan  string
+	Plan  Plan
+	OrgID string
 	key   string
+}
+
+// Plan is what an account is entitled to: the subscription it runs on, the seat
+// an organization gave it, the rate limit tier the tokens carry, and whether
+// usage past the limit is allowed. The tier lives in the tokens file and the
+// rest in the account details, so a plan is only complete with both.
+type Plan struct {
+	Subscription string // "max", "team", "pro"
+	Seat         string // organization seat, e.g. "team_tier_1"
+	Tier         string // rate limit tier, e.g. "default_claude_max_5x"
+	ExtraUsage   bool   // usage past the limit allowed
+	OrgType      string // "claude_team" for an organization, empty for a personal one
+}
+
+// String renders a plan the way the lists show it: the subscription, the rate
+// limit tier in the short form people use for it ("5x"), and the limits that
+// differ from the plain plan.
+func (p Plan) String() string {
+	out := p.Subscription
+	if out == "" {
+		out = "unknown plan"
+	}
+	if t := shortTier(p.Tier); t != "" {
+		out += " " + t
+	}
+	if !p.ExtraUsage {
+		out += ", no extra usage"
+	}
+	return out
+}
+
+// shortTier turns "default_claude_max_5x" into "5x". The tier names carry a
+// "default_" prefix and the product name, and only the multiplier at the end
+// tells two seats apart.
+func shortTier(tier string) string {
+	t := strings.TrimPrefix(tier, "default_")
+	t = strings.TrimPrefix(t, "claude_")
+	if i := strings.LastIndex(t, "_"); i >= 0 {
+		if tail := t[i+1:]; strings.HasSuffix(tail, "x") {
+			return tail
+		}
+	}
+	return ""
 }
 
 // Identity is the account a login belongs to. The organization is part of it:
@@ -41,6 +86,9 @@ type Identity struct {
 	OrganizationUUID string `json:"organizationUuid"`
 	EmailAddress     string `json:"emailAddress"`
 	OrganizationName string `json:"organizationName"`
+	OrganizationType string `json:"organizationType"`
+	SeatTier         string `json:"seatTier"`
+	ExtraUsage       bool   `json:"hasExtraUsageEnabled"`
 }
 
 func (i Identity) key() string { return i.AccountUUID + "/" + i.OrganizationUUID }
@@ -56,7 +104,7 @@ type Live struct {
 	Credentials []byte
 	Account     json.RawMessage
 	Identity    Identity
-	Plan        string
+	Plan        Plan
 }
 
 var nameRE = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)
@@ -97,18 +145,26 @@ func ReadLive(root string) (Live, error) {
 	if err := json.Unmarshal(account, &id); err != nil {
 		return Live{}, fmt.Errorf("parse oauthAccount in %s: %w", ConfigPath(root), err)
 	}
-	return Live{Root: root, Credentials: creds, Account: account, Identity: id, Plan: planOf(creds)}, nil
+	return Live{Root: root, Credentials: creds, Account: account, Identity: id, Plan: planOf(creds, id)}, nil
 }
 
-// planOf reads the subscription type out of the tokens file, for display only.
-func planOf(creds []byte) string {
+// planOf assembles the plan from the tokens (subscription and rate limit tier)
+// and the account details (seat, extra usage), for display only.
+func planOf(creds []byte, id Identity) Plan {
 	var c struct {
 		ClaudeAiOauth struct {
 			SubscriptionType string `json:"subscriptionType"`
+			RateLimitTier    string `json:"rateLimitTier"`
 		} `json:"claudeAiOauth"`
 	}
 	_ = json.Unmarshal(creds, &c)
-	return c.ClaudeAiOauth.SubscriptionType
+	return Plan{
+		Subscription: c.ClaudeAiOauth.SubscriptionType,
+		Tier:         c.ClaudeAiOauth.RateLimitTier,
+		Seat:         id.SeatTier,
+		ExtraUsage:   id.ExtraUsage,
+		OrgType:      id.OrganizationType,
+	}
 }
 
 // List returns the saved accounts sorted by name.
@@ -149,7 +205,14 @@ func (s Store) load(name string) (Account, error) {
 	if err := json.Unmarshal(account, &id); err != nil {
 		return Account{}, fmt.Errorf("parse saved account %q: %w", name, err)
 	}
-	return Account{Name: name, Email: id.EmailAddress, Org: id.OrganizationName, Plan: planOf(creds), key: id.key()}, nil
+	return Account{
+		Name:  name,
+		Email: id.EmailAddress,
+		Org:   id.OrganizationName,
+		Plan:  planOf(creds, id),
+		OrgID: id.OrganizationUUID,
+		key:   id.key(),
+	}, nil
 }
 
 // Find returns the saved account holding the same login as live, if any.
