@@ -139,40 +139,6 @@ func donerTick(cfg Config, reg projects.Registry, p tmux.Pane, dir, content, ses
 	if !hasTag(reg.Tags(filepath.Base(dir)), DonerTag) {
 		return
 	}
-	// No input box means a view has taken the pane over: the shell-details
-	// overlay, the background-shells list, a picker. Nothing the session does
-	// clears that - the view is waiting on a keystroke nobody is there to send -
-	// so it would sit there for good. Escape is what those views offer ("Esc to
-	// close").
-	//
-	// This runs BEFORE the busy check, not after, for two reasons. A generating
-	// session keeps its input box, so a pane without one is not mid-turn and
-	// Escape cannot interrupt a turn here. And the busy check reads the whole
-	// capture, where the shells list defeats it: it lists commands truncated
-	// with an ellipsis and marked "(running)", which is exactly the spinner
-	// shape it looks for, so an overlaid session looked busy forever and was
-	// never reached. The trust prompt, the one place Escape ends Claude Code, is
-	// handled earlier in the tick and never arrives here.
-	if !inputPromptRE.MatchString(content) {
-		slog.Info("doner: closing an overlay to reach the input box", "session", p.Session)
-		if err := tmux.SendKey(p.ID, "Escape"); err != nil {
-			return
-		}
-		time.Sleep(cfg.DismissGap)
-		content = tmux.CapturePane(p.ID, cfg.Capture)
-		if !inputPromptRE.MatchString(content) {
-			return // still no input box; leave the pane alone
-		}
-	}
-	// Still generating: not a session that has gone still.
-	if connDropBusyRE.MatchString(content) {
-		return
-	}
-	// A draft is the user mid-sentence. Typing now would both overwrite it and
-	// nudge someone who is already here.
-	if composerHasDraft(tmux.CapturePaneEsc(p.ID)) {
-		return
-	}
 	// A session that has run out of quota cannot answer at all: the nudge lands,
 	// the model refuses with the limit banner, and the whole exchange repeats
 	// every grace period until the reset. Nudging it is not a backstop, it is a
@@ -198,10 +164,54 @@ func donerTick(cfg Config, reg projects.Registry, p tmux.Pane, dir, content, ses
 	grace := cfg.Doner.GraceDuration()
 	// The transcript's last write is when the session last did or was told
 	// anything, so a reply from the user or a finishing job restarts the clock.
+	// Everything below touches the pane, so all of it waits for the grace: a
+	// picker the user opened a moment ago is theirs, not a stuck view.
 	if now.Sub(transcriptMTime(sessFile)) < grace {
 		return
 	}
 	if last, ok := donerNudgedAt[p.Session]; ok && now.Sub(last) < grace {
+		return
+	}
+	// No input box means a view has taken the pane over: the shell-details
+	// overlay, the background-shells list, a picker. Nothing the session does
+	// clears that - the view is waiting on a keystroke nobody is there to send -
+	// so it would sit there for good. Escape is what those views offer ("Esc to
+	// close").
+	//
+	// A tool call still waiting for its result is the exception. That is a
+	// question or a permission prompt addressed to the user, it also hides the
+	// input box, and Escape answers it with a rejection the model reads as the
+	// user declining. It stays up however long it waits.
+	//
+	// This runs before the busy check, not after, for two reasons. A generating
+	// session keeps its input box, so a pane without one is not mid-turn and
+	// Escape cannot interrupt a turn here. And the busy check reads the whole
+	// capture, where the shells list defeats it: it lists commands truncated
+	// with an ellipsis and marked "(running)", which is exactly the spinner
+	// shape it looks for, so an overlaid session looked busy forever and was
+	// never reached. The trust prompt, the one place Escape ends Claude Code, is
+	// handled earlier in the tick and never arrives here.
+	if !inputPromptRE.MatchString(content) {
+		if awaitingToolResult(sessFile) {
+			return
+		}
+		slog.Info("doner: closing an overlay to reach the input box", "session", p.Session)
+		if err := tmux.SendKey(p.ID, "Escape"); err != nil {
+			return
+		}
+		time.Sleep(cfg.DismissGap)
+		content = tmux.CapturePane(p.ID, cfg.Capture)
+		if !inputPromptRE.MatchString(content) {
+			return // still no input box; leave the pane alone
+		}
+	}
+	// Still generating: not a session that has gone still.
+	if connDropBusyRE.MatchString(content) {
+		return
+	}
+	// A draft is the user mid-sentence. Typing now would both overwrite it and
+	// nudge someone who is already here.
+	if composerHasDraft(tmux.CapturePaneEsc(p.ID)) {
 		return
 	}
 	// Whatever the last nudge achieved is visible now: either the session went
@@ -229,6 +239,61 @@ func donerTick(cfg Config, reg projects.Registry, p tmux.Pane, dir, content, ses
 	donerNudgedAt[p.Session] = now
 	slog.Info("doner nudged an idle session", "session", p.Session,
 		"quiet_for", now.Sub(transcriptMTime(sessFile)).Round(time.Second))
+}
+
+// awaitingToolResult reports whether the transcript ends on a tool call that
+// has no result yet. Claude Code writes the call when it is made and the result
+// only once the tool returns, so between the two sits either a running tool or
+// a prompt waiting on the user: AskUserQuestion, a permission request, a plan
+// approval. Records that carry no turn (attachments, snapshots, titles) are
+// skipped, since Claude Code appends them while the prompt is up. Only the tail
+// is read, as in lastAssistantText.
+func awaitingToolResult(sessFile string) bool {
+	f, err := os.Open(sessFile)
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+	size, _ := f.Seek(0, io.SeekEnd)
+	start := size - transcriptTailBytes
+	if start < 0 {
+		start = 0
+	}
+	if _, err := f.Seek(start, io.SeekStart); err != nil {
+		return false
+	}
+	buf := make([]byte, transcriptTailBytes)
+	n, _ := f.Read(buf)
+	lines := strings.Split(string(buf[:n]), "\n")
+	for i := len(lines) - 1; i >= 0; i-- {
+		var r struct {
+			Type    string `json:"type"`
+			Message struct {
+				Content json.RawMessage `json:"content"`
+			} `json:"message"`
+		}
+		if json.Unmarshal([]byte(strings.TrimSpace(lines[i])), &r) != nil {
+			continue
+		}
+		switch r.Type {
+		case "user":
+			return false
+		case "assistant":
+			var blocks []struct {
+				Type string `json:"type"`
+			}
+			if json.Unmarshal(r.Message.Content, &blocks) != nil {
+				return false
+			}
+			for _, b := range blocks {
+				if b.Type == "tool_use" {
+					return true
+				}
+			}
+			return false
+		}
+	}
+	return false
 }
 
 // WaitWindow is how long a session that reported itself waiting is left alone.
