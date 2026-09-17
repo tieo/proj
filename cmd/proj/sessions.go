@@ -110,10 +110,17 @@ func runSessions(cmd *cobra.Command, args []string) error {
 }
 
 // stdinIsTTY reports whether stdin is an interactive terminal (not a pipe or
-// redirect), so the sessions list only goes interactive when a user can drive it.
+// redirect), so a list only goes interactive when a user can drive it. It asks
+// stty, the same test the interactive lists rely on: a character device is not
+// enough, since /dev/null is one too.
 func stdinIsTTY() bool {
 	fi, err := os.Stdin.Stat()
-	return err == nil && fi.Mode()&os.ModeCharDevice != 0
+	if err != nil || fi.Mode()&os.ModeCharDevice == 0 {
+		return false
+	}
+	c := exec.Command("stty", "-g")
+	c.Stdin = os.Stdin
+	return c.Run() == nil
 }
 
 // printSessionsTable renders the static, non-interactive session table.

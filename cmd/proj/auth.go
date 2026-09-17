@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"sort"
@@ -23,124 +24,210 @@ import (
 )
 
 var (
-	authWait time.Duration
-	authNow  bool
+	authWait      time.Duration
+	authNow       bool
+	authLoginName string
 )
 
 var authCmd = &cobra.Command{
-	Use:   "auth [tool] [account]",
-	Short: "switch the account a coding tool is logged in with",
-	Long: `Pick which saved login a coding tool uses, for every session at once.
+	Use:   "auth",
+	Short: "manage the Claude Code logins sessions run with",
+	Long: `Manage the Claude Code logins proj's sessions run with.
 
-With no tool, a list of the configured tools comes first; only claude logins
-can be switched. With no account, an interactive list shows the saved logins
-with the active one marked: enter switches to the selected one, r removes a
-saved login, and a login that is not saved yet can be saved from the list.
-With an account name, it switches to that login directly.
+proj keeps any number of logins and one of them is in use by every session at
+once. On a terminal, ` + "`proj auth`" + ` lists them with the one in use marked: enter
+switches to the selected login, a adds a login, r removes one. Elsewhere it
+prints the status.
 
-A login is its tokens and account details; conversations, memory, settings
-and Remote Control are shared by all of them and carry across a switch.
+A login is its tokens and account details. Conversations, memory, settings and
+Remote Control belong to no login and stay as they are when the login changes.
 
-A running session holds its login in memory and would write it back, so a
-switch stops every Claude session first and resumes each one afterwards with
-its conversation. Idle sessions stop at once; a session that is working,
-holding an unsent draft, or waiting on an answer is stopped as soon as that
-ends. If that takes longer than --wait, the stopped sessions are resumed on the
-old login and nothing is switched. --now stops busy sessions too.
+Changing the login in use stops every Claude session first, since a running
+session keeps its login in memory and writes it back, and resumes each one
+afterwards with its conversation. Idle sessions stop at once; a session that is
+working, holding an unsent draft or waiting on an answer stops when that ends.
+If that takes longer than --wait, nothing changes and the stopped sessions are
+resumed. --now stops busy sessions without waiting.`,
+	Args: cobra.NoArgs,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		a, err := newAuth()
+		if err != nil {
+			return err
+		}
+		if !stdinIsTTY() {
+			return a.status()
+		}
+		return a.interactive()
+	},
+}
 
-To add a login: save the current one here, run /login in a Claude session
-with the other account, then open this list again and save that one.`,
-	Args: cobra.RangeArgs(0, 2),
-	RunE: runAuth,
+var authStatusCmd = &cobra.Command{
+	Use:   "status",
+	Short: "show the login in use and the saved ones",
+	Args:  cobra.NoArgs,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		a, err := newAuth()
+		if err != nil {
+			return err
+		}
+		return a.status()
+	},
+}
+
+var authLoginCmd = &cobra.Command{
+	Use:   "login",
+	Short: "log in with another account and use it",
+	Long: `Log in with another Claude account and use it for every session.
+
+The login in use is kept (it is saved first, under a name asked for if it has
+none), sessions are stopped, Claude Code's own browser login runs, and the new
+login is saved under --name or a name asked for. Sessions resume on the new
+login. If the login is cancelled or fails, the previous login is put back.`,
+	Args: cobra.NoArgs,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		a, err := newAuth()
+		if err != nil {
+			return err
+		}
+		return a.login(authLoginName)
+	},
+}
+
+var authLogoutCmd = &cobra.Command{
+	Use:   "logout <name>",
+	Short: "remove a saved login",
+	Long: `Remove a saved login. The login in use cannot be removed; switch to another
+one first.`,
+	Args: cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		a, err := newAuth()
+		if err != nil {
+			return err
+		}
+		return a.logout(args[0])
+	},
+}
+
+var authSwitchCmd = &cobra.Command{
+	Use:   "switch [name]",
+	Short: "use another saved login for every session",
+	Args:  cobra.MaximumNArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		a, err := newAuth()
+		if err != nil {
+			return err
+		}
+		if len(args) == 0 {
+			return a.interactive()
+		}
+		return a.switchTo(args[0])
+	},
 }
 
 func init() {
-	authCmd.Flags().DurationVar(&authWait, "wait", 30*time.Minute, "how long to wait for busy sessions before giving up")
-	authCmd.Flags().BoolVar(&authNow, "now", false, "stop busy sessions too instead of waiting for them")
+	authCmd.PersistentFlags().DurationVar(&authWait, "wait", 30*time.Minute, "how long to wait for busy sessions before giving up")
+	authCmd.PersistentFlags().BoolVar(&authNow, "now", false, "stop busy sessions without waiting for them")
+	authLoginCmd.Flags().StringVar(&authLoginName, "name", "", "name to save the new login under")
+	authCmd.AddCommand(authStatusCmd, authLoginCmd, authLogoutCmd, authSwitchCmd)
 	rootCmd.AddCommand(authCmd)
 }
 
-func runAuth(cmd *cobra.Command, args []string) error {
+// auth is the saved logins and the Claude Code root whose login they replace.
+type auth struct {
+	cfg   config.Config
+	root  string
+	store claudeauth.Store
+}
+
+func newAuth() (auth, error) {
 	cfg, err := config.Load()
+	if err != nil {
+		return auth{}, err
+	}
+	return auth{
+		cfg:   cfg,
+		root:  daemon.ClaudeRoot(cfg.Claude.Home),
+		store: claudeauth.Store{Dir: filepath.Join(filepath.Dir(daemonConfig().StatePath), "accounts", config.DefaultTool)},
+	}, nil
+}
+
+// current reads the login in use and refreshes its saved copy, returning the
+// name it is saved under, empty when it is not saved. Claude Code rotates tokens
+// as it refreshes them, so a saved copy is only usable if it is kept current.
+func (a auth) current() (claudeauth.Live, string, error) {
+	live, err := claudeauth.ReadLive(a.root)
+	if err != nil {
+		return live, "", err
+	}
+	name, err := a.store.Refresh(live)
+	if err != nil {
+		return live, "", fmt.Errorf("update the saved copy of the login in use: %w", err)
+	}
+	return live, name, nil
+}
+
+func (a auth) status() error {
+	accounts, err := a.store.List()
 	if err != nil {
 		return err
 	}
-	if len(args) == 0 {
-		tool, ok := pickAuthTool(cfg)
-		if !ok {
-			return nil
+	live, active, err := a.current()
+	if err != nil {
+		fmt.Printf("in use: none (%v)\n", err)
+	} else {
+		name := active
+		if name == "" {
+			name = "not saved"
 		}
-		args = []string{tool}
+		fmt.Printf("in use: %s (%s)\n", name, plain(details(live.Identity.EmailAddress, live.Identity.OrganizationName, live.Plan)))
 	}
-	if args[0] != config.DefaultTool {
-		return fmt.Errorf("only %s logins can be switched, not %q", config.DefaultTool, args[0])
+	if len(accounts) == 0 {
+		fmt.Println("saved: none")
+		return nil
 	}
-	root := daemon.ClaudeRoot(cfg.Claude.Home)
-	store := claudeauth.Store{Dir: filepath.Join(filepath.Dir(daemonConfig().StatePath), "accounts", config.DefaultTool)}
-	if len(args) == 2 {
-		return switchAccount(cfg, store, root, args[1])
+	fmt.Println("saved:")
+	for _, acc := range accounts {
+		mark := " "
+		if acc.Name == active {
+			mark = "*"
+		}
+		fmt.Printf("  %s %-14s %s\n", mark, acc.Name, plain(details(acc.Email, acc.Org, acc.Plan)))
 	}
-	return authInteractive(cfg, store, root)
+	return nil
 }
 
-// pickAuthTool lists the configured tools and returns the one chosen. Only
-// Claude's login can be switched; the others are listed so the list matches
-// `proj tool`, and picking one says so and shows the list again.
-func pickAuthTool(cfg config.Config) (string, bool) {
-	names := cfg.ToolNames()
-	lines := make([]string, len(names))
-	for i, n := range names {
-		lines[i] = n
-		if n != config.DefaultTool {
-			lines[i] = n + "  \033[2mlogin switching not supported\033[0m"
-		}
-	}
+func (a auth) interactive() error {
 	for {
-		idx := selectFromList("switch the login of", lines)
-		if idx < 0 {
-			return "", false
-		}
-		if names[idx] == config.DefaultTool {
-			return names[idx], true
-		}
-		fmt.Printf("switching %s logins is not supported\n", names[idx])
-	}
-}
-
-func authInteractive(cfg config.Config, store claudeauth.Store, root string) error {
-	for {
-		live, err := claudeauth.ReadLive(root)
+		live, active, err := a.current()
 		if err != nil {
 			return err
 		}
-		active, err := store.Refresh(live)
-		if err != nil {
-			return fmt.Errorf("update the saved copy of the current login: %w", err)
-		}
-		accounts, err := store.List()
+		accounts, err := a.store.List()
 		if err != nil {
 			return err
 		}
-		// An unsaved login leads the list: the cursor starts on the first row,
-		// and every switch refuses to leave an unsaved login behind, so saving
-		// it is the only thing that can happen first.
+		// A login in use that is not saved leads the list, so the cursor starts
+		// on the one thing that has to happen before any switch: saving it.
 		unsaved := active == ""
 		lines := make([]string, 0, len(accounts)+1)
 		if unsaved {
-			lines = append(lines, fmt.Sprintf("\033[33m+\033[0m save current login  %s",
-				accountDetails(live.Identity.EmailAddress, live.Identity.OrganizationName, live.Plan)))
+			lines = append(lines, fmt.Sprintf("\033[33m+\033[0m save the login in use  %s",
+				details(live.Identity.EmailAddress, live.Identity.OrganizationName, live.Plan)))
 		}
-		for _, a := range accounts {
+		for _, acc := range accounts {
 			mark := "\033[90m○\033[0m"
-			if a.Name == active {
+			if acc.Name == active {
 				mark = "\033[32m●\033[0m"
 			}
-			lines = append(lines, fmt.Sprintf("%s %-14s %s", mark, a.Name, accountDetails(a.Email, a.Org, a.Plan)))
+			lines = append(lines, fmt.Sprintf("%s %-14s %s", mark, acc.Name, details(acc.Email, acc.Org, acc.Plan)))
 		}
-		footer := "↑/↓ move · enter switch · r remove · esc quit"
-		idx, act := selectAction("Claude logins", lines, footer, "r")
+		footer := "↑/↓ move · enter switch · a add · r remove · esc quit"
+		idx, act := selectAction("Claude Code logins", lines, footer, "ar")
 		if idx < 0 {
 			return nil
+		}
+		if act == 'a' {
+			return a.login("")
 		}
 		if unsaved {
 			idx--
@@ -149,92 +236,165 @@ func authInteractive(cfg config.Config, store claudeauth.Store, root string) err
 			if act != '\r' {
 				continue
 			}
-			name := promptLine("name for this login: ")
-			if name == "" {
-				continue
+			if name := promptLine("name for this login: "); name != "" {
+				if err := a.store.Save(name, live); err != nil {
+					fmt.Fprintf(os.Stderr, "save: %v\n", err)
+				} else {
+					fmt.Printf("saved %s as %s\n", live.Identity.EmailAddress, name)
+				}
 			}
-			if err := store.Save(name, live); err != nil {
-				fmt.Fprintf(os.Stderr, "save: %v\n", err)
-				continue
-			}
-			fmt.Printf("saved %s as %s\n", live.Identity.EmailAddress, name)
 			continue
 		}
-		a := accounts[idx]
+		acc := accounts[idx]
 		switch act {
 		case '\r':
-			return switchAccount(cfg, store, root, a.Name)
+			return a.switchTo(acc.Name)
 		case 'r':
-			if !confirm(fmt.Sprintf("remove the saved login %s (%s)? the current login is not affected [y/N] ", a.Name, a.Email)) {
+			if !confirm(fmt.Sprintf("remove the saved login %s (%s)? [y/N] ", acc.Name, acc.Email)) {
 				continue
 			}
-			if err := store.Remove(a.Name); err != nil {
+			if err := a.logout(acc.Name); err != nil {
 				fmt.Fprintf(os.Stderr, "remove: %v\n", err)
-				continue
 			}
-			fmt.Printf("removed %s\n", a.Name)
 		}
 	}
 }
 
-func accountDetails(email, org, plan string) string {
-	parts := []string{email}
-	if org != "" {
-		parts = append(parts, org)
-	}
-	if plan != "" {
-		parts = append(parts, plan)
-	}
-	return "\033[2m" + strings.Join(parts, " · ") + "\033[0m"
-}
-
-// authSession is a running Claude session a switch has to stop and resume.
-type authSession struct {
-	session string
-	pane    string
-	dir     string
-	project projects.Project
-	spec    config.ToolSpec
-	self    bool
-}
-
-func switchAccount(cfg config.Config, store claudeauth.Store, root, name string) error {
-	live, err := claudeauth.ReadLive(root)
+func (a auth) switchTo(name string) error {
+	live, active, err := a.current()
 	if err != nil {
 		return err
 	}
-	active, err := store.Refresh(live)
-	if err != nil {
-		return fmt.Errorf("update the saved copy of the current login: %w", err)
-	}
-	accounts, err := store.List()
+	target, err := a.find(name)
 	if err != nil {
 		return err
-	}
-	var target *claudeauth.Account
-	for i := range accounts {
-		if accounts[i].Name == name {
-			target = &accounts[i]
-		}
-	}
-	if target == nil {
-		return fmt.Errorf("no saved login %q; saved: %s", name, accountNames(accounts))
 	}
 	if active == name {
 		fmt.Printf("already using %s (%s)\n", name, target.Email)
 		return nil
 	}
-	// Switching away from a login nobody saved would throw its tokens away
-	// with no way back short of logging in again.
+	// Leaving a login nobody saved would throw its tokens away with no way back
+	// short of logging in again.
 	if active == "" {
-		return fmt.Errorf("the current login %s is not saved; save it with `proj auth claude` first", live.Identity.EmailAddress)
+		return fmt.Errorf("the login in use (%s) is not saved; save it with `proj auth` first", live.Identity.EmailAddress)
 	}
+	return a.whileStopped(active, func() error {
+		if err := a.store.Apply(name, a.root); err != nil {
+			return fmt.Errorf("switch to %s: %w", name, err)
+		}
+		fmt.Printf("switched to %s (%s)\n", name, plain(details(target.Email, target.Org, target.Plan)))
+		return nil
+	})
+}
 
-	running, unmanaged := claudeSessions(cfg)
+func (a auth) login(name string) error {
+	if name != "" {
+		if err := claudeauth.ValidName(name); err != nil {
+			return err
+		}
+	}
+	live, active, err := a.current()
+	if err != nil {
+		return err
+	}
+	if active == "" {
+		fmt.Printf("the login in use (%s) is kept so you can switch back to it\n", live.Identity.EmailAddress)
+		active = promptLine("name for it: ")
+		if active == "" {
+			return fmt.Errorf("the login in use needs a name before another one can be added")
+		}
+		if err := a.store.Save(active, live); err != nil {
+			return err
+		}
+	}
+	claude, err := exec.LookPath(config.DefaultTool)
+	if err != nil {
+		return fmt.Errorf("find the claude command to log in with: %w", err)
+	}
+	return a.whileStopped(active, func() error {
+		login := exec.Command(claude, "auth", "login")
+		login.Stdin, login.Stdout, login.Stderr = os.Stdin, os.Stdout, os.Stderr
+		runErr := login.Run()
+		after, readErr := claudeauth.ReadLive(a.root)
+		switch {
+		case runErr != nil || readErr != nil:
+			a.restore(active)
+			if runErr != nil {
+				return fmt.Errorf("claude auth login: %w; kept %s", runErr, active)
+			}
+			return fmt.Errorf("read the new login: %w; kept %s", readErr, active)
+		case after.Identity == live.Identity:
+			fmt.Printf("still logged in as %s; nothing added\n", after.Identity.EmailAddress)
+			return nil
+		}
+		if existing, ok, err := a.store.Find(after); err == nil && ok {
+			if _, err := a.store.Refresh(after); err != nil {
+				return err
+			}
+			fmt.Printf("%s is saved as %s already; using it\n", after.Identity.EmailAddress, existing.Name)
+			return nil
+		}
+		for name == "" {
+			name = promptLine(fmt.Sprintf("name for %s: ", after.Identity.EmailAddress))
+		}
+		if err := a.store.Save(name, after); err != nil {
+			a.restore(active)
+			return fmt.Errorf("save the new login: %w; kept %s", err, active)
+		}
+		fmt.Printf("logged in as %s, saved as %s\n",
+			plain(details(after.Identity.EmailAddress, after.Identity.OrganizationName, after.Plan)), name)
+		return nil
+	})
+}
+
+// restore puts a saved login back in use after a failed login, reporting the
+// case where even that fails, because sessions then resume logged out.
+func (a auth) restore(name string) {
+	if err := a.store.Apply(name, a.root); err != nil {
+		fmt.Fprintf(os.Stderr, "could not put %s back in use, run `proj auth switch %s`: %v\n", name, name, err)
+	}
+}
+
+func (a auth) logout(name string) error {
+	if _, err := a.find(name); err != nil {
+		return err
+	}
+	if _, active, err := a.current(); err == nil && active == name {
+		return fmt.Errorf("%s is the login in use; switch to another one first", name)
+	}
+	if err := a.store.Remove(name); err != nil {
+		return err
+	}
+	fmt.Printf("removed %s\n", name)
+	return nil
+}
+
+func (a auth) find(name string) (claudeauth.Account, error) {
+	accounts, err := a.store.List()
+	if err != nil {
+		return claudeauth.Account{}, err
+	}
+	names := make([]string, 0, len(accounts))
+	for _, acc := range accounts {
+		if acc.Name == name {
+			return acc, nil
+		}
+		names = append(names, acc.Name)
+	}
+	if len(names) == 0 {
+		return claudeauth.Account{}, fmt.Errorf("no saved login %q; none are saved", name)
+	}
+	return claudeauth.Account{}, fmt.Errorf("no saved login %q; saved: %s", name, strings.Join(names, ", "))
+}
+
+// whileStopped runs change with every Claude session stopped and resumes them
+// afterwards. When the sessions cannot all be stopped, change does not run and
+// the ones already stopped resume on the login named active, which is unchanged.
+func (a auth) whileStopped(active string, change func() error) error {
+	running, unmanaged := claudeSessions(a.cfg)
 	if len(unmanaged) > 0 {
-		fmt.Printf("not started by proj, restart these yourself after the switch: %s\n", strings.Join(unmanaged, ", "))
+		fmt.Printf("not started by proj, restart these yourself afterwards: %s\n", strings.Join(unmanaged, ", "))
 	}
-
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
@@ -247,27 +407,32 @@ func switchAccount(cfg config.Config, store claudeauth.Store, root, name string)
 			others = append(others, running[i])
 		}
 	}
-	stopped, err := stopSessions(ctx, cfg, others)
+	stopped, err := stopSessions(ctx, a.cfg, others)
 	if err != nil {
-		resumeSessions(cfg, stopped)
-		return fmt.Errorf("%w; the stopped sessions were resumed on %s and the login is unchanged", err, active)
+		resumeSessions(a.cfg, stopped)
+		return fmt.Errorf("%w; the stopped sessions were resumed and %s is still in use", err, active)
 	}
-
-	if err := store.Apply(name, root); err != nil {
-		resumeSessions(cfg, stopped)
-		return fmt.Errorf("switch to %s: %w", name, err)
-	}
-	fmt.Printf("switched to %s (%s)\n", name, ansiSeq.ReplaceAllString(accountDetails(target.Email, target.Org, target.Plan), ""))
-	resumeSessions(cfg, stopped)
-
+	changeErr := change()
+	resumeSessions(a.cfg, stopped)
 	if self != nil {
-		line := daemon.LaunchCommand(self.spec, cfg.Claude.Home, self.project.Name, self.session, self.dir)
+		line := daemon.LaunchCommand(self.spec, a.cfg.Claude.Home, self.project.Name, self.session, self.dir)
 		if err := tmux.DeferredRespawnSession(self.session, self.dir, line); err != nil {
-			return fmt.Errorf("switched, but could not schedule a restart of this session %s, restart it yourself: %w", self.session, err)
+			fmt.Fprintf(os.Stderr, "could not schedule a restart of this session %s, restart it yourself: %v\n", self.session, err)
+		} else {
+			fmt.Printf("this session (%s) restarts in a couple of seconds\n", self.session)
 		}
-		fmt.Printf("this session (%s) restarts in a couple of seconds\n", self.session)
 	}
-	return nil
+	return changeErr
+}
+
+// authSession is a running Claude session a login change stops and resumes.
+type authSession struct {
+	session string
+	pane    string
+	dir     string
+	project projects.Project
+	spec    config.ToolSpec
+	self    bool
 }
 
 // claudeSessions finds the tmux panes running Claude Code. A pane whose
@@ -381,16 +546,18 @@ func resumeSessions(cfg config.Config, stopped []authSession) {
 	}
 }
 
-func accountNames(accounts []claudeauth.Account) string {
-	if len(accounts) == 0 {
-		return "none"
+func details(email, org, plan string) string {
+	parts := []string{email}
+	if org != "" {
+		parts = append(parts, org)
 	}
-	names := make([]string, len(accounts))
-	for i, a := range accounts {
-		names[i] = a.Name
+	if plan != "" {
+		parts = append(parts, plan)
 	}
-	return strings.Join(names, ", ")
+	return "\033[2m" + strings.Join(parts, " · ") + "\033[0m"
 }
+
+func plain(s string) string { return ansiSeq.ReplaceAllString(s, "") }
 
 func promptLine(prompt string) string {
 	fmt.Print(prompt)
