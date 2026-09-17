@@ -28,14 +28,15 @@ var (
 )
 
 var authCmd = &cobra.Command{
-	Use:   "auth <tool> [account]",
+	Use:   "auth [tool] [account]",
 	Short: "switch the account a coding tool is logged in with",
-	Long: `Pick which saved login Claude Code uses, for every session at once.
+	Long: `Pick which saved login a coding tool uses, for every session at once.
 
-With no account, an interactive list shows the saved logins with the active
-one marked: enter switches to the selected one, r removes a saved login, and
-a login that is not saved yet can be saved from the list. With an account
-name, it switches to that login directly.
+With no tool, a list of the configured tools comes first; only claude logins
+can be switched. With no account, an interactive list shows the saved logins
+with the active one marked: enter switches to the selected one, r removes a
+saved login, and a login that is not saved yet can be saved from the list.
+With an account name, it switches to that login directly.
 
 A login is its tokens and account details; conversations, memory, settings
 and Remote Control are shared by all of them and carry across a switch.
@@ -49,7 +50,7 @@ old login and nothing is switched. --now stops busy sessions too.
 
 To add a login: save the current one here, run /login in a Claude session
 with the other account, then open this list again and save that one.`,
-	Args: cobra.RangeArgs(1, 2),
+	Args: cobra.RangeArgs(0, 2),
 	RunE: runAuth,
 }
 
@@ -60,12 +61,19 @@ func init() {
 }
 
 func runAuth(cmd *cobra.Command, args []string) error {
-	if args[0] != config.DefaultTool {
-		return fmt.Errorf("only %s logins can be switched, not %q", config.DefaultTool, args[0])
-	}
 	cfg, err := config.Load()
 	if err != nil {
 		return err
+	}
+	if len(args) == 0 {
+		tool, ok := pickAuthTool(cfg)
+		if !ok {
+			return nil
+		}
+		args = []string{tool}
+	}
+	if args[0] != config.DefaultTool {
+		return fmt.Errorf("only %s logins can be switched, not %q", config.DefaultTool, args[0])
 	}
 	root := daemon.ClaudeRoot(cfg.Claude.Home)
 	store := claudeauth.Store{Dir: filepath.Join(filepath.Dir(daemonConfig().StatePath), "accounts", config.DefaultTool)}
@@ -73,6 +81,30 @@ func runAuth(cmd *cobra.Command, args []string) error {
 		return switchAccount(cfg, store, root, args[1])
 	}
 	return authInteractive(cfg, store, root)
+}
+
+// pickAuthTool lists the configured tools and returns the one chosen. Only
+// Claude's login can be switched; the others are listed so the list matches
+// `proj tool`, and picking one says so and shows the list again.
+func pickAuthTool(cfg config.Config) (string, bool) {
+	names := cfg.ToolNames()
+	lines := make([]string, len(names))
+	for i, n := range names {
+		lines[i] = n
+		if n != config.DefaultTool {
+			lines[i] = n + "  \033[2mlogin switching not supported\033[0m"
+		}
+	}
+	for {
+		idx := selectFromList("switch the login of", lines)
+		if idx < 0 {
+			return "", false
+		}
+		if names[idx] == config.DefaultTool {
+			return names[idx], true
+		}
+		fmt.Printf("switching %s logins is not supported\n", names[idx])
+	}
 }
 
 func authInteractive(cfg config.Config, store claudeauth.Store, root string) error {
