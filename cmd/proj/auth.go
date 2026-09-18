@@ -431,6 +431,16 @@ func (a auth) whileStopped(active string, change func() error) error {
 	if len(unmanaged) > 0 {
 		fmt.Printf("not started by proj, restart these yourself afterwards: %s\n", strings.Join(unmanaged, ", "))
 	}
+	// A Claude outside tmux belongs to something proj cannot stop, and one that
+	// is still running when the login changes writes the old login back over the
+	// new one. Reported rather than stopped: another supervisor's agents are its
+	// own to restart.
+	if spec, err := a.cfg.Tool(config.DefaultTool); err == nil {
+		if outside := claudeOutsideTmux(spec.Command); len(outside) > 0 {
+			fmt.Printf("running outside tmux and will overwrite the new login when they stop; stop these first: %s\n",
+				strings.Join(outside, ", "))
+		}
+	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
