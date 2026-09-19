@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"os/exec"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -96,12 +97,26 @@ func mutateTags(name string, fn func([]string) []string) error {
 		// that by itself.
 		retitleRemote(cfg.Claude.Home, daemon.BridgeSessionID(cfg.Claude.Home, p.Dir), p.Dir, newSession)
 	}
+	syncPaseoLabels()
 	if len(stored) == 0 {
 		fmt.Printf("%s: (no tags)\n", p.Name)
 	} else {
 		fmt.Printf("%s: %s\n", p.Name, strings.Join(stored, " "))
 	}
 	return nil
+}
+
+// syncPaseoLabels mirrors the tags onto Paseo's workspace labels, so a project
+// tagged or untagged here shows that in the app at once rather than at the next
+// run of the reconciler. Paseo is optional: the helper is absent on a machine
+// that does not run it, and a daemon that is not listening is not an error
+// either, so a failure here never fails the tag change.
+func syncPaseoLabels() {
+	bin, err := exec.LookPath("paseo-doner-labels")
+	if err != nil {
+		return
+	}
+	_ = exec.Command(bin).Run()
 }
 
 func init() {
