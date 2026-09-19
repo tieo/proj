@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### Removed
+- `proj viewbook`, the web page that served a project's model documents and
+  relayed messages typed there into its tmux pane. It went unused, and it was
+  the last thing in proj reading a pane, so the tmux dependency goes with it.
+
 ### Changed
 - `proj say` delivers to the project's Paseo agent instead of typing into a
   tmux pane. Sessions moved to Paseo, so a pane is no longer where a project's
