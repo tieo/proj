@@ -3,6 +3,10 @@
 ## [Unreleased]
 
 ### Added
+- `wait` under `[daemon.doner]`, how long a stopped session is left alone
+  before the sweep asks again. Default half an hour, which is the number the
+  nudge quotes back to a waiting session. `proj doner` reports it, since the
+  message promises a figure that is no longer fixed.
 - `proj doner sweep`, which asks again any doner-tagged session that stopped
   without reporting done and has been quiet for longer than the wait window.
   The nudge tells a session that answers "Waiting on <id>" that it will be

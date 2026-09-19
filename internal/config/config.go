@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/BurntSushi/toml"
 )
@@ -30,20 +31,44 @@ type DaemonConfig struct {
 	Doner DonerConfig `toml:"doner"`
 }
 
-// DonerConfig is doner's global switch. A project opts in by carrying the
-// "doner" tag; this turns the whole mechanism off without touching the tags.
+// DonerConfig is doner's global switch and its one number. A project opts in
+// by carrying the "doner" tag; Enabled turns the whole mechanism off without
+// touching the tags.
 type DonerConfig struct {
 	Enabled bool `toml:"enabled"`
+	// Wait is how long a session that stopped without reporting done is left
+	// alone before the sweep asks again. It is the number the nudge quotes
+	// back to a waiting session, so changing it here changes what sessions are
+	// promised.
+	Wait string `toml:"wait"`
 }
+
+// WaitDefault is how long a stopped session is left alone when no wait is
+// configured: long enough that a job worth waiting for has a chance to finish,
+// short enough that one which never returns does not park the session for the
+// rest of the day.
+const WaitDefault = 30 * time.Minute
 
 // Active reports whether doner runs.
 func (d DonerConfig) Active() bool { return d.Enabled }
+
+// WaitDuration is Wait parsed, falling back to the default when unset or
+// unreadable.
+func (d DonerConfig) WaitDuration() time.Duration {
+	if d.Wait == "" {
+		return WaitDefault
+	}
+	if v, err := time.ParseDuration(d.Wait); err == nil && v > 0 {
+		return v
+	}
+	return WaitDefault
+}
 
 func Default() Config {
 	home, _ := os.UserHomeDir()
 	return Config{
 		BaseDir: filepath.Join(home, "projects", "code"),
-		Daemon:  DaemonConfig{Doner: DonerConfig{Enabled: true}},
+		Daemon:  DaemonConfig{Doner: DonerConfig{Enabled: true, Wait: WaitDefault.String()}},
 	}
 }
 

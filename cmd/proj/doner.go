@@ -188,8 +188,11 @@ func printDonerStatus(cfg config.Config) {
 	// A missing hook is the one state here that stops doner working, and the
 	// tag alone does nothing without it, so the line that reports it names the
 	// command that fixes it the way the tag line names its own.
+	// The wait window is reported because it is the promise the nudge makes to
+	// a session that says it is waiting, and it is now configurable, so the
+	// number in the message is not necessarily the one a reader assumes.
 	if installed {
-		fmt.Printf("doner: %s, hook installed\n", onOff(on))
+		fmt.Printf("doner: %s, hook installed, asks again after %s\n", onOff(on), cfg.Daemon.Doner.WaitDuration())
 	} else {
 		fmt.Printf("doner: %s, hook not installed (install it with `proj doner install`)\n", onOff(on))
 	}

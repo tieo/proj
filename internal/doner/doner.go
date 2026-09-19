@@ -28,12 +28,6 @@ const Reason = "done with everything you were granted to do, hard blocked by som
 	"naming the agent, task or command you are waiting for; you will be asked again in " +
 	"half an hour and nothing will disturb you before then. ANYTHING else? continue."
 
-// WaitWindow is how long a session that reported itself waiting is left alone.
-// It is the one number the answer buys: long enough that a job worth waiting
-// for has a chance to finish, short enough that a job which never returns does
-// not park the session for the rest of the day.
-const WaitWindow = 30 * time.Minute
-
 // waitingRE matches the answer the nudge asks for when a session is waiting on
 // something it started ("Waiting on agent-7", "waiting on the deploy job").
 // What is named is not checked: the daemon cannot verify someone else's id, and

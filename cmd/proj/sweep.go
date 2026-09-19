@@ -49,7 +49,9 @@ func init() {
 	// The window is a flag so the sweep can be exercised on demand: with the
 	// half-hour default, a run proves nothing until something has been stuck
 	// for half an hour.
-	sweepCmd.Flags().DurationVar(&sweepAfter, "after", doner.WaitWindow, "how long a session must have been quiet")
+	// Zero means "whatever the config says"; a flag default cannot read the
+	// config because flags are wired before it is loaded.
+	sweepCmd.Flags().DurationVar(&sweepAfter, "after", 0, "override how long a session must have been quiet")
 	donerCmd.AddCommand(sweepCmd)
 }
 
@@ -109,6 +111,10 @@ func runSweep(cmd *cobra.Command, args []string) error {
 	if !paseo.Available() {
 		return nil
 	}
+	window := cfg.Daemon.Doner.WaitDuration()
+	if sweepAfter > 0 {
+		window = sweepAfter
+	}
 	root := claudeRoot(cfg.Claude.Home)
 	home := paseo.Home()
 	stamps := loadStamps()
@@ -129,7 +135,7 @@ func runSweep(cmd *cobra.Command, args []string) error {
 			continue
 		}
 		quiet := now.Sub(at)
-		if quiet < sweepAfter {
+		if quiet < window {
 			continue
 		}
 		// The two answers the nudge asks for are the two it must respect. A
