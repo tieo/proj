@@ -8,9 +8,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/tieo/proj/internal/config"
-	"github.com/tieo/proj/internal/daemon"
 	"github.com/tieo/proj/internal/projects"
-	"github.com/tieo/proj/internal/tmux"
 )
 
 var tagCmd = &cobra.Command{
@@ -61,9 +59,8 @@ var tagSetCmd = &cobra.Command{
 	},
 }
 
-// mutateTags loads the project, applies fn to its current tags, persists the
-// result, and renames the tmux session (if any) so its name reflects the new
-// tags.
+// mutateTags loads the project, applies fn to its current tags and persists
+// the result.
 func mutateTags(name string, fn func([]string) []string) error {
 	cfg, err := config.Load()
 	if err != nil {
@@ -77,26 +74,10 @@ func mutateTags(name string, fn func([]string) []string) error {
 	if err != nil {
 		return err
 	}
-	oldSession := projects.SessionName(p.Name, p.Tags)
-	newTags := fn(p.Tags)
-	if err := reg.SetTags(p.Name, newTags); err != nil {
+	if err := reg.SetTags(p.Name, fn(p.Tags)); err != nil {
 		return err
 	}
 	stored := reg.Tags(p.Name)
-	newSession := projects.SessionName(p.Name, stored)
-	if oldSession != newSession {
-		_ = tmux.RenameSession(oldSession, newSession)
-		// The daemon keys its bookkeeping by session name, so a tag change has
-		// to carry the entry over: left behind, the old name names a session
-		// that no longer exists (dropped on the next tick, taking any pin with
-		// it) and the new one starts blank - including the RC-bound latch, which
-		// made a long-connected session look like it had never bound.
-		renameManagedSession(oldSession, newSession, p.Dir)
-		// Tags ride in the session name, so they ride in the Remote Control
-		// name too; see retitleRemote for why a running session cannot correct
-		// that by itself.
-		retitleRemote(cfg.Claude.Home, daemon.BridgeSessionID(cfg.Claude.Home, p.Dir), p.Dir, newSession)
-	}
 	syncPaseoLabels()
 	if len(stored) == 0 {
 		fmt.Printf("%s: (no tags)\n", p.Name)

@@ -1,4 +1,9 @@
-// Command proj is the tmux + Claude Code project session manager.
+// Command proj carries doner: a Claude Code Stop hook that keeps a tagged
+// project's session working until it reports that it is finished.
+//
+// Sessions themselves live in Paseo, which starts, holds and shows them. Doner
+// is the one thing Paseo has no answer for, because it is a decision made at
+// the moment a session would stop, inside Claude Code, where only a hook runs.
 //
 // See `proj --help` for usage. Subcommands live in sibling files of this
 // package and register themselves with `rootCmd` in their init().
@@ -9,45 +14,37 @@ import (
 	"os"
 
 	"github.com/spf13/cobra"
-
-	"github.com/tieo/proj/internal/handoff"
 )
 
 const Version = "0.1.0"
 
 var rootCmd = &cobra.Command{
-	Use:   "proj [name-or-prefix | <subcommand>]",
-	Short: "tmux + Claude Code project session manager",
-	Long: `proj opens a tmux session per project, optionally launching Claude Code inside it, and (via "proj daemon") auto-resumes those sessions when usage limits expire.
+	Use:   "proj <subcommand>",
+	Short: "keep a tagged session working until it reports done",
+	Long: `proj holds doner: a Claude Code Stop hook that reads a session's last reply
+when it would stop, and sends it back to work unless it reported that it is
+finished, blocked, waiting, or needs an answer from you.
 
-Each project is a uniquely-named directory under base_dir; open one by its name or a unique prefix. Tags are labels for grouping and never affect identity.`,
-	Args:          cobra.ArbitraryArgs,
+The control surface is the "doner" tag. Tag a project and its sessions are
+held; untag it and they stop when they like.`,
 	SilenceUsage:  true,
 	SilenceErrors: true,
 	// Flag and argument validation run before any PreRun, so reaching here means
 	// the command actually started: a later error is a runtime one, and main
 	// should not bury it under a usage dump.
-	PersistentPreRun: func(cmd *cobra.Command, args []string) {
-		cmdStarted = true
-		// Codex refuses to resume a rollout whose metadata predates its
-		// provider field. Repairing them is housekeeping for a later switch,
-		// so a failure here reports and leaves the command it precedes alone.
-		if _, err := handoff.RepairCodexRollouts(handoff.CodexHome()); err != nil {
-			fmt.Fprintf(os.Stderr, "warning: repair codex rollouts: %v\n", err)
-		}
-	},
-	RunE: runOpen,
+	PersistentPreRun: func(cmd *cobra.Command, args []string) { cmdStarted = true },
 }
 
-var (
-	headless   bool
-	cmdStarted bool
-)
+var cmdStarted bool
 
-func init() {
-	rootCmd.PersistentFlags().BoolVar(&headless, "headless", false, "don't attach to the tmux session after opening")
-	rootCmd.PersistentFlags().BoolVar(&listAll, "all", false, "show all projects regardless of age")
+var versionCmd = &cobra.Command{
+	Use:   "version",
+	Short: "print the version",
+	Args:  cobra.NoArgs,
+	Run:   func(*cobra.Command, []string) { fmt.Println("proj", Version) },
 }
+
+func init() { rootCmd.AddCommand(versionCmd) }
 
 func main() {
 	cmd, err := rootCmd.ExecuteC()

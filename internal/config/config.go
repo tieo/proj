@@ -6,163 +6,44 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"sort"
-	"strings"
-	"time"
 
 	"github.com/BurntSushi/toml"
 )
 
 type Config struct {
-	BaseDir string                `toml:"base_dir"`
-	Claude  ClaudeConfig          `toml:"claude"`
-	Tools   map[string]ToolConfig `toml:"tools"`
-	Daemon  DaemonConfig          `toml:"daemon"`
-	List    ListConfig            `toml:"list"`
+	BaseDir string       `toml:"base_dir"`
+	Claude  ClaudeConfig `toml:"claude"`
+	Daemon  DaemonConfig `toml:"daemon"`
 }
 
 type ClaudeConfig struct {
-	Command    string `toml:"command"`
-	ResumeFlag string `toml:"resume_flag"`
-	Home       string `toml:"home"` // Claude home override; default ~/.claude, or the Windows one when running under WSL
+	// Home overrides where Claude Code keeps its settings. Default ~/.claude,
+	// or the Windows one when running under WSL, where claude.exe reads the
+	// settings of the Windows user rather than the distro's.
+	Home string `toml:"home"`
 }
 
-// ToolConfig is the launch recipe for a non-Claude coding tool, configured
-// under [tools.<name>]. Claude keeps its own [claude] section (it carries the
-// extra home override) and is exposed through the same ToolSpec resolution.
-type ToolConfig struct {
-	Command       string `toml:"command"`
-	ResumeCommand string `toml:"resume_command"` // full command used instead of command when the project has prior history
-	PromptFlag    string `toml:"prompt_flag"`    // flag that precedes an initial prompt argument; empty when the tool takes it positionally
-}
-
-// ToolSpec is a resolved launch recipe: the command templates a session is
-// started with. Both commands support the {name}, {dir}, {host} and {rc}
-// placeholders.
-type ToolSpec struct {
-	Name          string
-	Command       string
-	ResumeCommand string // empty: always launch fresh
-	PromptFlag    string // precedes an initial prompt argument; empty = positional
-}
-
-// DefaultTool is the tool used by projects with no tool set.
-const DefaultTool = "claude"
-
-// defaultTools holds the built-in recipes for the supported non-Claude
-// tools. A [tools.<name>] entry in config.toml overrides the whole recipe
-// for that name.
-var defaultTools = map[string]ToolConfig{
-	"codex": {
-		Command:       "codex --dangerously-bypass-approvals-and-sandbox",
-		ResumeCommand: "codex resume --last --dangerously-bypass-approvals-and-sandbox",
-	},
-	"agy": {
-		Command:       "agy --dangerously-skip-permissions",
-		ResumeCommand: "agy --continue --dangerously-skip-permissions",
-		PromptFlag:    "--prompt-interactive",
-	},
-}
-
-// Tool resolves a tool name to its launch spec. "" means claude. Unknown
-// names error with a hint at where to define them.
-func (c Config) Tool(name string) (ToolSpec, error) {
-	if name == "" || name == DefaultTool {
-		spec := ToolSpec{Name: DefaultTool, Command: c.Claude.Command}
-		if c.Claude.ResumeFlag != "" {
-			spec.ResumeCommand = c.Claude.Command + " " + c.Claude.ResumeFlag
-		}
-		return spec, nil
-	}
-	a, ok := c.Tools[name]
-	if !ok {
-		a, ok = defaultTools[name]
-	}
-	if !ok || a.Command == "" {
-		return ToolSpec{}, fmt.Errorf("unknown tool %q; known: %s (add [tools.%s] to %s)",
-			name, strings.Join(c.ToolNames(), ", "), name, Path())
-	}
-	return ToolSpec{Name: name, Command: a.Command, ResumeCommand: a.ResumeCommand, PromptFlag: a.PromptFlag}, nil
-}
-
-// ToolNames returns every resolvable tool name, claude first, the rest sorted.
-func (c Config) ToolNames() []string {
-	seen := map[string]bool{}
-	var rest []string
-	for name := range defaultTools {
-		if !seen[name] {
-			seen[name] = true
-			rest = append(rest, name)
-		}
-	}
-	for name, a := range c.Tools {
-		if !seen[name] && a.Command != "" {
-			seen[name] = true
-			rest = append(rest, name)
-		}
-	}
-	sort.Strings(rest)
-	return append([]string{DefaultTool}, rest...)
-}
-
+// DaemonConfig survives as the section the doner switch lives under, because
+// that is where it has always been written and an existing config still says
+// so.
 type DaemonConfig struct {
-	PollInterval string      `toml:"poll_interval"`
-	MaxWait      string      `toml:"max_wait"`
-	ResumeText   string      `toml:"resume_text"`
-	CaptureLines int         `toml:"capture_lines"`
-	KeepAlive    bool        `toml:"keep_alive"`
-	Doner        DonerConfig `toml:"doner"`
+	Doner DonerConfig `toml:"doner"`
 }
 
-type ListConfig struct {
-	MaxAgeDays int `toml:"max_age_days"` // hide inactive projects older than this; 0 = show all
-}
-
-// DonerConfig configures the doner backstop. A project opts in by carrying the
-// "doner" tag: whenever such a session goes idle without having reported done,
-// the daemon types "done? if not, continue. Else, reply with 'Yes'." to keep it
-// working, and stops once the session replies affirmatively. The switch here is
-// a global kill switch for that behaviour; per-session opt-in is the tag.
+// DonerConfig is doner's global switch. A project opts in by carrying the
+// "doner" tag; this turns the whole mechanism off without touching the tags.
 type DonerConfig struct {
-	Enabled bool `toml:"enabled"` // run the doner backstop (default true; opt in per session with the doner tag)
-	// Grace is how long a tagged session may sit quiet before the daemon nudges
-	// it. It only measures silence: a message from the user or a job finishing
-	// writes to the transcript and starts it again, so a session that is being
-	// worked with is never nudged.
-	Grace string `toml:"grace"`
+	Enabled bool `toml:"enabled"`
 }
 
-// DonerGraceDefault is how long a quiet session is left alone when no grace is
-// configured.
-const DonerGraceDefault = 5 * time.Minute
-
-// Active reports whether the doner backstop runs.
+// Active reports whether doner runs.
 func (d DonerConfig) Active() bool { return d.Enabled }
-
-// GraceDuration is Grace parsed, falling back to the default when unset or
-// unreadable.
-func (d DonerConfig) GraceDuration() time.Duration {
-	return Duration(d.Grace, DonerGraceDefault)
-}
 
 func Default() Config {
 	home, _ := os.UserHomeDir()
 	return Config{
 		BaseDir: filepath.Join(home, "projects", "code"),
-		Claude: ClaudeConfig{
-			Command:    "claude --dangerously-skip-permissions --remote-control {rc} -n {rc}",
-			ResumeFlag: "-c",
-		},
-		Daemon: DaemonConfig{
-			PollInterval: "60s",
-			MaxWait:      "5h",
-			ResumeText:   "continue",
-			CaptureLines: 300,
-			Doner:        DonerConfig{Enabled: true, Grace: "5m"},
-		},
-		List: ListConfig{
-			MaxAgeDays: 14,
-		},
+		Daemon:  DaemonConfig{Doner: DonerConfig{Enabled: true}},
 	}
 }
 
@@ -175,6 +56,8 @@ func Path() string {
 	return filepath.Join(base, "proj", "config.toml")
 }
 
+// Load reads the config file. Keys it no longer knows are ignored, so a config
+// written when proj was a session manager still loads.
 func Load() (Config, error) {
 	cfg := Default()
 	data, err := os.ReadFile(Path())
@@ -205,15 +88,4 @@ func Write(cfg Config) error {
 		return err
 	}
 	return os.Rename(tmp, p)
-}
-
-// Duration parses a Go duration string or returns the fallback if empty/invalid.
-func Duration(s string, fallback time.Duration) time.Duration {
-	if s == "" {
-		return fallback
-	}
-	if d, err := time.ParseDuration(s); err == nil {
-		return d
-	}
-	return fallback
 }

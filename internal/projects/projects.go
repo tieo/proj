@@ -12,8 +12,6 @@ import (
 	"sort"
 	"strings"
 	"time"
-
-	"github.com/tieo/proj/internal/tmux"
 )
 
 type Project struct {
@@ -215,10 +213,6 @@ func All(baseDir string) []Project {
 		return nil
 	}
 	reg, _ := LoadRegistry()
-	sessionByPath := make(map[string]int64)
-	for _, s := range tmux.ListSessions() {
-		sessionByPath[s.Path] = s.Activity
-	}
 	var out []Project
 	for _, e := range entries {
 		if !e.IsDir() {
@@ -232,30 +226,12 @@ func All(baseDir string) []Project {
 			Skills: reg.Skills(e.Name()),
 			Tool:   reg.Tool(e.Name()),
 		}
-		if ts, ok := sessionByPath[dir]; ok {
-			p.SessionTS = ts
-		} else if info, err := os.Stat(dir); err == nil {
+		if info, err := os.Stat(dir); err == nil {
 			p.DirMTime = info.ModTime().Unix()
 		}
 		out = append(out, p)
 	}
 	return out
-}
-
-// OrphanSessions returns tmux sessions whose paths don't correspond to any
-// project under baseDir.
-func OrphanSessions(baseDir string) []tmux.Session {
-	known := make(map[string]struct{})
-	for _, p := range All(baseDir) {
-		known[p.Dir] = struct{}{}
-	}
-	var orphans []tmux.Session
-	for _, s := range tmux.ListSessions() {
-		if _, ok := known[s.Path]; !ok {
-			orphans = append(orphans, s)
-		}
-	}
-	return orphans
 }
 
 func Reltime(ts, now int64) string {

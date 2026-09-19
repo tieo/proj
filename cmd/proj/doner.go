@@ -12,9 +12,8 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/tieo/proj/internal/config"
-	"github.com/tieo/proj/internal/daemon"
+	"github.com/tieo/proj/internal/doner"
 	"github.com/tieo/proj/internal/projects"
-	"github.com/tieo/proj/internal/tmux"
 )
 
 // Doner keeps a tagged session working until it reports done. It is a Claude
@@ -62,7 +61,7 @@ const DonerTag = "doner"
 // reached "a good place to end", or running low on context are the states doner
 // exists to push through. A session near its limit still has turns left, and
 // the work it hands back is worth more finished than tidily summarised.
-const donerReason = daemon.DonerReason
+const donerReason = doner.Reason
 
 var donerCmd = &cobra.Command{
 	Use:   "doner [on|off]",
@@ -271,13 +270,13 @@ func runDonerHook(cmd *cobra.Command, args []string) error {
 	// to continue, and holding it here would spin it through turn after turn
 	// against a job it cannot hurry. It stops, and the daemon's backstop asks
 	// again once the wait window has passed.
-	if daemon.IsWaiting(in.LastAssistantMessage) {
+	if doner.IsWaiting(in.LastAssistantMessage) {
 		return nil
 	}
 	// A turn the API refused never reached the model, and the next turn would
 	// resend the same conversation to the same refusal. Blocking here is a loop
 	// whose only exit is someone noticing it.
-	if daemon.IsAPIError(in.LastAssistantMessage) {
+	if doner.IsAPIError(in.LastAssistantMessage) {
 		return nil
 	}
 	out, _ := json.Marshal(map[string]string{"decision": "block", "reason": donerReason})
@@ -315,10 +314,10 @@ func lastPathSegment(p string) string {
 	return p
 }
 
-// isDone is daemon.IsDone under the name the callers here use. The check lives
+// isDone is doner.IsDone under the name the callers here use. The check lives
 // there because the daemon's backstop has to agree with the hook: a session
 // that reported done must read as done to both.
-func isDone(text string) bool { return daemon.IsDone(text) }
+func isDone(text string) bool { return doner.IsDone(text) }
 
 // ----- hook installation -----
 
@@ -326,7 +325,7 @@ func isDone(text string) bool { return daemon.IsDone(text) }
 // Windows-side .claude that claude.exe actually reads, which daemon.ClaudeRoot
 // resolves.
 func donerSettingsPath(cfg config.Config) string {
-	return filepath.Join(daemon.ClaudeRoot(cfg.Claude.Home), "settings.json")
+	return filepath.Join(claudeRoot(cfg.Claude.Home), "settings.json")
 }
 
 // donerHookCommand is the command string Claude Code runs for the Stop hook.
@@ -341,10 +340,43 @@ func donerInvocation(sub string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if tmux.IsWSL() {
+	if isWSL() {
 		return "MSYS_NO_PATHCONV=1 wsl.exe " + exe + " " + sub, nil
 	}
 	return quoteIfSpace(exe) + " " + sub, nil
+}
+
+// claudeRoot is the .claude directory Claude Code actually reads. Under WSL
+// that is the Windows-side one, because claude.exe runs there and keeps its
+// settings with the Windows user, not the distro's.
+func claudeRoot(homeOverride string) string {
+	if homeOverride != "" {
+		return homeOverride
+	}
+	if isWSL() {
+		if home, err := os.UserHomeDir(); err == nil {
+			if cand := filepath.Join("/mnt/c/Users", filepath.Base(home), ".claude"); isDir(cand) {
+				return cand
+			}
+		}
+		if m, _ := filepath.Glob("/mnt/c/Users/*/.claude"); len(m) == 1 {
+			return m[0]
+		}
+	}
+	home, _ := os.UserHomeDir()
+	return filepath.Join(home, ".claude")
+}
+
+func isDir(p string) bool {
+	fi, err := os.Stat(p)
+	return err == nil && fi.IsDir()
+}
+
+// isWSL reports whether this is a WSL kernel, which decides how Claude Code has
+// to be told to reach this binary.
+func isWSL() bool {
+	b, _ := os.ReadFile("/proc/sys/kernel/osrelease")
+	return strings.Contains(strings.ToLower(string(b)), "microsoft")
 }
 
 func quoteIfSpace(s string) string {
@@ -460,7 +492,7 @@ func donerSlashCommandBody() (string, error) {
 // directory Claude Code reads (the Windows-side one under WSL, alongside
 // settings.json).
 func writeDonerSlashCommand(cfg config.Config, install bool) error {
-	path := filepath.Join(daemon.ClaudeRoot(cfg.Claude.Home), "commands", "doner.md")
+	path := filepath.Join(claudeRoot(cfg.Claude.Home), "commands", "doner.md")
 	if !install {
 		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
 			return err

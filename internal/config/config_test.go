@@ -1,75 +1,83 @@
 package config
 
 import (
-	"strings"
+	"os"
+	"path/filepath"
 	"testing"
 )
 
-func TestToolClaudeDefault(t *testing.T) {
-	cfg := Default()
-	for _, name := range []string{"", "claude"} {
-		spec, err := cfg.Tool(name)
-		if err != nil {
-			t.Fatalf("Tool(%q): %v", name, err)
-		}
-		if spec.Name != "claude" || spec.Command != cfg.Claude.Command {
-			t.Errorf("Tool(%q) = %+v; want claude with [claude] command", name, spec)
-		}
-		if want := cfg.Claude.Command + " " + cfg.Claude.ResumeFlag; spec.ResumeCommand != want {
-			t.Errorf("resume command %q; want %q", spec.ResumeCommand, want)
-		}
+func TestDefaultTurnsDonerOn(t *testing.T) {
+	if !Default().Daemon.Doner.Active() {
+		t.Error("doner is on unless a config turns it off; the tag is the per-project switch")
 	}
 }
 
-func TestToolBuiltins(t *testing.T) {
-	cfg := Default()
-	codex, err := cfg.Tool("codex")
+func TestLoadIgnoresRetiredKeys(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", dir)
+	if err := os.MkdirAll(filepath.Join(dir, "proj"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// A config written when proj was a session manager. Everything here but
+	// the doner switch names something that no longer exists.
+	old := `base_dir = "/tmp/code"
+
+[claude]
+command = "claude --dangerously-skip-permissions"
+resume_flag = "-c"
+
+[tools.codex]
+command = "codex"
+
+[daemon]
+poll_interval = "60s"
+capture_lines = 300
+
+[daemon.doner]
+enabled = false
+grace = "5m"
+
+[list]
+max_age_days = 14
+`
+	if err := os.WriteFile(filepath.Join(dir, "proj", "config.toml"), []byte(old), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load()
 	if err != nil {
-		t.Fatalf("Tool(codex): %v", err)
+		t.Fatalf("a config naming retired keys must still load: %v", err)
 	}
-	if !strings.HasPrefix(codex.Command, "codex") || !strings.Contains(codex.ResumeCommand, "resume --last") {
-		t.Errorf("codex spec %+v", codex)
+	if cfg.BaseDir != "/tmp/code" {
+		t.Errorf("BaseDir = %q, want /tmp/code", cfg.BaseDir)
 	}
-	agy, err := cfg.Tool("agy")
-	if err != nil {
-		t.Fatalf("Tool(agy): %v", err)
-	}
-	if !strings.HasPrefix(agy.Command, "agy") || !strings.Contains(agy.ResumeCommand, "--continue") {
-		t.Errorf("agy spec %+v", agy)
+	if cfg.Daemon.Doner.Active() {
+		t.Error("the file turns doner off and that has to survive the trim")
 	}
 }
 
-func TestToolUserOverrideAndUnknown(t *testing.T) {
-	cfg := Default()
-	cfg.Tools = map[string]ToolConfig{
-		"codex": {Command: "codex --full-auto"},
-		"aider": {Command: "aider"},
-	}
-	codex, err := cfg.Tool("codex")
+func TestLoadWithoutFile(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	cfg, err := Load()
 	if err != nil {
-		t.Fatalf("Tool(codex): %v", err)
+		t.Fatalf("a missing config is not an error: %v", err)
 	}
-	// A [tools.codex] entry replaces the whole built-in recipe, including
-	// the default resume command.
-	if codex.Command != "codex --full-auto" || codex.ResumeCommand != "" {
-		t.Errorf("override spec %+v", codex)
-	}
-	if _, err := cfg.Tool("aider"); err != nil {
-		t.Errorf("user-defined tool should resolve: %v", err)
-	}
-	if _, err := cfg.Tool("nope"); err == nil {
-		t.Error("unknown tool must error")
+	if cfg.BaseDir == "" {
+		t.Error("a missing config still has to name a base directory")
 	}
 }
 
-func TestToolNames(t *testing.T) {
+func TestWriteThenLoad(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	cfg := Default()
-	names := cfg.ToolNames()
-	if len(names) == 0 || names[0] != "claude" {
-		t.Fatalf("claude must come first: %v", names)
+	cfg.Daemon.Doner.Enabled = false
+	if err := Write(cfg); err != nil {
+		t.Fatal(err)
 	}
-	got := strings.Join(names, ",")
-	if !strings.Contains(got, "codex") || !strings.Contains(got, "agy") {
-		t.Errorf("builtins missing from %v", names)
+	back, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if back.Daemon.Doner.Active() {
+		t.Error("turning doner off has to survive a round trip through the file")
 	}
 }

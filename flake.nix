@@ -1,5 +1,5 @@
 {
-  description = "proj; tmux + Claude Code project session manager";
+  description = "proj; the doner Stop hook for Claude Code";
 
   inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
 
@@ -10,7 +10,7 @@
     in {
       devShells = forAll (pkgs: {
         default = pkgs.mkShell {
-          packages = with pkgs; [ go gopls gotools tmux ];
+          packages = with pkgs; [ go gopls gotools ];
         };
       });
 
@@ -19,13 +19,10 @@
           pname = "proj";
           version = "0.1.0";
           src = ./.;
-          vendorHash = "sha256-+De3X23Wpe3vtPc59rXlhzZO7zYOgxyDZm4PnPWfrqM=";
+          vendorHash = "sha256-Bz1u7u1Xk8UjIJqGJK0CGkFnT+baXP6LeskBgMpWJWo=";
           subPackages = [ "cmd/proj" ];
-          postInstall = ''
-            install -Dm0644 -t $out/share/proj shells/proj.zsh shells/proj.bash shells/proj.fish
-          '';
           meta = {
-            description = "tmux + Claude Code project session manager";
+            description = "the doner Stop hook for Claude Code";
             mainProgram = "proj";
             platforms = systems;
             license = nixpkgs.lib.licenses.mit;
