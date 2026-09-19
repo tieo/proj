@@ -9,9 +9,8 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/tieo/proj/internal/config"
-	"github.com/tieo/proj/internal/daemon"
+	"github.com/tieo/proj/internal/paseo"
 	"github.com/tieo/proj/internal/projects"
-	"github.com/tieo/proj/internal/tmux"
 )
 
 var sayCmd = &cobra.Command{
@@ -29,15 +28,9 @@ pipes into it:
     echo "the price band should be a filter" | proj say Arbay
     proj say Arbay "restart the crawler and report"
 
-The project must have a session running with a coding tool. A session busy with
-a foreground command is offered the TUI's own way out first ("ctrl+b ctrl+b to
-run in background"), so the message is read now and the command keeps running.
-A session busy with anything else - thinking, a tool call, a reply still
-arriving - keeps the message waiting until the turn ends, unless --now, which
-stops the turn where it stands and loses that work.
-
-Without a session, or at a picker or a prompt where keystrokes would choose
-something nobody chose, the command says so rather than dropping the message.`,
+The project must have a Paseo agent. Paseo holds a message sent to a busy agent
+until its turn ends, unless --now, which interrupts the turn where it stands and
+loses that work.`,
 	Args: cobra.MinimumNArgs(1),
 	RunE: runSay,
 }
@@ -49,6 +42,12 @@ func init() {
 	rootCmd.AddCommand(sayCmd)
 }
 
+// runSay delivers a message to the project's agent.
+//
+// Sessions live in Paseo, so an agent is what there is to talk to. It is found
+// by its working directory, because that is the one thing both sides agree on:
+// a project name is proj's, an agent id is Paseo's, and neither knows the
+// other's.
 func runSay(cmd *cobra.Command, args []string) error {
 	cfg, err := config.Load()
 	if err != nil {
@@ -72,30 +71,25 @@ func runSay(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("nothing to say: no text argument and nothing on stdin")
 	}
 
-	pane := paneForSession(projects.SessionName(p.Name, p.Tags))
-	if pane == "" {
-		return fmt.Errorf("%s has no running session; start one with `proj %s` first", p.Name, p.Name)
+	if !paseo.Available() {
+		return fmt.Errorf("paseo is not installed, so there is no session to say this to")
 	}
-	send := daemon.SendPrompt
-	if sayNow {
-		send = daemon.SendPromptNow
+	agent := paseo.AgentFor(p.Dir)
+	if agent == nil {
+		return fmt.Errorf("%s has no Paseo agent; create one in %s first", p.Name, p.Dir)
 	}
-	if err := send(daemon.DefaultConfig(), pane, text); err != nil {
-		return err
-	}
-	fmt.Printf("said to %s (%d chars)\n", p.Name, len([]rune(text)))
-	return nil
-}
-
-// paneForSession returns the pane holding a session's program, or "" when the
-// session is not running. The message goes to the pane rather than the session
-// name so it lands in the program's input box even when the session has more
-// than one window.
-func paneForSession(session string) string {
-	for _, pane := range tmux.ListPanes() {
-		if pane.Session == session {
-			return pane.ID
+	if sayNow && agent.Running() {
+		if err := paseo.Stop(agent.ID); err != nil {
+			return err
 		}
 	}
-	return ""
+	if err := paseo.Send(agent.ID, text); err != nil {
+		return err
+	}
+	queued := ""
+	if agent.Running() && !sayNow {
+		queued = ", queued behind the turn it is working on"
+	}
+	fmt.Printf("said to %s (%d chars)%s\n", p.Name, len([]rune(text)), queued)
+	return nil
 }

@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+### Changed
+- `proj say` delivers to the project's Paseo agent instead of typing into a
+  tmux pane. Sessions moved to Paseo, so a pane is no longer where a project's
+  conversation is, and the command could not reach a single session on a
+  machine running the daemon. The agent is found by its working directory,
+  which is the one identifier both sides share. `--now` still interrupts the
+  turn in progress; without it Paseo holds the message until the turn ends.
+
 ### Fixed
 - The doner nudge stops repeating itself. A session that answers in seconds and
   falls straight back to silence has not taken the nudge, and three of those in

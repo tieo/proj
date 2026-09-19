@@ -80,6 +80,19 @@ func sayInto(p projects.Project) func(string) error {
 	}
 }
 
+// paneForSession returns the pane holding a session's program, or "" when the
+// session is not running. The message goes to the pane rather than the session
+// name so it lands in the program's input box even when the session has more
+// than one window.
+func paneForSession(session string) string {
+	for _, pane := range tmux.ListPanes() {
+		if pane.Session == session {
+			return pane.ID
+		}
+	}
+	return ""
+}
+
 // paneForProject finds the project's session now rather than remembering what
 // it was called when this server started. A session is renamed whenever its
 // tags change - turning doner on and off does exactly that - and a book that
