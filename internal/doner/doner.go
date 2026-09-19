@@ -7,6 +7,10 @@
 package doner
 
 import (
+	"encoding/json"
+	"io"
+	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"time"
@@ -111,4 +115,72 @@ func letterWords(s string) string {
 		}
 	}
 	return strings.TrimSpace(b.String())
+}
+
+// LastReply is the text of the last thing the assistant said in a transcript,
+// and when it said it.
+//
+// It reads the file backwards in a fixed window rather than parsing all of it:
+// a long-running session's transcript reaches hundreds of megabytes, and the
+// answer is always within the last few records.
+func LastReply(path string) (string, time.Time, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return "", time.Time{}, err
+	}
+	defer f.Close()
+	fi, err := f.Stat()
+	if err != nil {
+		return "", time.Time{}, err
+	}
+	const window = 1 << 20
+	start := fi.Size() - window
+	if start < 0 {
+		start = 0
+	}
+	buf := make([]byte, fi.Size()-start)
+	if _, err := f.ReadAt(buf, start); err != nil && err != io.EOF {
+		return "", time.Time{}, err
+	}
+	lines := strings.Split(string(buf), "\n")
+	// The first line is a fragment unless the window happened to start at the
+	// beginning of the file.
+	if start > 0 && len(lines) > 0 {
+		lines = lines[1:]
+	}
+	for i := len(lines) - 1; i >= 0; i-- {
+		var rec struct {
+			Type      string `json:"type"`
+			Timestamp string `json:"timestamp"`
+			Message   struct {
+				Content []struct {
+					Type string `json:"type"`
+					Text string `json:"text"`
+				} `json:"content"`
+			} `json:"message"`
+		}
+		if json.Unmarshal([]byte(lines[i]), &rec) != nil || rec.Type != "assistant" {
+			continue
+		}
+		text := ""
+		for _, b := range rec.Message.Content {
+			if b.Type == "text" && strings.TrimSpace(b.Text) != "" {
+				text = b.Text
+			}
+		}
+		if text == "" {
+			continue
+		}
+		at, _ := time.Parse(time.RFC3339, rec.Timestamp)
+		return text, at, nil
+	}
+	return "", time.Time{}, nil
+}
+
+// TranscriptPath is where Claude Code keeps a session's transcript. The
+// directory name encodes the working directory with every separator and dot
+// replaced by a dash.
+func TranscriptPath(claudeRoot, dir, sessionID string) string {
+	enc := strings.NewReplacer("/", "-", ".", "-", "_", "-").Replace(dir)
+	return filepath.Join(claudeRoot, "projects", enc, sessionID+".jsonl")
 }

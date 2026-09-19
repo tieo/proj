@@ -1,6 +1,10 @@
 package doner
 
-import "testing"
+import (
+	"os"
+	"path/filepath"
+	"testing"
+)
 
 func TestIsWaiting(t *testing.T) {
 	waiting := []string{
@@ -72,5 +76,85 @@ func TestIsDone(t *testing.T) {
 		if IsDone(reply) {
 			t.Errorf("%q ends a subtask, not the session", reply)
 		}
+	}
+}
+
+func TestTranscriptPath(t *testing.T) {
+	got := TranscriptPath("/home/u/.claude", "/home/u/projects/code/phonetix", "abc-123")
+	want := "/home/u/.claude/projects/-home-u-projects-code-phonetix/abc-123.jsonl"
+	if got != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
+	// A directory with a dot in it encodes the dot as a dash too, which is how
+	// .dotfiles.nix is found at all.
+	got = TranscriptPath("/r", "/home/u/.dotfiles.nix", "s")
+	if want = "/r/projects/-home-u--dotfiles-nix/s.jsonl"; got != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
+}
+
+func writeTranscript(t *testing.T, lines ...string) string {
+	t.Helper()
+	p := filepath.Join(t.TempDir(), "s.jsonl")
+	body := ""
+	for _, l := range lines {
+		body += l + "\n"
+	}
+	if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return p
+}
+
+func TestLastReplyTakesTheLastAssistantText(t *testing.T) {
+	p := writeTranscript(t,
+		`{"type":"assistant","timestamp":"2026-09-19T20:00:00.000Z","message":{"content":[{"type":"text","text":"first"}]}}`,
+		`{"type":"assistant","timestamp":"2026-09-19T22:48:37.000Z","message":{"content":[{"type":"text","text":"Waiting on ba9uzs1ng"}]}}`,
+		`{"type":"user","timestamp":"2026-09-19T22:49:00.000Z","message":{"content":"ignored"}}`,
+	)
+	text, at, err := LastReply(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if text != "Waiting on ba9uzs1ng" {
+		t.Errorf("text = %q", text)
+	}
+	if !IsWaiting(text) {
+		t.Error("that reply is what the nudge asks a waiting session to say")
+	}
+	if at.UTC().Format("15:04:05") != "22:48:37" {
+		t.Errorf("at = %v", at)
+	}
+}
+
+func TestLastReplySkipsToolOnlyTurns(t *testing.T) {
+	// A turn that only ran a tool says nothing, and the decision is about what
+	// the session last said.
+	p := writeTranscript(t,
+		`{"type":"assistant","timestamp":"2026-09-19T20:00:00.000Z","message":{"content":[{"type":"text","text":"Yes"}]}}`,
+		`{"type":"assistant","timestamp":"2026-09-19T20:01:00.000Z","message":{"content":[{"type":"tool_use","name":"Bash"}]}}`,
+	)
+	text, _, err := LastReply(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if text != "Yes" {
+		t.Errorf("text = %q, want the last thing actually said", text)
+	}
+}
+
+func TestLastReplyOnEmptyTranscript(t *testing.T) {
+	text, at, err := LastReply(writeTranscript(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if text != "" || !at.IsZero() {
+		t.Errorf("got %q at %v, want nothing", text, at)
+	}
+}
+
+func TestLastReplyMissingFile(t *testing.T) {
+	if _, _, err := LastReply(filepath.Join(t.TempDir(), "absent.jsonl")); err == nil {
+		t.Error("a missing transcript is an error the caller has to see, not an empty reply")
 	}
 }

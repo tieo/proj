@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+### Added
+- `proj doner sweep`, which asks again any doner-tagged session that stopped
+  without reporting done and has been quiet for longer than the wait window.
+  The nudge tells a session that answers "Waiting on <id>" that it will be
+  asked again in half an hour, and since the move to Paseo nothing kept that
+  promise: the old backstop read tmux panes and there are none. A session sat
+  74 minutes on a test run that had already finished. A Stop hook cannot cover
+  this, because it only runs when a session stops and the problem is one that
+  is not running at all.
+
 ### Removed
 - `proj viewbook`, the web page that served a project's model documents and
   relayed messages typed there into its tmux pane. It went unused, and it was
