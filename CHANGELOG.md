@@ -11,6 +11,12 @@
   turn in progress; without it Paseo holds the message until the turn ends.
 
 ### Fixed
+- Doner lets a session stop when its turn was refused by the API. The nudge
+  makes the session take another turn, and that turn resends the same
+  conversation to the same refusal, so a conversation the API will not accept
+  loops until someone notices: one session spent an hour retrying an image that
+  had already been rejected and could not be accepted on any later attempt. A
+  failing tool, a broken build or a red test still count as work to continue.
 - The doner nudge stops repeating itself. A session that answers in seconds and
   falls straight back to silence has not taken the nudge, and three of those in
   a row stand the backstop down for that session; one loop ran 260 times against

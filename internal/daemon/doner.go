@@ -321,6 +321,28 @@ func IsWaiting(text string) bool {
 	return false
 }
 
+// replyAPIErrorRE matches a turn that ended because the API refused it rather than
+// because the model had something to say. Claude Code writes the failure as the
+// whole assistant message, so the prefix is the message.
+var replyAPIErrorRE = regexp.MustCompile(`(?i)^api error\b`)
+
+// IsAPIError reports whether a turn ended in an API failure.
+//
+// Nudging one of these is a loop with no exit. The nudge makes the session take
+// another turn, the turn resends the same conversation, and the API refuses it
+// for the same reason: a poisoned conversation stays poisoned, so the next
+// attempt fails exactly like the last. One such session spent an hour retrying
+// an image the API had already rejected and could not have accepted on any
+// later try.
+//
+// This is not the "it errored, so give up" rule it looks like. A tool that
+// fails, a build that breaks, a test that goes red are all work the session can
+// act on, and they are not this: this is the turn itself never reaching the
+// model. There is nothing to continue toward.
+func IsAPIError(text string) bool {
+	return replyAPIErrorRE.MatchString(strings.TrimSpace(text))
+}
+
 // doneReplies is the one word the nudge asks for. It was a wider set of
 // affirmatives, meant to be forgiving, and every extra entry was a way to end a
 // sentence about a subtask: "done", "finished", "complete". Since the nudge

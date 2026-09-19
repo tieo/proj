@@ -160,3 +160,24 @@ func TestProducedRealTurn(t *testing.T) {
 		t.Error("a transcript that cannot be read proves no work")
 	}
 }
+
+func TestIsAPIError(t *testing.T) {
+	poisoned := "API Error: an image in the conversation could not be processed and was removed. Re-read the file with a different approach if you still need it."
+	if !IsAPIError(poisoned) {
+		t.Error("the refusal that looped a session for an hour must stand doner down")
+	}
+	if !IsAPIError("  api error: 529 overloaded") {
+		t.Error("leading space and lower case are still the same failure")
+	}
+	// A session talking about an error has work left; only a turn that never
+	// reached the model is a dead end.
+	for _, reply := range []string{
+		"The API error in auth.go is handled now.",
+		"Fixed: the endpoint returned an API Error on empty bodies.",
+		"Tests fail with a 500.",
+	} {
+		if IsAPIError(reply) {
+			t.Errorf("%q is a session reporting on work, not a refused turn", reply)
+		}
+	}
+}

@@ -274,6 +274,12 @@ func runDonerHook(cmd *cobra.Command, args []string) error {
 	if daemon.IsWaiting(in.LastAssistantMessage) {
 		return nil
 	}
+	// A turn the API refused never reached the model, and the next turn would
+	// resend the same conversation to the same refusal. Blocking here is a loop
+	// whose only exit is someone noticing it.
+	if daemon.IsAPIError(in.LastAssistantMessage) {
+		return nil
+	}
 	out, _ := json.Marshal(map[string]string{"decision": "block", "reason": donerReason})
 	fmt.Println(string(out))
 	return nil
