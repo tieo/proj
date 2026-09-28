@@ -158,3 +158,18 @@ func TestLastReplyMissingFile(t *testing.T) {
 		t.Error("a missing transcript is an error the caller has to see, not an empty reply")
 	}
 }
+
+func TestTranscriptPathFindsAWindowsNamedFolder(t *testing.T) {
+	root := t.TempDir()
+	unc := filepath.Join(root, "projects", "--wsl-localhost-Ubuntu-24-04-home-u-projects-code-p")
+	if err := os.MkdirAll(unc, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	want := filepath.Join(unc, "sid.jsonl")
+	if err := os.WriteFile(want, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got := TranscriptPath(root, "/home/u/projects/code/p", "sid"); got != want {
+		t.Fatalf("got %s, want %s", got, want)
+	}
+}

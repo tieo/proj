@@ -174,7 +174,20 @@ func LastReply(path string) (string, time.Time, error) {
 // TranscriptPath is where Claude Code keeps a session's transcript. The
 // directory name encodes the working directory with every separator and dot
 // replaced by a dash.
+//
+// Under WSL the Windows claude.exe sees the directory as a UNC path under
+// \\wsl.localhost\<distro> and names the folder after that, with a distro name
+// nothing on the Linux side reliably knows. A session ID is unique, so when the
+// encoded path does not exist the transcript is looked for in every project
+// folder.
 func TranscriptPath(claudeRoot, dir, sessionID string) string {
 	enc := strings.NewReplacer("/", "-", ".", "-", "_", "-").Replace(dir)
-	return filepath.Join(claudeRoot, "projects", enc, sessionID+".jsonl")
+	path := filepath.Join(claudeRoot, "projects", enc, sessionID+".jsonl")
+	if _, err := os.Stat(path); err == nil {
+		return path
+	}
+	if m, _ := filepath.Glob(filepath.Join(claudeRoot, "projects", "*", sessionID+".jsonl")); len(m) > 0 {
+		return m[0]
+	}
+	return path
 }
