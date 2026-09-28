@@ -3,6 +3,15 @@
 ## [Unreleased]
 
 ### Added
+- `proj idle-compact`, run every minute from a timer, which sends `/compact`
+  to an idle Paseo agent whose last request is 55 minutes old and whose
+  context was above 250k tokens (`[daemon.idle_compact]`: `above`, `after`).
+  Claude Code caches a session's context for an hour, refreshed on every
+  request; the first request after that writes the whole context again at
+  twice the input price, which was about 10% of a week's usage here.
+  Compacting just before the hour reads it once more from cache and leaves a
+  small summary. `--report` lists each compaction with the context it
+  replaced and what the next request read from cache.
 - `wait` under `[daemon.doner]`, how long a stopped session is left alone
   before the sweep asks again. Default half an hour, which is the number the
   nudge quotes back to a waiting session. `proj doner` reports it, since the

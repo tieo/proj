@@ -28,7 +28,44 @@ type ClaudeConfig struct {
 // that is where it has always been written and an existing config still says
 // so.
 type DaemonConfig struct {
-	Doner DonerConfig `toml:"doner"`
+	Doner       DonerConfig       `toml:"doner"`
+	IdleCompact IdleCompactConfig `toml:"idle_compact"`
+}
+
+// IdleCompactConfig is when an idle session is compacted before its prompt
+// cache expires: once it has been idle for After, if its context is above
+// Above tokens.
+type IdleCompactConfig struct {
+	Enabled bool   `toml:"enabled"`
+	Above   int    `toml:"above"`
+	After   string `toml:"after"`
+}
+
+// The defaults come from replaying the last four months of both machines'
+// transcripts against the current weekly limit: compacting above 250k after 55
+// idle minutes, together with Claude Code's own compaction at 700k, kept every
+// week but the heaviest under the limit. 55 minutes leaves the minute timer
+// five chances before the one-hour cache is gone.
+const (
+	IdleCompactAboveDefault = 250_000
+	IdleCompactAfterDefault = 55 * time.Minute
+)
+
+// AboveTokens is Above, falling back to the default when unset.
+func (c IdleCompactConfig) AboveTokens() int {
+	if c.Above > 0 {
+		return c.Above
+	}
+	return IdleCompactAboveDefault
+}
+
+// AfterDuration is After parsed, falling back to the default when unset or
+// unreadable.
+func (c IdleCompactConfig) AfterDuration() time.Duration {
+	if v, err := time.ParseDuration(c.After); err == nil && v > 0 {
+		return v
+	}
+	return IdleCompactAfterDefault
 }
 
 // DonerConfig is doner's global switch and its one number. A project opts in
@@ -68,7 +105,10 @@ func Default() Config {
 	home, _ := os.UserHomeDir()
 	return Config{
 		BaseDir: filepath.Join(home, "projects", "code"),
-		Daemon:  DaemonConfig{Doner: DonerConfig{Enabled: true, Wait: WaitDefault.String()}},
+		Daemon: DaemonConfig{
+			Doner:       DonerConfig{Enabled: true, Wait: WaitDefault.String()},
+			IdleCompact: IdleCompactConfig{Enabled: true, Above: IdleCompactAboveDefault, After: IdleCompactAfterDefault.String()},
+		},
 	}
 }
 
