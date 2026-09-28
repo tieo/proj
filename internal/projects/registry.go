@@ -21,7 +21,7 @@ type Registry struct {
 type ProjectMeta struct {
 	Tags   []string `toml:"tags,omitempty"`
 	Skills []string `toml:"skills,omitempty"` // Claude Code slash-skills auto-sent on launch
-	Tool   string   `toml:"tool,omitempty"`  // coding tool launched in the session; empty = claude
+	Tool   string   `toml:"tool,omitempty"`   // coding tool launched in the session; empty = claude
 }
 
 // empty reports whether the meta carries nothing worth persisting.
